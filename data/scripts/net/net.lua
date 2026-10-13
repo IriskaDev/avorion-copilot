@@ -107,7 +107,18 @@ function CopilotNet.updateServer()
         CopilotNet.emit("disconnected", nil)
     end
 
-    if not connected then return end
+    if not connected then
+        -- ★ BUG 修复：断开后必须**再连一次** ✗→✓
+        -- 原先只在 initialize 里连一次，于是掉线后再也连不上（实测：对端第二次 hello 超时 ✗）。
+        -- 协议 §6：重连是**本侧（DLL 侧）的职责** ✓ —— 每 5 秒试一次 ✓。
+        local now = os.clock()
+        if now - (self.lastConnectAt or 0) > 5 then
+            self.lastConnectAt = now
+            CopilotNet.connect()
+        end
+        return
+    end
+    self.lastConnectAt = nil
 
     -- 把 DLL 里已到的完整帧全部取干净，一条一条 emit 出去。
     -- 用上限防止坏帧导致死循环；recv 是非阻塞的，没有就返回 nil。

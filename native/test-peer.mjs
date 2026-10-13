@@ -177,8 +177,12 @@ const server = net.createServer((s) => {
       log('--- hello 成功，发起 query fleet ---')
       call('query', { what: 'fleet' }, (ok2, data2, why) => {
         if (!ok2) { log(`!! query fleet 失败: ${why}`); return }
-        log(`=== ★ 舰队快照拿到 === ships=${(data2?.ships ?? []).length} 只=${data2?.designated ?? '?'}`)
-        for (const sh of (data2?.ships ?? [])) {
+        // ★ BUG 修复：空的 Lua 表被 cJSON 编成 {}（不是 []）✗ —— 两种都当空列表处理 ✓
+        const rawShips = data2?.ships
+        const ships = Array.isArray(rawShips) ? rawShips
+          : (rawShips && typeof rawShips === 'object' ? Object.values(rawShips) : [])
+        log(`=== ★ 舰队快照拿到 === ships=${ships.length} 只=${data2?.designated ?? '?'}`)
+        for (const sh of ships) {
           log(`    - ${sh.name}  busy=${sh.busy}  captain=${sh.hasCaptain}  sector=${JSON.stringify(sh.sector ?? null)}` +
               (sh.probe ? `  probe=${JSON.stringify(sh.probe)}` : ''))
         }
