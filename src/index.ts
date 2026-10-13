@@ -22,6 +22,9 @@
  * 和踩过坑的鲁棒解析 ✓，与传输无关 ✓。
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm/types'
 import { RpcPeer } from './rpc.js'
@@ -43,6 +46,21 @@ interface CopilotCtx {
   }
   effect(fn: () => (() => void) | void, label?: string): void
   get?(name: string): unknown
+}
+
+/**
+ * ★ 把日志**同时写进文件** ✓
+ *
+ * 因为 DSH 的 `ctx.logger` 只进控制台、**不落盘** ✗ —— 而本项目的验证方式一直是"读日志" ✓。
+ * 写到与 mod 同一个目录（`moddata/copilot/`）✓，agent 就能像读其他日志一样读它 ✓✓。
+ */
+const LOG_FILE = path.join(os.homedir(), 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'rpc_dsh.log')
+
+function fileLog(line: string): void {
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true })
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()}  ${line}\n`)
+  } catch { /* 日志失败绝不能影响主流程 ✓ */ }
 }
 
 interface CopilotConfig {
@@ -279,9 +297,16 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     temperature: config.temperature ?? DEFAULTS.temperature,
   }
 
+  // 双写：控制台（人看 ✓）+ 文件（agent 读 ✓）
+  const logger = {
+    info: (m: string): void => { ctx.logger?.info?.(m); fileLog(m) },
+    warn: (m: string): void => { logger.warn(m); fileLog('WARN ' + m) },
+  }
+  fileLog(`=== 插件启动：监听 ${cfg.port}（模型 ${cfg.provider}/${cfg.model}）===`)
+
   const peer = new RpcPeer({
     port: cfg.port,
-    logger: ctx.logger,
+    logger,
     defaultTimeoutSec: 5,
   })
 
@@ -289,7 +314,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
 
   peer.handle('hello', (data: any) => {
     // 协议 §6/§8：两端各发一次 hello，各自声明 caps ✓
-    ctx.logger?.info?.(`avorion-copilot: 游戏握手 side=${data?.side} ver=${data?.ver} caps=${(data?.caps ?? []).join(',')}`)
+    logger.info(`avorion-copilot: 游戏握手 side=${data?.side} ver=${data?.ver} caps=${(data?.caps ?? []).join(',')}`)
     return [true, { side: 'dsh', ver: 2, caps: peer.caps() }]
   })
 
@@ -305,19 +330,19 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
    */
   peer.handle('decide', async (data: any) => {
     const req = (data ?? {}) as DecideRequest
-    ctx.logger?.info?.(`avorion-copilot: 为 ${req.ship} 决策中…`)
+    logger.info(`avorion-copilot: 为 ${req.ship} 决策中…`)
 
     let result: StreamResult
     try {
       result = await askModel(ctx, cfg, buildPrompt(req))
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      ctx.logger?.warn?.(`avorion-copilot: 模型调用异常 ${message}`)
+      logger.warn(`avorion-copilot: 模型调用异常 ${message}`)
       return [false, 'MODEL_ERROR', message] as [boolean, any, string]
     }
 
     if (result.failure !== undefined) {
-      ctx.logger?.warn?.(`avorion-copilot: 模型调用失败 ${result.failure}`)
+      logger.warn(`avorion-copilot: 模型调用失败 ${result.failure}`)
       return [false, 'MODEL_FAILED', result.failure] as [boolean, any, string]
     }
 
@@ -325,12 +350,12 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     const answer = toAnswer(req, decision, result.text)
 
     if (typeof answer === 'string') {
-      ctx.logger?.warn?.(`avorion-copilot: 决策无法解析 —— ${answer}`)
+      logger.warn(`avorion-copilot: 决策无法解析 —— ${answer}`)
       return [false, 'BAD_MODEL_REPLY', answer] as [boolean, any, string]
     }
 
     // 决策记录（含思维链），便于事后回看模型在想什么 ✓
-    ctx.logger?.info?.(
+    logger.info(
       `avorion-copilot: ${req.ship} -> ${answer.action}` +
       (answer.reason !== undefined ? `  (${answer.reason})` : '') +
       (result.truncated ? '  [回复被 maxTokens 截断]' : '') +
@@ -357,10 +382,10 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
 
   // 连上后打一份舰队快照到日志 —— 既是握手确认，也是"眼睛"的第一次使用 ✓
   peer.onConnected = () => {
-    ctx.logger?.info?.('avorion-copilot: 游戏已连接，查询舰队快照…')
+    logger.info('avorion-copilot: 游戏已连接，查询舰队快照…')
     queryFleet((ok, data, why) => {
       if (!ok) {
-        ctx.logger?.warn?.(`avorion-copilot: query fleet 失败 ${why ?? ''}`)
+        logger.warn(`avorion-copilot: query fleet 失败 ${why ?? ''}`)
         return
       }
       // ★ 空的 Lua 表被 cJSON 编成 {}（不是 []）✗ —— 两种都当空列表处理 ✓
@@ -368,9 +393,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       const ships: any[] = Array.isArray(rawShips)
         ? rawShips
         : (rawShips !== null && typeof rawShips === 'object' ? Object.values(rawShips) : [])
-      ctx.logger?.info?.(`avorion-copilot: 名单 ${data?.designated ?? '?'} 艘，快照 ${ships.length} 条（玩家在开：${data?.piloted ?? '?'}）`)
+      logger.info(`avorion-copilot: 名单 ${data?.designated ?? '?'} 艘，快照 ${ships.length} 条（玩家在开：${data?.piloted ?? '?'}）`)
       for (const s of ships) {
-        ctx.logger?.info?.(
+        logger.info(
           `  - ${s.name} busy=${s.busy} captain=${s.hasCaptain}` +
           (s.status !== undefined ? ` status=${String(s.status).slice(0, 40)}` : ''),
         )
@@ -382,10 +407,10 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
 
   ctx.effect(() => {
     void peer.listen().catch((err) => {
-      ctx.logger?.warn?.(`avorion-copilot: 监听 ${cfg.port} 失败（${String(err)}）—— 插件不会工作`)
+      logger.warn(`avorion-copilot: 监听 ${cfg.port} 失败（${String(err)}）—— 插件不会工作`)
     })
     return () => {
-      ctx.logger?.info?.('avorion-copilot: 关闭 RPC')
+      logger.info('avorion-copilot: 关闭 RPC')
       peer.close()
     }
   }, 'dsh-avorion-copilot:rpc')
