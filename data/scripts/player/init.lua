@@ -21,7 +21,19 @@ if onServer() then
     -- further errors"）。但 player value 里的 copilot_enabled 仍然是 true，
     -- 于是出现「开关显示开着、船却不动」的坏状态。
     -- 这里按需把**新路径**挂回去，让老存档自愈。
-    if copilotPlayer:getValue("copilot_enabled") then
-        copilotPlayer:addScriptOnce("data/scripts/player/ai/autopilot.lua")
-    end
+    -- ★ 排查用：暂时不挂载实体自动驾驶（唯一会 addScriptOnce/removeScript 的层）
+    --
+    -- 起因：2026-10-14 00:23:51 服务端进程消失，日志最后一行是
+    --   `Entity with index … has no script with index '6'`
+    -- 紧跟在游戏自己的 `Restoring 1's craft`（恢复刚跑完后台命令的船）之后。
+    -- 形态是"无崩溃报告、无关闭消息、戛然而止"。
+    --
+    -- 二分法：这一层是唯一会挂/卸**实体脚本**的地方 ✓，先关掉它 ✓，保留 RPC 链（不挂脚本 ✓）。
+    --   若不再崩 → 问题在这条线（addScriptOnce/removeScript 的用法）
+    --   若仍崩   → 问题在游戏自身的后台命令恢复流程
+    -- 恢复方式：把下面两行的注释去掉即可 ✓
+    --
+    -- if copilotPlayer:getValue("copilot_enabled") then
+    --     copilotPlayer:addScriptOnce("data/scripts/player/ai/autopilot.lua")
+    -- end
 end
