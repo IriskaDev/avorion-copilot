@@ -103,6 +103,7 @@ function CopilotNet.updateServer()
         CopilotNet.emit("connected", nil)
     elseif not connected and self.state == "ready" then
         self.state = "dead"
+        if CopilotRpc ~= nil then CopilotRpc.reset() end   -- 待答复全部作废 ✓
         CopilotNet.emit("disconnected", nil)
     end
 
@@ -115,6 +116,11 @@ function CopilotNet.updateServer()
         if text == nil then break end
         CopilotNet.emit("message", text)    -- 原始文本；解析交给 inbound
     end
+
+    -- ★ 扫 RPC 超时（Lua 没有定时器 → 由这个 tick 泵驱动 ✓，和 recv 同一个 1 Hz 节拍）
+    if CopilotRpc ~= nil then
+        CopilotRpc.tick()
+    end
 end
 
 function CopilotNet.initialize()
@@ -123,6 +129,7 @@ function CopilotNet.initialize()
 
     -- 把整条链装进**同一个 VM**：解析层与监听者都必须和泵在一起，
     -- 否则它们注册到的事件总线不是同一条，事件永远不会到监听者手里。
+    self.rpc = include("net/rpc")            -- ★ 对称 RPC 框架（我先 include，inbound 才能用）
     self.inbound = include("net/inbound")
     self.outbound = include("net/outbound")
     self.linkOut = include("net/link_out")

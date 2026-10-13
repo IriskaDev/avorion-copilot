@@ -33,6 +33,14 @@ function CopilotIn.decode(text)
     if type(msg) ~= "table" then
         return nil, "not a JSON object"
     end
+    -- 协议 v2：信封必须有 id / type / cmd（§2 铁律 5）。缺了就当坏帧丢掉 ✓，
+    -- 不在这里回 error —— 回 error 需要 transport 协调，留给 rpc 层做 ✓
+    if type(msg.id) ~= "number" then
+        return nil, "missing/non-numeric id"
+    end
+    if msg.type ~= "request" and msg.type ~= "response" then
+        return nil, "bad type: " .. tostring(msg.type)
+    end
     if type(msg.cmd) ~= "string" then
         return nil, "missing cmd"
     end
@@ -54,6 +62,11 @@ function CopilotIn.onMessage(text)
     -- 通用事件 + 按动作细分的事件，两种都发，监听者按需选
     CopilotNet.emit("cmd", msg)
     CopilotNet.emit("cmd:" .. msg.cmd, msg)
+
+    -- ★ 交给 RPC 框架分发：request → 查我的功能表并自动回答复；response → 结清待答复
+    if CopilotRpc ~= nil then
+        CopilotRpc.dispatch(msg)
+    end
 end
 
 -- 把自己挂到 net 上。幂等：重复调用不会重复注册。
