@@ -52,7 +52,7 @@ copilot/
 └── native/                             # 原生模块与开发工具链（不参与 VFS）
     ├── copilot.c / dshlog.c / lua_json.c / cJSON.*   # copilot.dll 的源码
     ├── copilotprobe.c                  # ABI 自检探针（诊断残留）
-    ├── lua-src/lua-5.2.3/              # **编译基准**（5.2.4 改了 Table 布局，不能用）
+    ├── lua-src/lua-5.2.1/              # **编译基准**（= 宿主 exe 里的 $LuaVersion；别用别的版本 ✗）
     ├── harness/                        # 独立测试台 lua.exe（不开游戏即可验原生模块）
     └── test-listener.mjs               # TCP 测试监听端
 ```
@@ -152,7 +152,7 @@ SetCursorPos/mouse_event 点击 → keybd_event（**带扫描码**）按键 → 
 - 决策层调研已完成，见 [`LLM-OPS.md`](LLM-OPS.md)（Mine/Salvage/Trade/Travel 的决策变量、
   `calculateAttackProbability` 风险模型、已知陷阱）。
 
-- **原生 TCP 通道（已打通并实测）**：把 Lua 5.2.3 源码编进 `copilot.dll`，用**我们自己那份**
+- **原生 TCP 通道（已打通并实测）**：把 **Lua 5.2.1**（宿主同版本 ✓）源码编进 `copilot.dll`，用**我们自己那份**
   Lua C API 操作宿主传进来的 `lua_State`（exe 导出 0 个符号，按名字够不着）。
   已有 `connect/connected/state/send/recv/recv_json/encode/decode/close/diag/readfile`，
   表自动 JSON 编解码（cJSON），4 字节小端长度分帧。协议见 [`PROTOCOL.md`](PROTOCOL.md)，
@@ -282,7 +282,7 @@ data/scripts/
 **结论**：Avorion **把 Lua 原样发出来了** ✓。游戏逻辑怎么写的，`data/scripts/` 里全都有 ✓。
 本项目的 API 核查全部靠它（`entitydbg.lua` / `entity.lua` / `minecommand.lua` 等）。
 
-**唯一"看不见"的是 C++ 引擎内部** —— 而我们通过自己编译的 Lua 5.2.3 + C API
+**唯一"看不见"的是 C++ 引擎内部** —— 而我们通过自己编译的 Lua 5.2.1（与宿主同版本 ✓）+ C API
 （见 `NATIVE.md`）已经能直接问游戏要数据，不需要反编译它 ✓。
 
 ## ★ Git 仓库（2026-10-13 建立）

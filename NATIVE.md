@@ -290,7 +290,7 @@ Avorion 用的是 **5.2.0–5.2.3**，而我们最初编的是 **5.2.4** ✗ →
 > 表操作就会**悄悄写坏堆** ✓，表现为 ntdll 延迟报 **`0xC0000374`（堆损坏）** ✓✓。
 
 ```powershell
-$lsrc = "D:\...\mods\copilot\native\lua-src\lua-5.2.3\src"   # ★ 不是 5.2.4
+$lsrc = "D:\...\mods\copilot\native\lua-src\lua-5.2.1\src"   # ★ 与宿主 exe 的 $LuaVersion 一致
 ```
 
 若将来游戏升级 Lua，判断方法很直接：**建一张表、用整数键和字符串键各放一个值，
