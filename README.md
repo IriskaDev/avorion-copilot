@@ -1,0 +1,100 @@
+# Copilot —— Avorion AI 副驾驶 mod
+
+陪你一起玩、帮你经营的 AI 副驾驶。分两层：
+
+1. **实体级自动驾驶**（已完成）：`/copilot on` 接管你当前开的船，在星区内自动接敌 / 采矿 / 打捞 / 跃迁。
+2. **战略级运营**（规划中，见 `TODO.md`）：读全局数据做决策，自动经营舰队与经济，**不抢你正在开的船**。
+
+## 它是怎么工作的（mod 机制）
+
+Avorion 的 mod 是「虚拟文件系统（VFS）覆盖」：mod 放在 `%AppData%\Avorion\mods\<id>/` 下，
+用 `modinfo.lua`（`meta = { ... }`）声明元数据，`data/` 下的脚本会自动与原版同路径脚本合并/追加。
+
+本 mod 主要是**新增**脚本：
+
+- `data/scripts/commands/copilot.lua` —— 自动注册为聊天命令 `/copilot`
+- `data/scripts/player/ai/autopilot.lua` —— 挂在玩家身上的 AI 大脑（服务端每 2 秒跑一次）
+- `data/scripts/player/ui/panel.lua` —— 右上角图标栏里的副驾驶面板
+
+另外**追加**了两行到原版 `data/scripts/player/init.lua`（VFS 是追加而非替换，原版内容不受影响），
+用来在玩家登录时挂载上面的 UI 脚本。除此之外不碰任何原版文件。
+
+AI 大脑不重新发明飞行/采矿，而是**复用游戏自带的 AI 系统**：
+
+| 状态 | 实现 |
+|------|------|
+| 战斗（最高优先级） | `ShipAI():setAttack(最近的敌人)` |
+| 采矿 | 挂原版 `entity/ai/mine.lua` |
+| 打捞 | 挂原版 `entity/ai/salvage.lua` |
+| 货舱满 | 停车待命 |
+| 星区清空 | 可选 `ShipAI():setJump()` 跃迁 |
+| 总开关 | `ControlUnit.autoPilotEnabled = true` |
+
+## 安装
+
+⚠️ **游戏只扫描 `%AppData%\Avorion\mods\` 下的本地 mod，不扫描游戏目录的 `mods\`。**
+
+源码在 `D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\`，已用一个目录联接（junction）
+挂到游戏实际读取的位置：
+
+```
+C:\Users\<你>\AppData\Roaming\Avorion\mods\copilot  →  D:\...\Avorion\mods\copilot
+```
+
+所以改源码后游戏直接生效，不需要复制。若联接丢失，重新建立：
+
+```powershell
+New-Item -ItemType Junction `
+  -Path "$env:APPDATA\Avorion\mods\copilot" `
+  -Target "D:\SteamLibrary\steamapps\common\Avorion\mods\copilot"
+```
+
+启用步骤：**重启游戏** → 打开「模组 & 创意工坊」→ 切到**本地 mod 页签**（左上角列表图标，
+不是默认的创意工坊页签）→ 勾选 **Copilot**。mod 列表只在启动时扫描一次，装完必须重启。
+
+## 使用
+
+游戏内右上角那排圆形按钮里有一个 **Copilot**（机器人图标），点开就是副驾驶面板：
+显示自动驾驶开关状态、AI 当前在做什么、以及「清空星区后自动跃迁」开关。
+
+也可以直接用聊天命令：
+
+```
+/copilot on          启动自动驾驶（接管你当前开的这艘船）
+/copilot off         关闭
+/copilot status      查看状态
+/copilot explore on  允许清空星区后自动跃迁（默认关闭）
+```
+
+## 行为与限制
+
+- 只有你当前驾驶的船会被接管；换船后自动接管新船。
+- 玩家脚本只在在线时运行；离线挂机经营属于「战略级运营」层，见 `TODO.md`。
+- 采矿需采矿炮、打捞需打捞炮/武装炮。
+- 货舱满 v1 只停车，不自动卖货（自动交易属于战略层）。
+
+## 文件清单
+
+```
+mods/copilot/
+├── modinfo.lua
+├── README.md
+├── TODO.md
+├── AGENTS.md
+└── data/scripts/
+    ├── commands/copilot.lua
+    ├── player/init.lua             # VFS 追加：挂载下面的 UI 脚本
+    ├── player/ai/autopilot.lua
+    └── player/ui/panel.lua       # 右上角的 Copilot 面板
+```
+
+## 开发用命令
+
+```
+/copilot reload          重载逻辑脚本（改代码后不用重启游戏）
+/copilot reload <名字>   只重载路径里含该名字的脚本
+/copilot ops             列出被指定为自动运营的船及其事实
+```
+
+热重载的原理、可重载范围、以及**新增脚本必须写 `Xn = Xn or {}`** 这条约定，
+见 [AGENTS.md](AGENTS.md#热重载开发提速务必遵守)。

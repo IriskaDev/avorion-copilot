@@ -1,0 +1,122 @@
+package.path = package.path .. ";data/scripts/lib/?.lua"
+package.path = package.path .. ";data/scripts/?.lua"
+-- CopilotOut —— **出站消息构造**（game → DSH 方向）。
+--
+-- 职责边界：把「要说什么」变成「可以发的表」。**不做传输**（send 由 CopilotNet 负责），
+-- **不做业务决策**（该不该发是 link_out 的事）。
+--
+-- 协议见 PROTOCOL.md v2：
+--   * `id` 与 `type` **都是必填**
+--   * `type = "request"`  → 对方必须回 `type = "response"`
+--   * `type = "response"` → `cmd` 固定为 `reply`，`id` 必须等于原请求
+--
+-- 命名空间脚本：表不能清空
+-- namespace CopilotOut
+CopilotOut = CopilotOut or {}
+
+local self = CopilotOut
+
+-- 协议版本（与 PROTOCOL.md 同步）
+self.VER = 2
+
+-- id 生成：单条连接内唯一即可。连接重建时清零（见 reset）
+self.nextIdValue = self.nextIdValue or 0
+
+function CopilotOut.nextId()
+    self.nextIdValue = self.nextIdValue + 1
+    return self.nextIdValue
+end
+
+function CopilotOut.reset()
+    self.nextIdValue = 0
+end
+
+-- 底层：表 -> JSON 文本。用 DLL 里的 cJSON，避免手写编解码出错。
+function CopilotOut.encode(msg)
+    local ok, cp = pcall(require, "copilot")
+    if not ok or type(cp) ~= "table" or cp.encode == nil then
+        return nil, "native module 'copilot' unavailable"
+    end
+    local text = cp.encode(msg)
+    if text == nil then return nil, "encode failed" end
+    return text
+end
+
+-- ---------------------------------------------------------------------------
+-- 两种消息类型（协议 v2 的全部形态）
+-- ---------------------------------------------------------------------------
+
+-- 请求：对方必须回一个 response
+function CopilotOut.request(cmd, params, id)
+    return {
+        id = id or CopilotOut.nextId(),
+        type = "request",
+        cmd = cmd,
+        params = params or {},
+    }
+end
+
+-- 答复：cmd 固定 reply；ok=false 时带 code/message
+--   CopilotOut.reply(id, true, dataTable)
+--   CopilotOut.reply(id, false, "NO_SUCH_SHIP", "船名不存在")
+function CopilotOut.reply(id, ok, payloadOrCode, message)
+    local params = { ok = ok and true or false }
+    if params.ok then
+        params.data = payloadOrCode or {}
+    else
+        params.code = payloadOrCode or "ERROR"
+        if message ~= nil then params.message = tostring(message) end
+    end
+    return { id = id, type = "response", cmd = "reply", params = params }
+end
+
+-- ---------------------------------------------------------------------------
+-- 具体的请求构造（纯拼装，不含"要不要发"的判断）
+-- ---------------------------------------------------------------------------
+
+function CopilotOut.hello(side, caps)
+    return CopilotOut.request("hello", {
+        ver = self.VER,
+        side = side or "game",
+        caps = caps or {},
+    })
+end
+
+function CopilotOut.state(ships)
+    return CopilotOut.request("state", { ships = ships or {} })
+end
+
+function CopilotOut.event(kind, extra)
+    local params = { kind = kind }
+    if type(extra) == "table" then
+        for k, v in pairs(extra) do params[k] = v end
+    end
+    return CopilotOut.request("event", params)
+end
+
+-- ---------------------------------------------------------------------------
+-- 发送
+-- ---------------------------------------------------------------------------
+
+function CopilotOut.send(msg)
+    if type(msg) ~= "table" then return false, "not a table" end
+    local text, err = self.encode(msg)
+    if text == nil then return false, err end
+    return CopilotNet.send(text)
+end
+
+-- 构造并发送一个请求：返回 ok, id（失败时 id 为 nil）
+function CopilotOut.sendRequest(cmd, params)
+    local msg = CopilotOut.request(cmd, params)
+    local ok, err = self.send(msg)
+    if not ok then return false, err, nil end
+    return true, nil, msg.id
+end
+
+-- 构造并发送一个答复
+function CopilotOut.sendReply(id, ok, payloadOrCode, message)
+    local msg = CopilotOut.reply(id, ok, payloadOrCode, message)
+    return self.send(msg)
+end
+
+return CopilotOut

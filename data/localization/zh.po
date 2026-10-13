@@ -1,0 +1,131 @@
+
+# ============================================================================
+# Copilot mod - Chinese (Simplified) localization
+#
+# Mods use the same virtual file system as scripts, so this file is APPENDED to the
+# game's own data/localization/zh.po. The game's language option therefore picks the
+# translation up automatically; the mod needs no language switch of its own.
+#
+# A msgid must match character for character what the script passes to %_t, including
+# \n escapes and %1% placeholders.
+#
+# Strings that already exist in the base game are deliberately NOT repeated here:
+#   "Enable" -> 启用     "Disable" -> 禁用     "Idle" -> 待命
+#   "ON" -> 开           "OFF" -> 关           "none" -> 无
+# ============================================================================
+
+# ---------- ship panel ----------
+msgid "Copilot"
+msgstr "副驾驶"
+
+msgid "Autopilot: ON"
+msgstr "自动驾驶：开"
+
+msgid "Autopilot: OFF"
+msgstr "自动驾驶：关"
+
+msgid "Hand the ship you are currently flying over to the AI."
+msgstr "把你当前驾驶的舰船交给 AI 接管。"
+
+msgid "Auto-explore after clearing a sector"
+msgstr "清空星区后自动跃迁"
+
+msgid "Allow the AI to jump into neighbouring sectors once the current one is empty."
+msgstr "允许 AI 在当前星区清空后跃迁到相邻星区。"
+
+msgid "Ships operated by the AI"
+msgstr "AI 自动运营的舰船"
+
+msgid "Only ticked ships are ever touched. Everything else is left alone.\nThe decision layer itself is not wired up yet - this only stores your selection."
+msgstr "只有打勾的舰船会被接管，其它一律不碰。\n决策层尚未接入，这里目前只保存你的选择。"
+
+# ---------- autopilot state shown in the panel ----------
+msgid "Engaging hostiles"
+msgstr "交战中"
+
+msgid "Mining asteroids"
+msgstr "采集中"
+
+msgid "Salvaging wreckage"
+msgstr "打捞中"
+
+msgid "Cargo full, parked"
+msgstr "货舱已满，停泊中"
+
+msgid "Jumping to a new sector"
+msgstr "跃迁中"
+
+msgid "Sector cleared, waiting"
+msgstr "星区已清空，待命"
+
+# ---------- chat command ----------
+msgid "Copilot enabled. Your current ship now flies itself."
+msgstr "副驾驶已启用：你当前驾驶的舰船将自动行动。"
+
+msgid "Copilot disabled."
+msgstr "副驾驶已关闭。"
+
+msgid "Copilot will now jump to new sectors when the current one is cleared."
+msgstr "副驾驶现在会在星区清空后跃迁到新星区。"
+
+msgid "Copilot will no longer auto-jump."
+msgstr "副驾驶不再自动跃迁。"
+
+msgid "Copilot auto-explore is %1%. Use /copilot explore on|off."
+msgstr "副驾驶自动探索：%1%。用 /copilot explore on|off 切换。"
+
+msgid "Copilot is ON, controlling %1%."
+msgstr "副驾驶已开启，正在控制 %1%。"
+
+msgid "Copilot is ON, but you are not in a ship."
+msgstr "副驾驶已开启，但你不在舰船上。"
+
+msgid "Copilot is OFF."
+msgstr "副驾驶已关闭。"
+
+msgid "Ships operated by the AI (%1%): %2%"
+msgstr "AI 自动运营的舰船（%1% 艘）：%2%"
+
+msgid "Copilot: /copilot on | off | explore on|off | status | ops | reload | probe"
+msgstr "Copilot：/copilot on | off | explore on|off | status | ops | reload | probe"
+
+msgid "Toggle the Copilot autopilot that plays your current ship"
+msgstr "开关副驾驶自动驾驶，接管你当前驾驶的舰船"
+
+msgid "Usage: /copilot on | off | explore on|off | status | ops | reload | probe"
+msgstr "用法：/copilot on | off | explore on|off | status | ops | reload | probe"
+
+# 玩家手动接管：autopilot 被玩家关掉了
+msgid "Copilot: manual control detected - handing the ship back."
+msgstr "检测到手动操作，自动驾驶已交还。"
+
+# 战略指挥层
+msgid "Copilot ops: no ship designated (tick ships in the Copilot panel)."
+msgstr "Copilot 战略指挥：没有指定任何船（请在 Copilot 面板里打勾）。"
+
+msgid "Copilot ops: designated ships"
+msgstr "Copilot 战略指挥：已指定的舰船"
+
+# 接管提示：告诉玩家怎么把控制权收回来（否则会出现"船怎么点都不动"的困惑）
+msgid "This ship is under Copilot control. Click the Copilot button (top right) or use /copilot off to take it back."
+msgstr "本舰正由副驾驶接管。点右上角 Copilot 按钮、或用 /copilot off 即可收回控制权。"
+
+# 面板：每船目标选项
+msgid "No task assigned"
+msgstr "不指派"
+
+msgid "Mine"
+msgstr "采矿"
+
+msgid "Salvage"
+msgstr "打捞"
+
+msgid "Trade"
+msgstr "贸易"
+
+msgid "Travel"
+msgstr "跃迁"
+
+# 缺船长：硬门槛，只提示一次（否则每 tick 重试会刷屏）
+msgid "Copilot: this ship needs a captain before it can mine or salvage."
+msgstr "副驾驶：本舰需要一名船长才能采矿或打捞。"
