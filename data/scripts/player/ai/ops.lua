@@ -34,11 +34,28 @@ self.reported = self.reported or {}
 -- ---------------------------------------------------------------------------
 
 -- 安全调用：成功 (true, 值...)，失败 (false, 错误)
+-- ★★ 这个 probe 曾经把服务端搞崩过（2026-10-13 23:21:49，serverlog 里出现了
+--    `Starting thread [Stacktrace Sender]`）✗→✓
+--
+-- 原因：AGENTS.md 的实测结论 —— **在 userdata 上索引一个不存在的成员名会直接 AV** ✗，
+-- 而不是返回 nil ✓。旧写法把 pcall 只包在"调用"上：
+--     if env[method] == nil then ...        ← 索引在 pcall 外 ✗
+--     local r = { pcall(env[method], env) } ← 索引仍在 pcall 外 ✗
+-- 于是「查找」这一步就能炸掉整个进程 ✓（pcall 拦不住 ✓）。
+--
+-- 正确写法：**查找与调用一起放进 pcall** ✓。
 local function probe(env, method, ...)
     if env == nil then return false, "nil object" end
-    if env[method] == nil then return false, method .. " is nil" end
-    local r = { pcall(env[method], env, ...) }
+
+    local args = { ... }
+    local r = { pcall(function()
+        local fn = env[method]        -- 查找在 pcall 内 ✓
+        if fn == nil then return nil, "member missing" end
+        return fn(env, table.unpack(args, 1, #args))
+    end) }
+
     if not r[1] then return false, tostring(r[2]) end
+    if r[2] == nil and r[3] == "member missing" then return false, method .. " is nil" end
     return true, table.unpack(r, 2, #r)
 end
 
