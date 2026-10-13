@@ -85,7 +85,8 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | `query` | DSH → 游戏 | **RPC 读取**（见 §4） |
 | `order` | DSH → 游戏 | 下指令：`{ship, action, ...}` |
 | `reload` | DSH → 游戏 | 触发热重载：`{which?: "ops"}` |
-| `state` | 游戏 → DSH | 舰队快照推送（是否开启由 DSH 决定 ✓） |
+| `decide` | 游戏 → DSH | ★ **待定**：请 DSH 为某艘船做决策（一次普通 RPC ✓，见 §11） |
+| `state` | 游戏 → DSH | 舰队快照推送（是否开启由 DSH 决定 ✓）—— 退化为**可选订阅** ✓ |
 | `event` | 游戏 → DSH | 自发事件：`{kind: "connected"\|"background_finished"\|"attacked", ...}` |
 | （任意 cmd） | 被请求方 → 请求方 | ★ **答复不单列命令** —— `type="response"`、**`cmd` 与请求相同**，`ok`/`code`/`message` 在**信封**层 |
 | `error` | 双向 | **协议层**错误（缺 id/type/cmd、形状非法）：`{code, message}` |
@@ -171,6 +172,8 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | 多连接 | DSH **只接受一条** ✓；新连接到达 → 关旧连接并记日志 ✓（防重连竞态堆连接 ✓） |
 | 非阻塞 | **DLL 侧一切非阻塞** ✓，收发绝不允许阻塞游戏主线程 ✗ |
 | 端口占用 | DSH 启动失败（`EADDRINUSE`）→ **明确报错** ✓，不许静默 ✓<br>（今晚踩过：旧监听占着 8765，插件静默起不来 ✗✓） |
+| ★ 双向 | **两端都能发起请求** ✓ —— 各用**自己的 `id` 计数器**，待答复表按「我自己发出去的 id」索引 ✓（互不干扰 ✓） |
+| ★ 绝不阻塞 | **任何一方收到 `request` 都不得阻塞自己的主循环** ✗✓ —— 尤其是 `decide`（可能要等模型数秒 ✓）：<br>游戏侧**收下就继续 tick** ✓，DSH **想好了再回** ✓ —— 这就是"响应式" ✓✓ |
 
 ---
 
@@ -191,7 +194,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 DLL → DSH   {"id":1,"type":"request", "cmd":"hello","data":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
 DSH → DLL   {"id":1,"type":"response","cmd":"hello","ok":true}
 
-DSH → DLL   {"id":2,"type":"request", "cmd":"hello","data":{"ver":2,"side":"dsh"}}
+DSH → DLL   {"id":2,"type":"request", "cmd":"hello","data":{"ver":2,"side":"dsh","caps":["decide"]}}
 DLL → DSH   {"id":2,"type":"response","cmd":"hello","ok":true}
 
 DSH → DLL   {"id":3,"type":"request", "cmd":"query","data":{"what":"fleet"}}
@@ -248,3 +251,42 @@ net.close()
 | 12 | `event.kind` | 先留 `connected` / `background_finished` / `attacked` ✓，允许自由扩展 ✓ |
 | 13 | ★ **答复的元信息位置** | ✅ `ok` / `code` / `message` **放在信封层**（不在 `data` 里）—— 于是 **`data` 只装业务数据**，边界干净 ✓ |
 | 14 | ★ **载荷的命名与语义** | ✅ 原字段名 `params` → **改名 `data`** ✓ —— 它就是「**请求或答复携带的数据**」✓，**要什么形状由 `cmd` 决定** ✓（`cmd` 是类型 ✓，`data` 是载荷 ✓） |
+---
+
+## 11. ★ 双向设计的推论：`decide`（**待主人拍板**）
+
+既然**两边都能发起请求** ✓，决策就不必是「游戏推 `state` → DSH 找时机下 `order`」✗，
+而可以是**一次普通的 RPC** ✓✓：
+
+```
+game → DSH   {"id":12,"type":"request", "cmd":"decide",
+              "data":{"ship":"Miner-00002","card":{ ...能力卡... },"options":[ ...候选... ]}}
+
+DSH → game   {"id":12,"type":"response","cmd":"decide","ok":true,
+              "data":{"action":"Mine","params":{"x":-394,"y":74,"size":5}}}
+```
+
+### 为什么更好
+
+| 对比 | 推/回模式（原设计）✗ | `decide` RPC（本提案）✓ |
+|---|---|---|
+| 状态 | 游戏要维护"我推过什么、它决定了没" | **一问一答，`id` 就串起来了** ✓ |
+| 上下文 | DSH 得先 `query` 一遍能力卡 | **`card` 直接随请求带上** ✓ |
+| 超时/重试 | 得自己设计 | **复用 §6 的超时规则** ✓ |
+| 观察 | `state` 兼做数据源 | `state` 退化为**可选订阅** ✓（想实时看就开 ✓） |
+
+### 边界（不变）
+
+- `decide` **只是"问建议"** ✓ —— **真正下单仍然走 `order`** ✓✓
+  （决策与执行分开 ✓：DSH 可以答"我建议 Mine" ✓，游戏侧决定发不发 ✓；
+   也可以是**游戏侧收到 `decide` 的答复后直接执行** ✓ —— 由游戏侧配置决定 ✓）
+- `decide` 的答复**可能很慢** ✓（等模型 ✓）→ **游戏侧绝不许阻塞等待** ✗✓（§6 规矩 ✓）
+  → 答复还没到就继续 tick ✓，到了再处理 ✓
+- `decide` 的 `data.options` 由**游戏侧的 `orderSchema`** 生成 ✓✓
+  —— 于是 DSH 的答复**一定落在合法命令集里** ✓（模型不可能凭空编出非法命令 ✓✓）
+
+### 待主人确认
+
+1. **采纳 `decide` 这条 RPC** ✗→✓ 吗？（本鱼认为它比推/回模式干净 ✓）
+2. 若采纳：`decide` 的答复**由游戏侧自动执行** ✓，还是**只作为建议** ✓（本鱼倾向**自动执行** ✓，因为主人要的正是"自动驾驶舰队" ✓）
+3. DSH 侧 `caps` 里的命令名，就叫 **`decide`** ✓ 还是别的（`ask` / `plan` ✗）？
