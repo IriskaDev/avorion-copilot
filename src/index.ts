@@ -300,7 +300,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
   // 双写：控制台（人看 ✓）+ 文件（agent 读 ✓）
   const logger = {
     info: (m: string): void => { ctx.logger?.info?.(m); fileLog(m) },
-    warn: (m: string): void => { logger.warn(m); fileLog('WARN ' + m) },
+    warn: (m: string): void => { ctx.logger?.warn?.(m); fileLog('WARN ' + m) },
   }
   fileLog(`=== 插件启动：监听 ${cfg.port}（模型 ${cfg.provider}/${cfg.model}）===`)
 
