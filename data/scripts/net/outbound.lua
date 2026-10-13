@@ -6,9 +6,9 @@ package.path = package.path .. ";data/scripts/?.lua"
 -- **不做业务决策**（该不该发是 link_out 的事）。
 --
 -- 协议见 PROTOCOL.md v2：
---   * `id` 与 `type` **都是必填**
---   * `type = "request"`  → 对方必须回 `type = "response"`
---   * `type = "response"` → `cmd` 固定为 `reply`，`id` 必须等于原请求
+--   * 信封 = 元信息：`id` / `type` / `cmd`（答复再加 `ok` / `code` / `message`）
+--   * **`data`** = 载荷：**由 `cmd` 决定其形状** ✓（request 和 response 都叫 data ✓）
+--   * 答复的 `id` 与 **`cmd` 都与请求相同** ✓（`type` 说明问/答，`cmd` 说明在谈什么事 ✓）
 --
 -- 命名空间脚本：表不能清空
 -- namespace CopilotOut
@@ -46,28 +46,36 @@ end
 -- 两种消息类型（协议 v2 的全部形态）
 -- ---------------------------------------------------------------------------
 
--- 请求：对方必须回一个 response
-function CopilotOut.request(cmd, params, id)
+-- 请求：{id, type="request", cmd, data}
+--   `data` 的形状由 `cmd` 决定（例如 query 需要 data.what ✓）
+function CopilotOut.request(cmd, data, id)
     return {
         id = id or CopilotOut.nextId(),
         type = "request",
         cmd = cmd,
-        params = params or {},
+        data = data or {},
     }
 end
 
--- 答复：cmd 固定 reply；ok=false 时带 code/message
---   CopilotOut.reply(id, true, dataTable)
---   CopilotOut.reply(id, false, "NO_SUCH_SHIP", "船名不存在")
-function CopilotOut.reply(id, ok, payloadOrCode, message)
-    local params = { ok = ok and true or false }
-    if params.ok then
-        params.data = payloadOrCode or {}
+-- 答复：{id, type="response", cmd=原 cmd, ok, data?} / 失败时 {..., ok=false, code, message}
+--   ★ cmd 必须与请求相同 → 所以由调用方把它传进来
+--   CopilotOut.reply(id, cmd, true,  {ships = {...}})
+--   CopilotOut.reply(id, cmd, false, "NO_SUCH_SHIP", "船名不存在")
+function CopilotOut.reply(id, cmd, ok, payloadOrCode, message)
+    local msg = {
+        id = id,
+        type = "response",
+        cmd = cmd,
+        ok = ok and true or false,
+    }
+    if msg.ok then
+        msg.data = payloadOrCode or {}
     else
-        params.code = payloadOrCode or "ERROR"
-        if message ~= nil then params.message = tostring(message) end
+        msg.code = payloadOrCode or "ERROR"
+        if message ~= nil then msg.message = tostring(message) end
+        msg.data = {}          -- 失败也给一个空 data，保证形状稳定 ✓
     end
-    return { id = id, type = "response", cmd = "reply", params = params }
+    return msg
 end
 
 -- ---------------------------------------------------------------------------
@@ -87,11 +95,11 @@ function CopilotOut.state(ships)
 end
 
 function CopilotOut.event(kind, extra)
-    local params = { kind = kind }
+    local data = { kind = kind }
     if type(extra) == "table" then
-        for k, v in pairs(extra) do params[k] = v end
+        for k, v in pairs(extra) do data[k] = v end
     end
-    return CopilotOut.request("event", params)
+    return CopilotOut.request("event", data)
 end
 
 -- ---------------------------------------------------------------------------
@@ -105,17 +113,17 @@ function CopilotOut.send(msg)
     return CopilotNet.send(text)
 end
 
--- 构造并发送一个请求：返回 ok, id（失败时 id 为 nil）
-function CopilotOut.sendRequest(cmd, params)
-    local msg = CopilotOut.request(cmd, params)
+-- 构造并发送一个请求：返回 ok, err, id
+function CopilotOut.sendRequest(cmd, data)
+    local msg = CopilotOut.request(cmd, data)
     local ok, err = self.send(msg)
     if not ok then return false, err, nil end
     return true, nil, msg.id
 end
 
--- 构造并发送一个答复
-function CopilotOut.sendReply(id, ok, payloadOrCode, message)
-    local msg = CopilotOut.reply(id, ok, payloadOrCode, message)
+-- 构造并发送一个答复（cmd 必须传原请求的 cmd ✓）
+function CopilotOut.sendReply(id, cmd, ok, payloadOrCode, message)
+    local msg = CopilotOut.reply(id, cmd, ok, payloadOrCode, message)
     return self.send(msg)
 end
 

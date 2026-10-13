@@ -42,8 +42,8 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 ## 2. 消息信封（v2：`id` 与 `type` 都是必填）
 
 ```json
-{"id": 7, "type": "request",  "cmd": "query", "params": {"what": "fleet"}}
-{"id": 7, "type": "response", "cmd": "query", "ok": true, "params": {"ships": []}}
+{"id": 7, "type": "request",  "cmd": "query", "data": {"what": "fleet"}}
+{"id": 7, "type": "response", "cmd": "query", "ok": true, "data": {"ships": []}}
 ```
 
 | 字段 | 必填 | 说明 |
@@ -51,7 +51,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | `id` | **✓ 必填** | 发起方生成，**单条连接内唯一**（建议整数自增） |
 | `type` | **✓ 必填** | `request` 或 `response` |
 | `cmd` | ✓ 必填 | 命令名（见 §3） |
-| `params` | 可选 | **纯业务数据**（信封只管元信息 ✓） |
+| `data` | 可选 | ★ **载荷**：**由 `cmd` 决定其形状** ✓（请求与答复同名 ✓）<br>信封只管元信息 ✓ |
 | `ok` | 答复必填 | `type="response"` 时必填：成功与否 |
 | `code` | 失败时 | 稳定的 `SCREAMING_SNAKE` 错误码 |
 | `message` | 失败时 | 人类可读的说明（可选，便于排查） |
@@ -66,7 +66,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 3. **每个 `request` 都必须得到一个 `response`** ✓ —— **没有例外** ✓✓，
    `state`/`event` 这类推送也是 `request`（它们的 ack 就是 `cmd` 相同的 `response` ✓）：
    ```json
-   {"id":9,"type":"request", "cmd":"state","params":{"ships":[...]}}
+   {"id":9,"type":"request", "cmd":"state","data":{"ships":[...]}}
    {"id":9,"type":"response","cmd":"state","ok":true}
    ```
    > ★ 这个 ack **顺便就是心跳** ✓✓ —— ack 约 40 字节 ✓，即使每秒推一次也就是 40 B/s ✓，
@@ -100,14 +100,14 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 ### 4.1 请求
 
 ```json
-{"id": 7, "type": "request", "cmd": "query", "params": {"what": "fleet"}}
-{"id": 8, "type": "request", "cmd": "query", "params": {"what": "ship", "ship": "Miner-00002"}}
-{"id": 9, "type": "request", "cmd": "query", "params": {"what": "orderSchema", "ship": "Miner-00002"}}
+{"id": 7, "type": "request", "cmd": "query", "data": {"what": "fleet"}}
+{"id": 8, "type": "request", "cmd": "query", "data": {"what": "ship", "ship": "Miner-00002"}}
+{"id": 9, "type": "request", "cmd": "query", "data": {"what": "orderSchema", "ship": "Miner-00002"}}
 ```
 
 ### 4.2 第一期的 `what`
 
-| what | params | 返回 |
+| what | data | 返回 |
 |---|---|---|
 | `fleet` | — | **全部名单船**的快照数组（§5） |
 | `ship` | `ship` | 单船快照 |
@@ -122,12 +122,12 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 ### 4.3 答复
 
 ```json
-{"id": 7, "type": "response", "cmd": "query", "ok": true,  "params": {"ships": [ ... ]}}
+{"id": 7, "type": "response", "cmd": "query", "ok": true,  "data": {"ships": [ ... ]}}
 {"id": 8, "type": "response", "cmd": "query", "ok": false, "code": "NO_SUCH_SHIP", "message": "..."}
 ```
 
 - `ok: false` 时**不抛异常也不断连** ✗ —— 只回错误码 ✓（工具调用失败是正常业务 ✓）
-- 成功时 `params` 的形状由 `what` 决定 ✓（§5）
+- 成功时 `data` 的形状由 `what` 决定 ✓（§5）
 
 ---
 
@@ -188,29 +188,29 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 注意：**每条答复的 `cmd` 都等于对应请求的 `cmd`** ✓
 
 ```
-DLL → DSH   {"id":1,"type":"request", "cmd":"hello","params":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
+DLL → DSH   {"id":1,"type":"request", "cmd":"hello","data":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
 DSH → DLL   {"id":1,"type":"response","cmd":"hello","ok":true}
 
-DSH → DLL   {"id":2,"type":"request", "cmd":"hello","params":{"ver":2,"side":"dsh"}}
+DSH → DLL   {"id":2,"type":"request", "cmd":"hello","data":{"ver":2,"side":"dsh"}}
 DLL → DSH   {"id":2,"type":"response","cmd":"hello","ok":true}
 
-DSH → DLL   {"id":3,"type":"request", "cmd":"query","params":{"what":"fleet"}}
-DLL → DSH   {"id":3,"type":"response","cmd":"query","ok":true,"params":{"ships":[
+DSH → DLL   {"id":3,"type":"request", "cmd":"query","data":{"what":"fleet"}}
+DLL → DSH   {"id":3,"type":"response","cmd":"query","ok":true,"data":{"ships":[
                 {"name":"Miner-00002","busy":true,"hasCaptain":true,"status":"正在采矿","sector":[-394,74]},
                 {"name":"Trader-00001","busy":true,"hasCaptain":true,"status":"交易","sector":[-412,73]}
             ]}}
 
-DSH → DLL   {"id":4,"type":"request", "cmd":"query","params":{"what":"orderSchema","ship":"Miner-00002"}}
-DLL → DSH   {"id":4,"type":"response","cmd":"query","ok":true,"params":{"orderSchema":{ /* 不透明表，透传给模型 */ }}}
+DSH → DLL   {"id":4,"type":"request", "cmd":"query","data":{"what":"orderSchema","ship":"Miner-00002"}}
+DLL → DSH   {"id":4,"type":"response","cmd":"query","ok":true,"data":{"orderSchema":{ /* 不透明表，透传给模型 */ }}}
 
-DSH → DLL   {"id":5,"type":"request", "cmd":"order","params":{"ship":"Miner-00002","action":"Mine","x":-394,"y":74,"size":5}}
-DLL → DSH   {"id":5,"type":"response","cmd":"order","ok":true,"params":{"detail":"command started"}}
+DSH → DLL   {"id":5,"type":"request", "cmd":"order","data":{"ship":"Miner-00002","action":"Mine","x":-394,"y":74,"size":5}}
+DLL → DSH   {"id":5,"type":"response","cmd":"order","ok":true,"data":{"detail":"command started"}}
 
-DLL → DSH   {"id":6,"type":"request", "cmd":"event","params":{"kind":"background_finished","ship":"Miner-00002"}}
+DLL → DSH   {"id":6,"type":"request", "cmd":"event","data":{"kind":"background_finished","ship":"Miner-00002"}}
 DSH → DLL   {"id":6,"type":"response","cmd":"event","ok":true}
 
-DSH → DLL   {"id":7,"type":"request", "cmd":"reload","params":{}}
-DLL → DSH   {"id":7,"type":"response","cmd":"reload","ok":true,"params":{"detail":"9 ok, 1 failed"}}
+DSH → DLL   {"id":7,"type":"request", "cmd":"reload","data":{}}
+DLL → DSH   {"id":7,"type":"response","cmd":"reload","ok":true,"data":{"detail":"9 ok, 1 failed"}}
 ```
 ## 9. Lua 侧 API 形状（v1 已实现，只需补 `id`/`type`）
 
@@ -218,7 +218,7 @@ DLL → DSH   {"id":7,"type":"response","cmd":"reload","ok":true,"params":{"deta
 local net = require("copilot")
 net.connect("127.0.0.1", 8765)              -- 非阻塞
 net.connected()                             -- bool
-net.send({id = 1, type = "request", cmd = "state", params = {...}})
+net.send({id = 1, type = "request", cmd = "state", data = {...}})
 local msg = net.recv()                      -- 非阻塞；完整一帧则返回 table
 net.close()
 ```
@@ -246,4 +246,5 @@ net.close()
 | 10 | 两端 `id` 是否冲突 | ❌ 不冲突 —— `type` 已区分方向 ✓，各自只在自己的待答复表里匹配 ✓ |
 | 11 | 超时 | `query` 5 秒无答复即超时 ✓；**`order` 不自动重试** ✗（下命令有副作用 ✓） |
 | 12 | `event.kind` | 先留 `connected` / `background_finished` / `attacked` ✓，允许自由扩展 ✓ |
-| 13 | ★ **答复的元信息位置** | ✅ `ok` / `code` / `message` **放在信封层**（不在 `params` 里）—— 于是 **`params` 只装业务数据**，边界干净 ✓ |
+| 13 | ★ **答复的元信息位置** | ✅ `ok` / `code` / `message` **放在信封层**（不在 `data` 里）—— 于是 **`data` 只装业务数据**，边界干净 ✓ |
+| 14 | ★ **`data` 的语义与命名** | ✅ 原 `data` **改名 `data`** ✓ —— 它就是「**请求或答复携带的数据**」✓，**要什么形状由 `cmd` 决定** ✓（`cmd` 是类型，`data` 是载荷 ✓） |
