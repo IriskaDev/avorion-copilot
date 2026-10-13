@@ -238,7 +238,7 @@ net.close()
 | 2 | `type` | ✅ **必填**，`request` / `response` |
 | 3 | ★ **答复的 `cmd`** | ✅ **与请求相同**（不是统一的 `reply` ✓）—— `type` 与 `cmd` 正交 ✓ |
 | 4 | 每个 `request` 必须被答复 | ✅ **没有例外**（推送也要 ack ✓）→ **ack 即心跳** ✓ |
-| 5 | 响应体形状 | ✅ **平铺**：`{ok:true, ships:[...]}`（不套 `data` 一层 ✓） |
+| 5 | 响应载荷的层级 | ✅ **只有一层**：载荷直接放在 `data` 里 ✓ —— `{"ok":true,"data":{"ships":[...]}}`（**不要** `data.data` ✓） |
 | 6 | 独立 `error` 类型 | ❌ 不要 —— 业务失败走 `type=response, ok=false` ✓；`error` 只用于**协议层**错误 ✓ |
 | 7 | 错误码清单 | 先不定 ✓，只要求稳定的 `SCREAMING_SNAKE` ✓ |
 | 8 | `orderSchema` 形状 | ✅ **不定死** —— 返回**不透明表** ✓，DSH 透传给模型 ✓（游戏侧为真相来源 ✓） |
