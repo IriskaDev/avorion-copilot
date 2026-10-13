@@ -18,6 +18,27 @@ CopilotRpc = CopilotRpc or {}
 
 local self = CopilotRpc
 
+-- ---------------------------------------------------------------------------
+-- ★ 追踪（排查服务端进程猝死用 ✓）
+--
+-- 游戏侧 io.open 只允许 moddata/ 开头 ✓（本项目早验证过 ✓）→ 写到磁盘，agent 能读 ✓。
+-- 这是**重证据**手段：进程猝死时日志戛然而止，必须知道"最后执行到哪一步" ✓。
+-- ---------------------------------------------------------------------------
+
+self.tracing = self.tracing ~= false       -- 排查期间默认开 ✓
+
+function CopilotRpc.trace(text)
+    if not self.tracing then return end
+    local ok = pcall(function()
+        local fh = io.open("moddata/copilot/rpc_trace.log", "a")
+        if fh == nil then return end
+        fh:write(string.format("%s  %s\n", os.date("%H:%M:%S"), text))
+        fh:close()
+    end)
+    -- 追踪失败绝不影响主流程 ✓ —— 而且**不报错**，避免刷屏
+    if not ok then self.tracing = false end
+end
+
 -- 我提供的功能：cmd -> handler(data) -> ok, dataOrCode, message
 self.handlers = self.handlers or {}
 
@@ -65,9 +86,11 @@ function CopilotRpc.call(cmd, data, callback, timeoutSec)
         deadline = os.clock() + (timeoutSec or self.DEFAULT_TIMEOUT),
     }
 
+    CopilotRpc.trace("call 发出 cmd=" .. tostring(cmd) .. " id=" .. tostring(id))
     local ok, err = CopilotOut.send(msg)
     if not ok then
         self.pending[id] = nil
+        CopilotRpc.trace("call **发送失败** cmd=" .. tostring(cmd) .. " err=" .. tostring(err))
         return false, err
     end
 
@@ -81,6 +104,7 @@ end
 
 -- 答复：{id, type="response", cmd, ok, data?, code?, message?}
 function CopilotRpc.onResponse(msg)
+    CopilotRpc.trace("  response: ok=" .. tostring(msg.ok) .. " cmd=" .. tostring(msg.cmd))
     local entry = self.pending[msg.id]
     if entry == nil then
         -- 协议 §2 铁律 4：id 未知的答复 → 丢弃并记日志 ✓（不崩、不断连 ✓）
@@ -91,7 +115,9 @@ function CopilotRpc.onResponse(msg)
     self.pending[msg.id] = nil
 
     if type(entry.callback) == "function" then
+        CopilotRpc.trace("  调用回调 cmd=" .. tostring(entry.cmd))
         local ok = { pcall(entry.callback, msg.ok and true or false, msg.data, msg.message or msg.code) }
+        CopilotRpc.trace("  回调返回 ok=" .. tostring(ok[1]))
         if not ok[1] then
             CopilotNet.emit("error", "rpc callback for " .. tostring(entry.cmd) .. " failed: " .. tostring(ok[2]))
         end
@@ -101,6 +127,8 @@ end
 -- 请求：{id, type="request", cmd, data}
 function CopilotRpc.onRequest(msg)
     self.stats.received = self.stats.received + 1
+
+    CopilotRpc.trace("  request: 查 handler cmd=" .. tostring(msg.cmd))
 
     local fn = self.handlers[msg.cmd]
     if fn == nil then
@@ -120,12 +148,15 @@ function CopilotRpc.onRequest(msg)
     local ok = r[2] and true or false
     local payload = r[3]
     local message = r[4]
+    CopilotRpc.trace("  准备答复 ok=" .. tostring(ok) .. " cmd=" .. tostring(msg.cmd))
     CopilotOut.sendReply(msg.id, msg.cmd, ok, payload, message)
+    CopilotRpc.trace("  答复已发出 id=" .. tostring(msg.id))
     self.stats.answered = self.stats.answered + 1
 end
 
 function CopilotRpc.dispatch(msg)
     if type(msg) ~= "table" then return end
+    CopilotRpc.trace("dispatch type=" .. tostring(msg.type) .. " cmd=" .. tostring(msg.cmd) .. " id=" .. tostring(msg.id))
     if msg.type == "response" then
         CopilotRpc.onResponse(msg)
     elseif msg.type == "request" then

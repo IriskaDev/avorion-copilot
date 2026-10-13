@@ -40,16 +40,22 @@ end
 
 -- query：**这就是"眼睛"** ✓ —— DSH 靠它拿游戏事实，不需要截图 ✓✓
 function CopilotLinkIn.onQuery(data)
+    CopilotRpc.trace("onQuery what=" .. tostring(data and data.what))
     data = data or {}
     local what = data.what
 
     local player = Player()
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
+    CopilotRpc.trace("  include copilotcard…")
     local Card = include("copilotcard")     -- 与 ops.lua 共用同一份读取逻辑 ✓（跨 VM 的唯一办法 ✓）
+    CopilotRpc.trace("  copilotcard 就绪，开始读舰队…")
 
     if what == "fleet" then
-        return true, Card.fleetSnapshot(player)
+        CopilotRpc.trace("  调 fleetSnapshot…")
+        local snap = Card.fleetSnapshot(player)
+        CopilotRpc.trace("  fleetSnapshot 返回，船数=" .. tostring(#(snap.ships or {})))
+        return true, snap
 
     elseif what == "ship" then
         local name = data.ship

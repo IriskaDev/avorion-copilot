@@ -125,6 +125,7 @@ function CopilotNet.updateServer()
     for _ = 1, 32 do
         local text = cp.recv()
         if text == nil then break end
+        CopilotRpc.trace("收到一帧 " .. tostring(#text) .. " 字节")
         CopilotNet.emit("message", text)    -- 原始文本；解析交给 inbound
     end
 
