@@ -100,9 +100,11 @@ function CopilotNet.updateServer()
     -- 连接状态变化 → 事件（"connected" / "disconnected"）
     if connected and self.state ~= "ready" then
         self.state = "ready"
+        CopilotNet.report("已连接 ✓ 开始发 hello")
         CopilotNet.emit("connected", nil)
     elseif not connected and self.state == "ready" then
         self.state = "dead"
+        CopilotNet.report("连接断开 ✗ 将自动重连")
         if CopilotRpc ~= nil then CopilotRpc.reset() end   -- 待答复全部作废 ✓
         CopilotNet.emit("disconnected", nil)
     end
@@ -135,6 +137,18 @@ function CopilotNet.updateServer()
     end
 end
 
+-- ★ 状态汇报：走 chat，因为 chat **一定**进客户端日志 ✓（已实测 ✓），
+-- 而 io.open 写文件可能被静默拦掉 ✗ —— 排查期间必须用看得见的通道 ✓。
+function CopilotNet.report(text)
+    local ok = pcall(function()
+        local p = Player()
+        if p ~= nil then
+            p:sendChatMessage("Server", ChatMessageType.Information, "[net] " .. text)
+        end
+    end)
+    return ok
+end
+
 function CopilotNet.initialize()
     if self.handlersReady then return end
     self.handlersReady = true
@@ -151,7 +165,9 @@ function CopilotNet.initialize()
     self.linkOut.install()          -- game -> DSH
     self.linkIn.install()           -- DSH -> game
 
-    CopilotNet.connect()
+    CopilotNet.report("initialize：即将连接 127.0.0.1:" .. tostring(self.port))
+    local okc = CopilotNet.connect()
+    CopilotNet.report("connect() 返回 " .. tostring(okc) .. "  state=" .. tostring(self.state))
 end
 
 return CopilotNet

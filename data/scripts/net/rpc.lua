@@ -36,7 +36,13 @@ function CopilotRpc.trace(text)
         fh:close()
     end)
     -- 追踪失败绝不影响主流程 ✓ —— 而且**不报错**，避免刷屏
-    if not ok then self.tracing = false end
+    if not ok then
+        self.tracing = false
+        -- ★ 写文件失败要**说出来** ✗ → 否则静默失效、排查时看不见 ✓
+        if CopilotNet ~= nil and CopilotNet.report ~= nil then
+            CopilotNet.report("警告：io.open 写 rpc_trace.log 失败，追踪已关闭")
+        end
+    end
 end
 
 -- 我提供的功能：cmd -> handler(data) -> ok, dataOrCode, message
