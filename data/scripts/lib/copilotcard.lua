@@ -27,9 +27,27 @@ local M = {}
 -- 安全调用：成功返回 (true, 值...)，失败返回 (false, 错误)
 local function probe(obj, method, ...)
     if obj == nil then return false, "nil object" end
-    if obj[method] == nil then return false, method .. " is nil" end
-    local r = { pcall(obj[method], obj, ...) }
+
+    -- ★★ 关键修复（真崩过一次 ✗→✓）
+    --
+    -- 之前写成：
+    --     if obj[method] == nil then ... end      ← 这一步是**索引 userdata**
+    --     local r = { pcall(obj[method], obj, ...) }
+    -- pcall 只包住了"调用"，**没包住"查找"** ✗ —— 而按 AGENTS.md 的实测结论：
+    -- userdata 上**拼错成员名会直接 AV**（不是返回 nil ✗），pcall 拦不住 ✓✓。
+    --
+    -- 2026-10-13 23:21:49 的 `Stacktrace Sender` 就是它 —— 服务端当场崩溃 ✓。
+    --
+    -- 正确写法：**查找与调用都放进 pcall 里** ✓。
+    local args = { ... }
+    local r = { pcall(function()
+        local fn = obj[method]        -- 查找在 pcall 内 ✓
+        if fn == nil then return nil, "member missing" end
+        return fn(obj, table.unpack(args, 1, #args))
+    end) }
+
     if not r[1] then return false, tostring(r[2]) end
+    if r[2] == nil and r[3] == "member missing" then return false, method .. " is nil" end
     return true, table.unpack(r, 2, #r)
 end
 
