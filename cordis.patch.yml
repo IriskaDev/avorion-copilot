@@ -1,0 +1,6 @@
+# dsh-avorion-copilot bundle 层：插入宿主平面 avorion-copilot 插件行。
+# 官方装配后由 bundles 在启动时挂载。
+- insert:
+    - id: avorion-copilot
+      name: '@dsh-external/dsh-avorion-copilot'
+      config: {}
