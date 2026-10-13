@@ -43,7 +43,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 
 ```json
 {"id": 7, "type": "request",  "cmd": "query", "params": {"what": "fleet"}}
-{"id": 7, "type": "response", "cmd": "reply", "params": {"ok": true, "data": {}}}
+{"id": 7, "type": "response", "cmd": "query", "ok": true, "params": {"ships": []}}
 ```
 
 | 字段 | 必填 | 说明 |
@@ -51,7 +51,10 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | `id` | **✓ 必填** | 发起方生成，**单条连接内唯一**（建议整数自增） |
 | `type` | **✓ 必填** | `request` 或 `response` |
 | `cmd` | ✓ 必填 | 命令名（见 §3） |
-| `params` | 可选 | 该命令的参数对象 |
+| `params` | 可选 | **纯业务数据**（信封只管元信息 ✓） |
+| `ok` | 答复必填 | `type="response"` 时必填：成功与否 |
+| `code` | 失败时 | 稳定的 `SCREAMING_SNAKE` 错误码 |
+| `message` | 失败时 | 人类可读的说明（可选，便于排查） |
 
 ### 铁律
 
@@ -64,7 +67,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
    `state`/`event` 这类推送也是 `request`（它们的 ack 就是 `cmd` 相同的 `response` ✓）：
    ```json
    {"id":9,"type":"request", "cmd":"state","params":{"ships":[...]}}
-   {"id":9,"type":"response","cmd":"state","params":{"ok":true}}
+   {"id":9,"type":"response","cmd":"state","ok":true}
    ```
    > ★ 这个 ack **顺便就是心跳** ✓✓ —— ack 约 40 字节 ✓，即使每秒推一次也就是 40 B/s ✓，
    > **因此不需要单独的心跳机制** ✓✓
@@ -84,7 +87,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | `reload` | DSH → 游戏 | 触发热重载：`{which?: "ops"}` |
 | `state` | 游戏 → DSH | 舰队快照推送（是否开启由 DSH 决定 ✓） |
 | `event` | 游戏 → DSH | 自发事件：`{kind: "connected"\|"background_finished"\|"attacked", ...}` |
-| （任意 cmd） | 被请求方 → 请求方 | ★ **答复不单列命令** —— 它就是 `type="response"` 且 **`cmd` 与请求相同**：`{ok, data \| code, message}` |
+| （任意 cmd） | 被请求方 → 请求方 | ★ **答复不单列命令** —— `type="response"`、**`cmd` 与请求相同**，`ok`/`code`/`message` 在**信封**层 |
 | `error` | 双向 | **协议层**错误（缺 id/type/cmd、形状非法）：`{code, message}` |
 
 > **`state` 与 `query` 的分工** ✓：`state` 是游戏**主动推**（流式观察 ✓）；
@@ -119,12 +122,12 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 ### 4.3 答复
 
 ```json
-{"id": 7, "type": "response", "cmd": "reply", "params": {"ok": true, "data": {"ships": [ ... ]}}}
-{"id": 8, "type": "response", "cmd": "reply", "params": {"ok": false, "code": "NO_SUCH_SHIP", "message": "..."}}
+{"id": 7, "type": "response", "cmd": "query", "ok": true,  "params": {"ships": [ ... ]}}
+{"id": 8, "type": "response", "cmd": "query", "ok": false, "code": "NO_SUCH_SHIP", "message": "..."}
 ```
 
 - `ok: false` 时**不抛异常也不断连** ✗ —— 只回错误码 ✓（工具调用失败是正常业务 ✓）
-- `data` 形状由 `what` 决定 ✓（§5）
+- 成功时 `params` 的形状由 `what` 决定 ✓（§5）
 
 ---
 
@@ -186,28 +189,28 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 
 ```
 DLL → DSH   {"id":1,"type":"request", "cmd":"hello","params":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
-DSH → DLL   {"id":1,"type":"response","cmd":"hello","params":{"ok":true}}
+DSH → DLL   {"id":1,"type":"response","cmd":"hello","ok":true}
 
 DSH → DLL   {"id":2,"type":"request", "cmd":"hello","params":{"ver":2,"side":"dsh"}}
-DLL → DSH   {"id":2,"type":"response","cmd":"hello","params":{"ok":true}}
+DLL → DSH   {"id":2,"type":"response","cmd":"hello","ok":true}
 
 DSH → DLL   {"id":3,"type":"request", "cmd":"query","params":{"what":"fleet"}}
-DLL → DSH   {"id":3,"type":"response","cmd":"query","params":{"ok":true,"ships":[
+DLL → DSH   {"id":3,"type":"response","cmd":"query","ok":true,"params":{"ships":[
                 {"name":"Miner-00002","busy":true,"hasCaptain":true,"status":"正在采矿","sector":[-394,74]},
                 {"name":"Trader-00001","busy":true,"hasCaptain":true,"status":"交易","sector":[-412,73]}
             ]}}
 
 DSH → DLL   {"id":4,"type":"request", "cmd":"query","params":{"what":"orderSchema","ship":"Miner-00002"}}
-DLL → DSH   {"id":4,"type":"response","cmd":"query","params":{"ok":true,"orderSchema":{ /* 不透明表，透传给模型 */ }}}
+DLL → DSH   {"id":4,"type":"response","cmd":"query","ok":true,"params":{"orderSchema":{ /* 不透明表，透传给模型 */ }}}
 
 DSH → DLL   {"id":5,"type":"request", "cmd":"order","params":{"ship":"Miner-00002","action":"Mine","x":-394,"y":74,"size":5}}
-DLL → DSH   {"id":5,"type":"response","cmd":"order","params":{"ok":true,"detail":"command started"}}
+DLL → DSH   {"id":5,"type":"response","cmd":"order","ok":true,"params":{"detail":"command started"}}
 
 DLL → DSH   {"id":6,"type":"request", "cmd":"event","params":{"kind":"background_finished","ship":"Miner-00002"}}
-DSH → DLL   {"id":6,"type":"response","cmd":"event","params":{"ok":true}}
+DSH → DLL   {"id":6,"type":"response","cmd":"event","ok":true}
 
 DSH → DLL   {"id":7,"type":"request", "cmd":"reload","params":{}}
-DLL → DSH   {"id":7,"type":"response","cmd":"reload","params":{"ok":true,"detail":"9 ok, 1 failed"}}
+DLL → DSH   {"id":7,"type":"response","cmd":"reload","ok":true,"params":{"detail":"9 ok, 1 failed"}}
 ```
 ## 9. Lua 侧 API 形状（v1 已实现，只需补 `id`/`type`）
 
@@ -243,3 +246,4 @@ net.close()
 | 10 | 两端 `id` 是否冲突 | ❌ 不冲突 —— `type` 已区分方向 ✓，各自只在自己的待答复表里匹配 ✓ |
 | 11 | 超时 | `query` 5 秒无答复即超时 ✓；**`order` 不自动重试** ✗（下命令有副作用 ✓） |
 | 12 | `event.kind` | 先留 `connected` / `background_finished` / `attacked` ✓，允许自由扩展 ✓ |
+| 13 | ★ **答复的元信息位置** | ✅ `ok` / `code` / `message` **放在信封层**（不在 `params` 里）—— 于是 **`params` 只装业务数据**，边界干净 ✓ |
