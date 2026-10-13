@@ -56,13 +56,21 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 ### 铁律
 
 1. **`response` 的 `id` 必须等于对应 `request` 的 `id`** ✓✓
-2. **每个 `request` 都必须得到一个 `response`** ✓ —— 包括 `event`/`state` 这类"通知"：
-   对方回一个 `{"ok":true}` 即可 ✓✓
-   > ★ 这个 ack **顺便就是心跳** —— 因此**不需要单独的心跳机制** ✓✓
-3. `response` 的 `cmd` **固定为 `reply`** ✓（表示"这是对某请求的答复"，
-   具体是什么答复看 `params` ✓）；`order`/`reload` 的答复同样走 `reply` ✓
+2. ★ **`response` 的 `cmd` 必须等于对应 `request` 的 `cmd`** ✓✓
+   —— 请求与答复**成对同题** ✓：`type` 说明"是问还是答" ✓，`cmd` 说明"在谈什么事" ✓，
+   两者**正交**、组合起来才完整 ✓。
+   > 好处：日志一行自解释 ✓；两端可**按 `cmd` 共用一张分发表** ✓（每个 cmd 一个请求入口 + 一个答复入口 ✓）
+3. **每个 `request` 都必须得到一个 `response`** ✓ —— **没有例外** ✓✓，
+   `state`/`event` 这类推送也是 `request`（它们的 ack 就是 `cmd` 相同的 `response` ✓）：
+   ```json
+   {"id":9,"type":"request", "cmd":"state","params":{"ships":[...]}}
+   {"id":9,"type":"response","cmd":"state","params":{"ok":true}}
+   ```
+   > ★ 这个 ack **顺便就是心跳** ✓✓ —— ack 约 40 字节 ✓，即使每秒推一次也就是 40 B/s ✓，
+   > **因此不需要单独的心跳机制** ✓✓
 4. 收到 **`id` 未知的 `response`** → **丢弃并记日志** ✗，不崩、不断连 ✓
-5. 收到 **`type` 非法 / `id` 缺失** 的帧 → 回 `error` ✓ 并记日志 ✓（协议错误但仍保持连接 ✓）
+5. 收到 **`type` 非法 / `id` 缺失 / `cmd` 缺失** 的帧 → 回 `error`（其 `cmd` 用 `"error"` ✓）
+   并记日志 ✓（协议错误但仍保持连接 ✓）
 
 ---
 
@@ -76,8 +84,8 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 | `reload` | DSH → 游戏 | 触发热重载：`{which?: "ops"}` |
 | `state` | 游戏 → DSH | 舰队快照推送（是否开启由 DSH 决定 ✓） |
 | `event` | 游戏 → DSH | 自发事件：`{kind: "connected"\|"background_finished"\|"attacked", ...}` |
-| `reply` | 被请求方 → 请求方 | **所有答复统一走这条**：`{ok, data \| code, message}` |
-| `error` | 双向 | 协议层错误：`{code, message}` |
+| （任意 cmd） | 被请求方 → 请求方 | ★ **答复不单列命令** —— 它就是 `type="response"` 且 **`cmd` 与请求相同**：`{ok, data \| code, message}` |
+| `error` | 双向 | **协议层**错误（缺 id/type/cmd、形状非法）：`{code, message}` |
 
 > **`state` 与 `query` 的分工** ✓：`state` 是游戏**主动推**（流式观察 ✓）；
 > `query` 是 DSH **按需拉**（工具调用 ✓✓）。两者**数据形状完全一致**（§5 ✓）✓
@@ -174,37 +182,33 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 
 ## 8. 一次完整交互（跑通即说明整条链好了）
 
+注意：**每条答复的 `cmd` 都等于对应请求的 `cmd`** ✓
+
 ```
-DLL → DSH   {"id":1,"type":"request","cmd":"hello","params":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
-DSH → DLL   {"id":1,"type":"response","cmd":"reply","params":{"ok":true}}
+DLL → DSH   {"id":1,"type":"request", "cmd":"hello","params":{"ver":2,"side":"game","caps":["fleet","ship","orderSchema"]}}
+DSH → DLL   {"id":1,"type":"response","cmd":"hello","params":{"ok":true}}
 
-DSH → DLL   {"id":2,"type":"request","cmd":"hello","params":{"ver":2,"side":"dsh"}}
-DLL → DSH   {"id":2,"type":"response","cmd":"reply","params":{"ok":true}}
+DSH → DLL   {"id":2,"type":"request", "cmd":"hello","params":{"ver":2,"side":"dsh"}}
+DLL → DSH   {"id":2,"type":"response","cmd":"hello","params":{"ok":true}}
 
-DSH → DLL   {"id":3,"type":"request","cmd":"query","params":{"what":"fleet"}}
-DLL → DSH   {"id":3,"type":"response","cmd":"reply","params":{"ok":true,"data":{"ships":[
+DSH → DLL   {"id":3,"type":"request", "cmd":"query","params":{"what":"fleet"}}
+DLL → DSH   {"id":3,"type":"response","cmd":"query","params":{"ok":true,"ships":[
                 {"name":"Miner-00002","busy":true,"hasCaptain":true,"status":"正在采矿","sector":[-394,74]},
                 {"name":"Trader-00001","busy":true,"hasCaptain":true,"status":"交易","sector":[-412,73]}
-            ]}}}
+            ]}}
 
-DSH → DLL   {"id":4,"type":"request","cmd":"query","params":{"what":"orderSchema","ship":"Miner-00002"}}
-DLL → DSH   {"id":4,"type":"response","cmd":"reply","params":{"ok":true,"data":{"actions":[
-                {"action":"Mine","areaSize":{"min":3,"max":8},"areaFixed":false,"shipRequiredInArea":false,
-                 "config":{"refinedMining":{"type":"bool"},"rawMining":{"type":"bool"}}}
-            ]}}}
+DSH → DLL   {"id":4,"type":"request", "cmd":"query","params":{"what":"orderSchema","ship":"Miner-00002"}}
+DLL → DSH   {"id":4,"type":"response","cmd":"query","params":{"ok":true,"orderSchema":{ /* 不透明表，透传给模型 */ }}}
 
-DSH → DLL   {"id":5,"type":"request","cmd":"order","params":{"ship":"Miner-00002","action":"Mine","x":-394,"y":74,"size":5}}
-DLL → DSH   {"id":5,"type":"response","cmd":"reply","params":{"ok":true,"data":{"detail":"command started"}}}
+DSH → DLL   {"id":5,"type":"request", "cmd":"order","params":{"ship":"Miner-00002","action":"Mine","x":-394,"y":74,"size":5}}
+DLL → DSH   {"id":5,"type":"response","cmd":"order","params":{"ok":true,"detail":"command started"}}
 
-DLL → DSH   {"id":6,"type":"request","cmd":"event","params":{"kind":"background_finished","ship":"Miner-00002"}}
-DSH → DLL   {"id":6,"type":"response","cmd":"reply","params":{"ok":true}}
+DLL → DSH   {"id":6,"type":"request", "cmd":"event","params":{"kind":"background_finished","ship":"Miner-00002"}}
+DSH → DLL   {"id":6,"type":"response","cmd":"event","params":{"ok":true}}
 
-DSH → DLL   {"id":7,"type":"request","cmd":"reload","params":{}}
-DLL → DSH   {"id":7,"type":"response","cmd":"reply","params":{"ok":true,"data":{"detail":"9 ok, 1 failed"}}}
+DSH → DLL   {"id":7,"type":"request", "cmd":"reload","params":{}}
+DLL → DSH   {"id":7,"type":"response","cmd":"reload","params":{"ok":true,"detail":"9 ok, 1 failed"}}
 ```
-
----
-
 ## 9. Lua 侧 API 形状（v1 已实现，只需补 `id`/`type`）
 
 ```lua
@@ -223,11 +227,19 @@ net.close()
 
 ---
 
-## 10. 主人的三条批注（已采纳 ✓）
+## 10. 讨论结论（2026-10-13 与主人逐条确认）
 
-1. ✅ **`id` 改为必填** ✓
-2. ✅ **加 `type`，分 `request`/`response`** ✓
-3. ⏳ **`state` 保留还是砍掉** —— 还没说 ✓。
-   本鱼的建议：**保留但默认关闭** ✓ —— DSH 想要实时流时发一条
-   `{"cmd":"query","params":{"what":"subscribe","what2":"state"}}` ✗ hmm ——
-   hmm，更简单：**保留 `state`，由 DSH 侧配置决定开不开** ✓（默认开，嫌吵就关 ✓）
+| # | 议题 | 结论 |
+|---|---|---|
+| 1 | `id` | ✅ **必填** |
+| 2 | `type` | ✅ **必填**，`request` / `response` |
+| 3 | ★ **答复的 `cmd`** | ✅ **与请求相同**（不是统一的 `reply` ✓）—— `type` 与 `cmd` 正交 ✓ |
+| 4 | 每个 `request` 必须被答复 | ✅ **没有例外**（推送也要 ack ✓）→ **ack 即心跳** ✓ |
+| 5 | 响应体形状 | ✅ **平铺**：`{ok:true, ships:[...]}`（不套 `data` 一层 ✓） |
+| 6 | 独立 `error` 类型 | ❌ 不要 —— 业务失败走 `type=response, ok=false` ✓；`error` 只用于**协议层**错误 ✓ |
+| 7 | 错误码清单 | 先不定 ✓，只要求稳定的 `SCREAMING_SNAKE` ✓ |
+| 8 | `orderSchema` 形状 | ✅ **不定死** —— 返回**不透明表** ✓，DSH 透传给模型 ✓（游戏侧为真相来源 ✓） |
+| 9 | `state` 推送 | ✅ **保留** ✓，由 DSH 侧配置决定开关 ✓ |
+| 10 | 两端 `id` 是否冲突 | ❌ 不冲突 —— `type` 已区分方向 ✓，各自只在自己的待答复表里匹配 ✓ |
+| 11 | 超时 | `query` 5 秒无答复即超时 ✓；**`order` 不自动重试** ✗（下命令有副作用 ✓） |
+| 12 | `event.kind` | 先留 `connected` / `background_finished` / `attacked` ✓，允许自由扩展 ✓ |
