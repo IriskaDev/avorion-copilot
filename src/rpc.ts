@@ -28,8 +28,11 @@ export interface Envelope {
   message?: string
 }
 
-/** handler 返回值：[ok, payload, message?]；ok=false 时 payload 当作 code */
-export type Handler = (data: any) => [boolean, any?, string?]
+/** handler 返回值：[ok, payload, message?]；ok=false 时 payload 当作 code。
+ *  ★ 允许 async —— `decide` 要等模型好几秒 ✓（协议 §6：绝不允许阻塞主循环 ✓，
+ *  所以这里 await 的是**这条连接的处理**，不是游戏的主线程 ✓✓） */
+export type HandlerResult = [boolean, any?, string?]
+export type Handler = (data: any) => HandlerResult | Promise<HandlerResult>
 
 /** 答复回调：与 handler 返回值同形 */
 export type ReplyCallback = (ok: boolean, payload?: any, why?: string) => void
@@ -220,7 +223,11 @@ export class RpcPeer {
       return
     }
     if (msg.type === 'response') return this.onResponse(msg)
-    if (msg.type === 'request') return this.onRequest(msg)
+    if (msg.type === 'request') {
+      // ★ 不 await：一条慢 handler（decide 等模型）不许卡住收帧循环 ✓（协议 §6）
+      void this.onRequest(msg).catch((err) => this.warn(`onRequest 异常: ${String(err)}`))
+      return
+    }
     this.warn(`非法 type: ${String(msg.type)}`)
   }
 
@@ -245,7 +252,7 @@ export class RpcPeer {
     }
   }
 
-  private onRequest(msg: Envelope): void {
+  private async onRequest(msg: Envelope): Promise<void> {
     this.log(`>>> request id=${msg.id} cmd=${msg.cmd} data=${JSON.stringify(msg.data ?? {}).slice(0, 300)}`)
 
     const fn = this.handlers.get(msg.cmd)
@@ -259,7 +266,7 @@ export class RpcPeer {
       message = `this side has no handler for '${msg.cmd}'`
     } else {
       try {
-        const r = fn(msg.data ?? {})
+        const r = await fn(msg.data ?? {})     // ★ 可能是 Promise（decide 等模型 ✓）
         ok = r[0] === true
         payload = r[1]
         message = r[2]

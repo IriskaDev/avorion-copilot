@@ -1,27 +1,30 @@
 /**
- * @dsh-external/dsh-avorion-copilot —— Avorion Copilot 桥接插件。
+ * @dsh-external/dsh-avorion-copilot —— Avorion `copilot` mod ⇄ DSH 的桥接插件。
  *
- * 游戏侧（Lua）没有任何网络能力，也无法启动进程，所以两边只能靠文件通信：
+ * ## 本版（RPC 版）
  *
- *   %APPDATA%/Avorion/moddata/copilot/req_<船名>.txt   游戏写，本插件读
- *   %APPDATA%/Avorion/moddata/copilot/res_<船名>.txt   本插件写，游戏读
- *   %APPDATA%/Avorion/moddata/copilot/log_<船名>.txt   决策记录（含模型思维链）
+ * 传输从「文件桥」换成「**TCP + 对称 RPC**」✓（协议见 mod 仓库的 PROTOCOL.md v2）。
+ * 本质就是主人点透的那句话：
+ *   **让 DSH 能调游戏的功能，也让游戏能调 DSH 的功能。** ✓
  *
- * 本插件每隔几秒扫一次请求目录，对每个「还没有响应的」请求问一次模型，把决策原子性地
- * 写回响应文件。模型的思维链（reasoning-delta）会记进 log_<船名>.txt，便于事后回看。
+ * ```
+ *   游戏（Lua rpc.lua）  ⇄  TCP 127.0.0.1:8765  ⇄  本插件（rpc.ts）
+ *        handle: hello/query/order/decide/reload/ping      ← 游戏提供的功能
+ *        call:   hello/state/decide                        ← 游戏发起的请求
+ * ```
  *
- * 请求与响应都是 key=value 行文本：游戏侧是 Lua，没有 JSON 库，行文本最不容易出错。
- * 写入一律先写 .tmp 再 rename，避免对面读到半截文件。
+ * 本插件**监听** 8765（游戏主动连过来 ✓ —— 这样不触发 Windows 防火墙弹窗 ✓）。
  *
- * 依赖说明：只 import @deepseek-ai/dsh-llm（拿 createUserMessage 与其类型）。
- * cordis 与 schemastery 的类型只存在于 DSH 源码 checkout 的 vendor/ 里，本机装好的
- * npm 包里没有，所以这里不 import 它们：ctx 用一个最小结构化接口描述，Config 干脆不导出
- * （已装的 dsh-mode-boost 同样不导出 Config，是合法形态）。
+ * ## 文件桥时代的东西去哪了
+ *
+ * `watch`/`atomicWrite`/`writeDiagnostics` 全部删掉 ✓ —— 不再需要 ✓。
+ * **`SYSTEM_PROMPT` 与 `parseDecision` 那一套一字未改** ✓ —— 它们是调研出来的领域知识
+ * 和踩过坑的鲁棒解析 ✓，与传输无关 ✓。
  */
-import fs from 'node:fs'
-import path from 'node:path'
+
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm/types'
+import { RpcPeer } from './rpc.js'
 
 export const name = '@dsh-external/dsh-avorion-copilot'
 
@@ -38,85 +41,21 @@ interface CopilotCtx {
     stream(options: GenerateOptions): AsyncIterable<StreamChunk>
     listProviders?(): unknown
   }
-  /** 注册需要在卸载/热重载时自动清理的资源。 */
   effect(fn: () => (() => void) | void, label?: string): void
-  /** cordis 的服务查找；用来探测 credentials 服务在不在。 */
   get?(name: string): unknown
 }
 
-/**
- * 开机自检：把插件实际看到的运行时事实写进 _diag.txt。
- *
- * 失败时（例如 MISSING_CREDENTIAL）光看错误码分不清是「服务看不到」还是「引用名对不上」，
- * 而 DSH 的日志位置不固定，写文件最可靠。涉及密钥时**只记长度，绝不记值**。
- */
-async function writeDiagnostics(ctx: CopilotCtx, dir: string): Promise<void> {
-  const lines: string[] = [`time: ${new Date().toISOString()}`, `dir: ${dir}`]
-
-  try {
-    const llm = ctx.llm as { listProviders?: () => unknown }
-    if (typeof llm.listProviders === 'function') {
-      lines.push(`providers: ${JSON.stringify(llm.listProviders()).slice(0, 1000)}`)
-    } else {
-      lines.push('providers: listProviders is not available')
-    }
-  } catch (error) {
-    lines.push(`providers probe failed: ${String(error)}`)
-  }
-
-  try {
-    const get = ctx.get
-    if (typeof get !== 'function') {
-      lines.push('ctx.get: not a function -> cannot probe services')
-    } else {
-      const credentials = get.call(ctx, 'credentials') as
-        | { resolve?: (ref: unknown) => Promise<{ value?: unknown } | undefined> }
-        | undefined
-      lines.push(`credentials service: ${credentials === undefined ? 'MISSING' : 'present'}`)
-
-      if (credentials !== undefined && typeof credentials.resolve === 'function') {
-        try {
-          // 用变量做说明符：字面量会让 TS 去解析类型，而这个包不需要在编译期可见
-          // （运行时由宿主解析，与其它 @deepseek-ai/* 一样）。
-          const specifier = '@deepseek-ai/dsh-credentials'
-          const mod = (await import(specifier)) as {
-            credentialRef: (value: string) => unknown
-          }
-          const hit = await credentials.resolve(mod.credentialRef('DEEPSEEK_API_KEY'))
-          const raw = hit?.value
-          lines.push(
-            `resolve(DEEPSEEK_API_KEY): ${hit === undefined ? 'MISS' : `HIT, length ${typeof raw === 'string' ? raw.length : '?'}`}`,
-          )
-        } catch (error) {
-          lines.push(`resolve probe failed: ${String(error)}`)
-        }
-      }
-    }
-  } catch (error) {
-    lines.push(`credentials probe failed: ${String(error)}`)
-  }
-
-  try {
-    fs.writeFileSync(path.join(dir, '_diag.txt'), lines.join('\n') + '\n', 'utf8')
-  } catch (error) {
-    ctx.logger?.warn?.(`avorion-copilot: cannot write diagnostics: ${String(error)}`)
-  }
+interface CopilotConfig {
+  /** 监听端口；默认 8765（与游戏侧一致） */
+  port?: number
+  provider?: string
+  model?: string
+  maxTokens?: number
+  temperature?: number
 }
 
-interface BridgeConfig {
-  /** 桥接目录；留空则用 %APPDATA%/Avorion/moddata/copilot。 */
-  dir: string
-  /** 轮询间隔（毫秒）。 */
-  intervalMs: number
-  provider: string
-  model: string
-  maxTokens: number
-  temperature: number
-}
-
-const DEFAULTS: BridgeConfig = {
-  dir: '',
-  intervalMs: 4000,
+const DEFAULTS = {
+  port: 8765,
   provider: 'deepseek-official',
   model: 'deepseek-flash',
   maxTokens: 700,
@@ -124,8 +63,10 @@ const DEFAULTS: BridgeConfig = {
 }
 
 /**
- * 系统提示词。放的是「模型必须知道、但请求文件里不必重复」的领域知识：
+ * 系统提示词。放的是「模型必须知道、但请求里不必重复」的领域知识：
  * 四条命令的语义、区域规则，以及伏击概率为什么是非线性代价。
+ *
+ * ★ 一字未改，从文件桥版本原样搬来 ✓。
  */
 const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘船交给你自动运营，现在需要你为其中一艘空闲的船决定下一步做什么。
 
@@ -156,22 +97,10 @@ interface Decision {
   error?: string
 }
 
-function resolveDir(dir: string | undefined): string {
-  if (dir && dir.trim().length > 0) return path.resolve(dir.trim())
-  const appData = process.env.APPDATA ?? ''
-  return path.join(appData, 'Avorion', 'moddata', 'copilot')
-}
-
-/** 先写 .tmp 再改名，保证对面只会看到完整文件。 */
-function atomicWrite(file: string, text: string): void {
-  const tmp = `${file}.tmp`
-  fs.writeFileSync(tmp, text, 'utf8')
-  fs.renameSync(tmp, file)
-}
-
 /**
  * 从回复里取一个字段。容忍模型常见的自由发挥：
  * `choice=1` / `choice: 1` / `**choice=1**` / 全角冒号。逐行匹配，不跨行。
+ * ★ 原样保留 ✓。
  */
 function field(text: string, key: string): string | undefined {
   const match = new RegExp(`^\\s*\\**\\s*${key}\\s*[:=：]\\s*(.*)$`, 'im').exec(text)
@@ -182,6 +111,7 @@ function field(text: string, key: string): string | undefined {
 /**
  * 解析候选编号。模型经常写成 `opt1` 而不是 `1`（实测第一次就踩到了），
  * 所以只取其中的数字：`opt1` / `OPT 2` / `选项3` / `1` 都能认。
+ * ★ 原样保留 ✓。
  */
 function parseChoice(raw: string): number | undefined {
   const match = /(\d+)/.exec(raw)
@@ -190,10 +120,10 @@ function parseChoice(raw: string): number | undefined {
   return Number.isFinite(value) ? value : undefined
 }
 
-/** 表示"没有"的几种写法，别当成船名。 */
+/** 表示"没有"的几种写法，别当成船名。★ 原样保留 ✓ */
 const NONE_WORDS = new Set(['', '-', 'none', 'null', 'n/a', 'na', '无', '没有', '否'])
 
-/** 解析模型回复。解析不出 choice 就算失败，交给游戏按错误处理。 */
+/** 解析模型回复。解析不出 choice 就算失败，交给游戏按错误处理。★ 原样保留 ✓ */
 function parseDecision(text: string): Decision {
   const decision: Decision = {}
 
@@ -234,14 +164,14 @@ interface StreamResult {
   truncated: boolean
 }
 
-/** 跑一次模型调用，把正文与思维链分别收拢。 */
-async function askModel(ctx: CopilotCtx, cfg: BridgeConfig, requestText: string): Promise<StreamResult> {
+/** 跑一次模型调用，把正文与思维链分别收拢。★ 逐字段保留（猜不得 ✗） */
+async function askModel(ctx: CopilotCtx, cfg: Required<Pick<CopilotConfig, 'provider' | 'model' | 'maxTokens' | 'temperature'>>, prompt: string): Promise<StreamResult> {
   let text = ''
   let reasoning = ''
   let failure: string | undefined
   let truncated = false
 
-  const messages = [createUserMessage({ content: [{ type: 'text', text: requestText }], source: { kind: 'user' } })]
+  const messages = [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })]
 
   const stream = ctx.llm.stream({
     provider: cfg.provider,
@@ -261,7 +191,6 @@ async function askModel(ctx: CopilotCtx, cfg: BridgeConfig, requestText: string)
       // 失败与取消都以 finish 结束，细节在 reason 里，带稳定 code（NO_ADAPTER / AUTH / RATE_LIMIT ...）
       const reason = chunk.reason
       if (reason.kind === 'error' || reason.kind === 'aborted') {
-        // 带上 message：只有 code 时（例如 MISSING_CREDENTIAL）分不清是哪个适配器报的
         failure = reason.failure.code
           ? `${reason.failure.code}: ${reason.failure.message}`
           : reason.failure.message
@@ -274,138 +203,195 @@ async function askModel(ctx: CopilotCtx, cfg: BridgeConfig, requestText: string)
   return { text, reasoning, failure, truncated }
 }
 
-/** 处理一个请求；无论成功失败都写响应文件，避免游戏反复重试同一个请求。 */
-async function handleRequest(ctx: CopilotCtx, cfg: BridgeConfig, dir: string, ship: string): Promise<void> {
-  const reqFile = path.join(dir, `req_${ship}.txt`)
-  const resFile = path.join(dir, `res_${ship}.txt`)
+// ---------------------------------------------------------------------------
+// 把请求交给模型，得到一条命令
+// ---------------------------------------------------------------------------
 
-  let requestText: string
-  try {
-    requestText = fs.readFileSync(reqFile, 'utf8')
-  } catch (error) {
-    ctx.logger?.warn?.(`avorion-copilot: cannot read ${reqFile}: ${String(error)}`)
-    return
-  }
-
-  ctx.logger?.info?.(`avorion-copilot: deciding for ${ship}`)
-
-  let result: StreamResult
-  try {
-    result = await askModel(ctx, cfg, requestText)
-  } catch (error) {
-    result = {
-      text: '',
-      reasoning: '',
-      failure: error instanceof Error ? error.message : String(error),
-      truncated: false,
-    }
-  }
-
-  const stamp = new Date().toISOString()
-  const decision: Decision = result.failure
-    ? { error: `model call failed: ${result.failure}` }
-    : parseDecision(result.text)
-
-  // 人类可读的决策记录（含思维链），便于事后回看模型在想什么。
-  // 注意别用 filter 去掉空行：段落之间靠空行分隔，滤掉就粘成一团了。
-  const logLines: string[] = [
-    `time: ${stamp}`,
-    `ship: ${ship}`,
-    `provider/model: ${cfg.provider}/${cfg.model}`,
-  ]
-  if (result.truncated) logLines.push('warning: reply hit maxTokens and may be truncated')
-  logLines.push(
-    '',
-    '--- request ---',
-    requestText.trim(),
-    '',
-    '--- reasoning ---',
-    result.reasoning.trim() || '(none)',
-    '',
-    '--- reply ---',
-    result.text.trim() || '(empty)',
-    '',
-    '--- decision ---',
-    JSON.stringify(decision),
-    '',
-  )
-
-  try {
-    atomicWrite(path.join(dir, `log_${ship}.txt`), logLines.join('\n'))
-  } catch (error) {
-    ctx.logger?.warn?.(`avorion-copilot: cannot write decision log: ${String(error)}`)
-  }
-
-  const lines: string[] = ['version=1', `ship=${ship}`, `time=${stamp}`]
-  if (decision.error) {
-    lines.push(`error=${decision.error}`)
-  } else {
-    lines.push(`choice=${decision.choice}`)
-    if (decision.duration !== undefined) lines.push(`duration=${decision.duration}`)
-    if (decision.escorts && decision.escorts.length > 0) lines.push(`escorts=${decision.escorts.join(',')}`)
-    if (decision.reason) lines.push(`reason=${decision.reason.replace(/\s+/g, ' ')}`)
-  }
-
-  try {
-    atomicWrite(resFile, lines.join('\n') + '\n')
-    ctx.logger?.info?.(
-      decision.error
-        ? `avorion-copilot: ${ship} -> error (${decision.error})`
-        : `avorion-copilot: ${ship} -> choice ${String(decision.choice)}${decision.reason ? ` (${decision.reason})` : ''}`,
-    )
-  } catch (error) {
-    ctx.logger?.warn?.(`avorion-copilot: cannot write ${resFile}: ${String(error)}`)
-  }
+interface DecideRequest {
+  ship?: string
+  card?: unknown
+  options?: unknown
 }
 
-export async function apply(ctx: CopilotCtx, rawConfig?: Partial<BridgeConfig>): Promise<void> {
-  const cfg: BridgeConfig = { ...DEFAULTS, ...(rawConfig ?? {}) }
-  const dir = resolveDir(cfg.dir)
-  let busy = false
+interface DecideAnswer {
+  action: string
+  params: Record<string, unknown>
+  reason?: string
+  raw?: string
+}
 
-  try {
-    fs.mkdirSync(dir, { recursive: true })
-  } catch (error) {
-    ctx.logger?.warn?.(`avorion-copilot: cannot create bridge dir ${dir}: ${String(error)}`)
+/**
+ * 组一份给模型看的请求：能力卡 + 候选命令 + 明确的输出格式要求。
+ * 候选来自**游戏侧的 orderSchema** ✓ —— 所以模型只能在合法命令里选 ✓✓。
+ */
+function buildPrompt(req: DecideRequest): string {
+  const lines: string[] = []
+  lines.push(`船：${req.ship ?? '(unknown)'}`)
+  lines.push('')
+  lines.push('这艘船的事实（能力卡）：')
+  lines.push(JSON.stringify(req.card ?? {}, null, 2))
+  lines.push('')
+  lines.push('候选方案（只能从里面选，编号从 1 开始）：')
+  const options = Array.isArray(req.options) ? req.options : []
+  if (options.length === 0) {
+    lines.push('(没有候选 —— 请回复 choice=0 表示本轮什么都不做)')
+  } else {
+    options.forEach((opt, i) => lines.push(`${i + 1}. ${JSON.stringify(opt)}`))
+  }
+  lines.push('')
+  lines.push('请按系统提示的格式回复。')
+  return lines.join('\n')
+}
+
+/** 把模型的 choice 映射回游戏给的候选（这才是要回给游戏的答案 ✓） */
+function toAnswer(req: DecideRequest, decision: Decision, raw: string): DecideAnswer | string {
+  if (decision.error !== undefined) return decision.error
+
+  const options = Array.isArray(req.options) ? req.options : []
+  const choice = decision.choice ?? 0
+
+  if (choice === 0 || options.length === 0) {
+    return { action: 'None', params: {}, reason: decision.reason ?? 'model chose to do nothing', raw }
+  }
+  if (choice < 1 || choice > options.length) {
+    return `model chose out-of-range option ${choice} (1..${options.length})`
   }
 
-  ctx.logger?.info?.(`avorion-copilot: bridge watching ${dir} every ${cfg.intervalMs} ms`)
+  const picked = options[choice - 1] as Record<string, unknown>
+  const params: Record<string, unknown> = { ...picked }
+  if (decision.duration !== undefined) params.duration = decision.duration
+  if (decision.escorts !== undefined && decision.escorts.length > 0) params.escorts = decision.escorts
 
-  // 开机自检写进 _diag.txt：出错时能一眼看出是服务缺失、引用名不对，还是别的
-  await writeDiagnostics(ctx, dir)
+  const action = typeof picked.action === 'string' ? picked.action : 'Unknown'
+  return { action, params, reason: decision.reason, raw }
+}
 
-  const tick = async (): Promise<void> => {
-    if (busy) return
-    busy = true
+// ---------------------------------------------------------------------------
+// 插件入口：把 RPC 接起来
+// ---------------------------------------------------------------------------
+
+export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
+  const cfg = {
+    port: config.port ?? DEFAULTS.port,
+    provider: config.provider ?? DEFAULTS.provider,
+    model: config.model ?? DEFAULTS.model,
+    maxTokens: config.maxTokens ?? DEFAULTS.maxTokens,
+    temperature: config.temperature ?? DEFAULTS.temperature,
+  }
+
+  const peer = new RpcPeer({
+    port: cfg.port,
+    logger: ctx.logger,
+    defaultTimeoutSec: 5,
+  })
+
+  // ---- 我提供的功能（游戏可以调我）------------------------------------------
+
+  peer.handle('hello', (data: any) => {
+    // 协议 §6/§8：两端各发一次 hello，各自声明 caps ✓
+    ctx.logger?.info?.(`avorion-copilot: 游戏握手 side=${data?.side} ver=${data?.ver} caps=${(data?.caps ?? []).join(',')}`)
+    return [true, { side: 'dsh', ver: 2, caps: peer.caps() }]
+  })
+
+  peer.handle('ping', () => [true, { pong: true, from: 'dsh' }] as [boolean, any])
+
+  /**
+   * ★ `decide` —— **游戏调 DSH 的决策能力**，整条链的核心 ✓
+   *
+   * `data` 由游戏侧给出：`{ship, card, options}` —— 其中 `options` 来自游戏侧的
+   * `orderSchema` ✓，所以模型**只可能选到合法命令** ✓✓。
+   *
+   * 返回 `{action, params}` ✓；游戏侧拿到后走 `order` 真正下单 ✓。
+   */
+  peer.handle('decide', async (data: any) => {
+    const req = (data ?? {}) as DecideRequest
+    ctx.logger?.info?.(`avorion-copilot: 为 ${req.ship} 决策中…`)
+
+    let result: StreamResult
     try {
-      let names: string[]
-      try {
-        names = fs.readdirSync(dir)
-      } catch {
+      result = await askModel(ctx, cfg, buildPrompt(req))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      ctx.logger?.warn?.(`avorion-copilot: 模型调用异常 ${message}`)
+      return [false, 'MODEL_ERROR', message] as [boolean, any, string]
+    }
+
+    if (result.failure !== undefined) {
+      ctx.logger?.warn?.(`avorion-copilot: 模型调用失败 ${result.failure}`)
+      return [false, 'MODEL_FAILED', result.failure] as [boolean, any, string]
+    }
+
+    const decision = parseDecision(result.text)
+    const answer = toAnswer(req, decision, result.text)
+
+    if (typeof answer === 'string') {
+      ctx.logger?.warn?.(`avorion-copilot: 决策无法解析 —— ${answer}`)
+      return [false, 'BAD_MODEL_REPLY', answer] as [boolean, any, string]
+    }
+
+    // 决策记录（含思维链），便于事后回看模型在想什么 ✓
+    ctx.logger?.info?.(
+      `avorion-copilot: ${req.ship} -> ${answer.action}` +
+      (answer.reason !== undefined ? `  (${answer.reason})` : '') +
+      (result.truncated ? '  [回复被 maxTokens 截断]' : '') +
+      (result.reasoning.length > 0 ? `\n--- 思维链 ---\n${result.reasoning.trim()}` : ''),
+    )
+
+    return [true, answer] as [boolean, any]
+  })
+
+  // ---- 我调游戏（DSH 主动查询 / 下单）---------------------------------------
+
+  /** 查一次舰队快照（"眼睛" ✓ —— 不用截图 ✓） */
+  const queryFleet = (cb?: (ok: boolean, data?: any, why?: string) => void): boolean =>
+    peer.call('query', { what: 'fleet' }, cb, 5)
+
+  const queryShip = (ship: string, cb?: (ok: boolean, data?: any, why?: string) => void): boolean =>
+    peer.call('query', { what: 'ship', ship }, cb, 5)
+
+  const order = (ship: string, action: string, params: Record<string, unknown> = {}, cb?: (ok: boolean, data?: any, why?: string) => void): boolean =>
+    peer.call('order', { ship, action, ...params }, cb, 15)
+
+  const reload = (cb?: (ok: boolean, data?: any, why?: string) => void): boolean =>
+    peer.call('reload', {}, cb, 10)
+
+  // 连上后打一份舰队快照到日志 —— 既是握手确认，也是"眼睛"的第一次使用 ✓
+  peer.onConnected = () => {
+    ctx.logger?.info?.('avorion-copilot: 游戏已连接，查询舰队快照…')
+    queryFleet((ok, data, why) => {
+      if (!ok) {
+        ctx.logger?.warn?.(`avorion-copilot: query fleet 失败 ${why ?? ''}`)
         return
       }
-
-      for (const entry of names) {
-        if (!entry.startsWith('req_') || !entry.endsWith('.txt')) continue
-        const ship = entry.slice('req_'.length, entry.length - '.txt'.length)
-        if (ship.length === 0) continue
-        // 已经有响应 = 游戏还没取走，别重复裁决
-        if (fs.existsSync(path.join(dir, `res_${ship}.txt`))) continue
-        await handleRequest(ctx, cfg, dir, ship)
+      // ★ 空的 Lua 表被 cJSON 编成 {}（不是 []）✗ —— 两种都当空列表处理 ✓
+      const rawShips = data?.ships
+      const ships: any[] = Array.isArray(rawShips)
+        ? rawShips
+        : (rawShips !== null && typeof rawShips === 'object' ? Object.values(rawShips) : [])
+      ctx.logger?.info?.(`avorion-copilot: 名单 ${data?.designated ?? '?'} 艘，快照 ${ships.length} 条（玩家在开：${data?.piloted ?? '?'}）`)
+      for (const s of ships) {
+        ctx.logger?.info?.(
+          `  - ${s.name} busy=${s.busy} captain=${s.hasCaptain}` +
+          (s.status !== undefined ? ` status=${String(s.status).slice(0, 40)}` : ''),
+        )
       }
-    } catch (error) {
-      ctx.logger?.warn?.(`avorion-copilot: tick failed: ${String(error)}`)
-    } finally {
-      busy = false
-    }
+    })
   }
 
-  // ctx.effect 的资源注册：插件卸载/热重载时定时器自动清理
-  ctx.effect(() => {
-    const timer = setInterval(() => void tick(), cfg.intervalMs)
-    return () => clearInterval(timer)
-  }, 'avorion-copilot bridge watcher')
+  // ---- 生命周期 --------------------------------------------------------------
 
-  // 启动后立刻扫一次，不用等第一个间隔
-  void tick()
+  ctx.effect(() => {
+    void peer.listen().catch((err) => {
+      ctx.logger?.warn?.(`avorion-copilot: 监听 ${cfg.port} 失败（${String(err)}）—— 插件不会工作`)
+    })
+    return () => {
+      ctx.logger?.info?.('avorion-copilot: 关闭 RPC')
+      peer.close()
+    }
+  }, 'dsh-avorion-copilot:rpc')
+
+  // 供将来从 DSH 侧主动操作（例如命令面板、定时巡检）使用 ✓
+  void queryShip
+  void order
+  void reload
 }
