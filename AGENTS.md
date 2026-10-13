@@ -157,8 +157,12 @@ SetCursorPos/mouse_event 点击 → keybd_event（**带扫描码**）按键 → 
   已有 `connect/connected/state/send/recv/recv_json/encode/decode/close/diag/readfile`，
   表自动 JSON 编解码（cJSON），4 字节小端长度分帧。协议见 [`PROTOCOL.md`](PROTOCOL.md)，
   全部踩坑与实测结论见 [`NATIVE.md`](NATIVE.md)（**动 DLL 前务必先读它**）。
-  - ⚠️ 编译基准必须是 **lua-5.2.3**：5.2.4 改过 `struct Table` 字段顺序，混用会导致
-    「表能建、宿主读不到内容、动态键查找直接 AV」
+  - ⚠️ ★ **编译基准必须是 `lua-5.2.1`**（`native\lua-src\lua-5.2.1\src`）——**与宿主版本逐字相同**。
+    **版本号直接从 exe 里读**，不要靠"试出来能用"定 ✗：
+    `AvorionServer.exe` / `Avorion.exe` 里都写着 `$LuaVersion: Lua 5.2.1`。
+    **2026-10-14 修正**：此前本文件写的是 5.2.3 ✗，**错配导致服务端堆损坏
+    （`0xC0000374`，进游戏约 1 分钟后必崩）**；改成 5.2.1 后连续运行 7 分钟 +
+    4 次大星区（2000+ 实体）存档无碍 ✓✓。详见 `NATIVE.md` 的更正段落。
   - ⚠️ 宿主在 `require` 返回后会 `FreeLibrary` 我们 → `luaopen` 里要 `keep_resident` 自增引用计数
   - ⚠️ 编译要加 `/utf-8`，否则源码里的中文被按 GBK 解码、字符串字面量被撑破
 - **热重载**：改逻辑不用重启游戏，`/copilot reload`（见下文）

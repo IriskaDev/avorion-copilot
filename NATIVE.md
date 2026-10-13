@@ -274,7 +274,20 @@ Avorion 用的是 **5.2.0–5.2.3**，而我们最初编的是 **5.2.4** ✗ →
 
 ## 处置
 
-**DLL 与测试台都必须基于 `lua-5.2.3` 编译**（`native\lua-src\lua-5.2.3\src`）。
+**DLL 与测试台都必须基于 `lua-5.2.1` 编译**（`native\lua-src\lua-5.2.1\src`）。
+
+> ★★★ **2026-10-14 更正（血的教训）**：此前写成 5.2.3，**错了两个版本** ✗。
+> 正确版本**直接从 exe 里读**：
+> ```
+> AvorionServer.exe / Avorion.exe 里都有
+>   $LuaVersion: Lua 5.2.1  Copyright (C) 1994-2012 Lua.org, PUC-Rio
+> ```
+> **不要靠"试出来能用"来定版本** ✗ —— `lua_gettop`/`lua_pushstring`/数字往返只覆盖
+> `lua_State`/`TValue`/`string`，**碰不到 `Table`**；而 `ltable.c`/`lobject.h` 在
+> 5.2.1→5.2.3 之间**改过**（`ltable.h` 的 `luaH_*` 签名、`Node` 相关定义 ✓）。
+> Lua 的公开 API 里**有大量宏直接访问结构体字段**，我们的 DLL 又把 `lapi.c`/`lauxlib.c`
+> 一起编了进去 —— 于是这些函数用**我们的头文件宏**作用在**宿主的结构体**上 ✗，
+> 表操作就会**悄悄写坏堆** ✓，表现为 ntdll 延迟报 **`0xC0000374`（堆损坏）** ✓✓。
 
 ```powershell
 $lsrc = "D:\...\mods\copilot\native\lua-src\lua-5.2.3\src"   # ★ 不是 5.2.4
