@@ -89,8 +89,7 @@ function CopilotNet.getUpdateInterval()
     return 1                                -- 每秒拉一次；决策是秒级场景，够用
 end
 
--- ★ 实验开关（2026-10-15）：true = 只调一次 connect，之后**完全不再碰 DLL** ✓
---   用来区分：是「DLL 被用」在崩，还是「DLL 被加载」就崩 ✗
+function CopilotNet.updateServer()
     if not onServer() then return end
 
     local cp = CopilotNet.getModule()
