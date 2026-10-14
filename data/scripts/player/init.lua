@@ -13,10 +13,7 @@ if onServer() then
     local copilotPlayer = Player()
 
     copilotPlayer:addScriptOnce("ui/panel.lua")
-    -- ★ 第二轮二分：连 RPC 链也停掉 ✓（上一轮证明自动驾驶不是原因 ✗）
-    --   若这样就不死 → RPC 链有问题；若还死 → 与本 mod 全部无关 ✓
-    -- ★ 二分：停挂 net 链（看 ~90 秒的 X_X 是否消失）
-    -- copilotPlayer:addScriptOnce("net/net.lua")
+    copilotPlayer:addScriptOnce("net/net.lua")   -- ★ 已恢复（二分结束 ✓）
     copilotPlayer:addScriptOnce("ai/ops.lua")
 
     -- 兼容老存档：脚本曾叫 player/ai/copilot.lua，改名后游戏找不到它，会把它从
