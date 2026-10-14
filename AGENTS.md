@@ -312,3 +312,45 @@ D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\   ← 仓库根
 
 Lua 文件必须**逐字节原样** ✓ —— 任何行尾转换都可能影响 VFS 合并的行为，
 而且会让 diff 变成"整个文件都改了" ✗。仓库刻意**不设 `.gitattributes`** ✓，保持零转换 ✓。
+## ★★ 测试纪律：不要反复强杀游戏（2026-10-15 血泪）
+
+本 agent 为了做二分，曾用 `Stop-Process -Force` 连续强杀游戏进程几十次 ✗。
+后果**不是** mod 崩溃，而是 **Steam P2P 会话残留**：
+
+```
+服务端日志: Error while initializing Steam networking: No response from Steam Network after over 30 seconds
+客户端日志: Connection to 127.0.0.1:27003 failed: actively refused
+            wanted to establish a connection to IP, but failed
+现象:       玩家**进不去**（而服务端进程本身活得好好的、还能正常存档）
+```
+
+**关键认知**：这台游戏的单机是 **`--use-steam-networking true`** ✓ ——
+客户端与服务端经 **Steam P2P** 建连，**不是**纯 TCP 回环 ✓。
+所以「单机不该受 Steam 影响」这个直觉**在这里不成立** ✗✓。
+
+### 两种「崩」的判据（务必分清）
+
+| 判据 | 是谁的问题 |
+|---|---|
+| `X_X` + `Sending crash report` + `lua::WorkerPool … shutdown() not called` | ★ **我们的崩溃**（见 `NATIVE.md`） |
+| `No response from Steam Network after over 30 seconds` | **Steam 的锅** ✓，与本 mod 无关 ✓ |
+| 事件日志 `0xC0000374` in `AvorionServer.exe` | 堆损坏（曾是 Lua 版本错配 ✓） |
+
+### 修法
+
+**完全退出 Steam 本体**（`steam` / `steamwebhelper` / `steamservice` 都要关 ✓）→ 重启 → 立刻可进 ✓。
+若想彻底摆脱 Steam：把启动参数改成 **`--use-steam-networking false`** ✓（走纯 TCP 回环 ✓）。
+
+### 给 agent 自己的规矩
+
+* 关游戏优先用**正常退出**；确需强杀时，**每轮测试后重启一次 Steam** ✗✓
+* 出现"连不上"时**先看这一节**，不要往 mod 上赖 ✗
+
+## ★★ 崩溃修复总结（2026-10-15）
+
+| # | 根因 | 症状 | 修法 |
+|---|---|---|---|
+| ① | 编译基准用了 **Lua 5.2.3**，宿主是 **5.2.1** | 进程消失（`0xC0000374` 堆损坏） | 用 5.2.1 重编（版本**从 exe 的 `$LuaVersion` 读** ✓） |
+| ② | **原生 DLL 碰 Lua 分配**（`lua_createtable` → 触发 GC），而脚本被**多线程并发**执行 | 进程活着但 **Lua 全停**（僵尸态 ✗） | JSON 全部移到纯 Lua（`lib/copilotjson.lua` ✓）；DLL 只做 socket ✓ |
+
+**验证**：进游戏后连续 **6 分钟零 `X_X`**，心跳每 5 秒不断，RPC 握手与 `query` 均正常 ✓✓。
