@@ -474,19 +474,92 @@ static int l_close(lua_State *L)
     return 1;
 }
 
+/*
+ * ===========================================================================
+ * THREAD SAFETY  (2026-10-15 -- this was the real crash)
+ * ===========================================================================
+ *
+ * The game calls these functions from SEVERAL Lua worker-pool threads at the
+ * same time (the dll log shows a different tid= on almost every call). All the
+ * state below the API is file-scope globals -- g_sock, g_state, g_rbuf, g_rlen,
+ * g_rcap -- and there was NO lock anywhere. Concurrent l_recv/l_connected/
+ * l_send calls therefore raced on that state.
+ *
+ * Symptom: after roughly 70 seconds the server log gets
+ *
+ *     X_X
+ *     Sending crash report ...
+ *     Error cleaning up lua::WorkerPool: shutdown() not called!
+ *
+ * The process stays alive and keeps rendering, but all Lua stops: the game
+ * becomes a zombie. (Earlier, with a mismatched Lua core, the same corruption
+ * took the whole process down with STATUS_HEAP_CORRUPTION 0xC0000374.)
+ *
+ * Fix: one recursive critical section around every exported entry point.
+ * Windows critical sections are re-entrant, so the helpers below may call each
+ * other while the lock is held. Nothing in here calls back into the game's Lua
+ * while locked, so there is no deadlock path.
+ */
+static CRITICAL_SECTION g_api_lock;
+static LONG             g_api_lock_ready = 0;
+
+static void copilot_lock_init(void)
+{
+    /* InterlockedCompareExchange is the cheap way to make "initialise once"
+     * safe even if two worker threads arrive together. */
+    if (InterlockedCompareExchange(&g_api_lock_ready, 1, 0) == 0) {
+        InitializeCriticalSection(&g_api_lock);
+    }
+}
+
+static void copilot_lock(void)
+{
+    copilot_lock_init();
+    EnterCriticalSection(&g_api_lock);
+}
+
+static void copilot_unlock(void)
+{
+    LeaveCriticalSection(&g_api_lock);
+}
+
+/* One wrapper per exported function. Deliberately verbose rather than a macro
+ * soup: this file is the crash site and it has to stay readable. */
+#define COPILOT_LOCKED(fn)                       \
+    static int fn##_locked(lua_State *L)         \
+    {                                            \
+        copilot_lock();                          \
+        int _r = fn(L);                          \
+        copilot_unlock();                        \
+        return _r;                               \
+    }
+
+COPILOT_LOCKED(l_connect)
+COPILOT_LOCKED(l_connected)
+COPILOT_LOCKED(l_state)
+COPILOT_LOCKED(l_send)
+COPILOT_LOCKED(l_recv)
+COPILOT_LOCKED(l_recv_json)
+COPILOT_LOCKED(l_encode)
+COPILOT_LOCKED(l_decode)
+COPILOT_LOCKED(l_close)
+COPILOT_LOCKED(l_diag)
+COPILOT_LOCKED(l_numprobe)
+COPILOT_LOCKED(l_readfile)
+
 static const luaL_Reg copilot_lib[] = {
-    {"connect",   l_connect},
-    {"connected", l_connected},
-    {"state",     l_state},
-    {"send",      l_send},
-    {"recv",      l_recv},
-    {"recv_json", l_recv_json},
-    {"encode",    l_encode},
-    {"decode",    l_decode},
-    {"close",     l_close},
-    {"diag",      l_diag},
-    {"numprobe",  l_numprobe},
-    {"readfile",  l_readfile},
+    {"connect",   l_connect_locked},
+    {"connected", l_connected_locked},
+    {"state",     l_state_locked},
+    {"send",      l_send_locked},
+    {"recv",      l_recv_locked},
+    {"recv_json", l_recv_json_locked},
+    {"encode",    l_encode_locked},
+    {"decode",    l_decode_locked},
+    {"close",     l_close_locked},
+    {"diag",      l_diag_locked},
+    {"numprobe",  l_numprobe_locked},
+    {"readfile",  l_readfile_locked},
     {NULL, NULL}
 };
 
