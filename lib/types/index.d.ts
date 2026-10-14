@@ -36,6 +36,10 @@ interface CopilotCtx {
         listProviders?(): unknown;
     };
     effect(fn: () => (() => void) | void, label?: string): void;
+    /** ★ 工具注册（inject 里已声明 'tools' ✓） */
+    tools: {
+        register(tool: unknown): unknown;
+    };
     get?(name: string): unknown;
 }
 interface CopilotConfig {

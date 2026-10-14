@@ -28,11 +28,12 @@ import os from 'node:os'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm/types'
 import { RpcPeer } from './rpc.js'
+import { registerFleetTools } from './tools.js'
 
 export const name = '@dsh-external/dsh-avorion-copilot'
 
 /** 需要 LLM 服务；没有它插件不启动。 */
-export const inject = ['llm']
+export const inject = ['llm', 'tools']   // ★ 'tools'：注册 fleet_* 工具必需 ✓（照 dsh-global-memory ✓）
 
 /** ctx 的最小结构化描述，避免依赖拿不到的 cordis 类型。 */
 interface CopilotCtx {
@@ -45,6 +46,8 @@ interface CopilotCtx {
     listProviders?(): unknown
   }
   effect(fn: () => (() => void) | void, label?: string): void
+  /** ★ 工具注册（inject 里已声明 'tools' ✓） */
+  tools: { register(tool: unknown): unknown }
   get?(name: string): unknown
 }
 
@@ -414,6 +417,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       peer.close()
     }
   }, 'dsh-avorion-copilot:rpc')
+
+  // ★ 把游戏能力暴露成 DSH 工具（主人要的"会话接管"就靠它们 ✓✓）
+  registerFleetTools(ctx, peer)
 
   // 供将来从 DSH 侧主动操作（例如命令面板、定时巡检）使用 ✓
   void queryShip
