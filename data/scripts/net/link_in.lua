@@ -64,6 +64,14 @@ function CopilotLinkIn.onQuery(data)
         end
         return true, Card.shipCard(player, name)
 
+    elseif what == "goal" then
+        local name = data.ship
+        if type(name) ~= "string" or name == "" then
+            return false, "BAD_REQUEST", "query goal needs data.ship"
+        end
+        local Goal = include("copilotgoal")
+        return true, Goal.describe(player, name)
+
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
         return true, { what = Card.WHATS }
@@ -81,13 +89,68 @@ function CopilotLinkIn.onQuery(data)
 end
 
 -- order：DSH 让游戏下单。
--- ★ 真正下单必须走战略层 ops.lua，而那是**另一个 VM** ✗ —— 需要 player value 或
--- callable 中转 ✓。这是下一增量，现在诚实报未实现 ✓，绝不静默吞掉 ✗。
+--
+-- ★ 本版是**空执行 + 回执**（主人的验收标准 ✓）：只校验入参、记录、回执，
+--   **不真的调用 startAreaAnalysis/startCommand** ✓ —— 那一步（含 area/config 形状、
+--   船长与可用性校验）是下一增量。
+--
+-- 为什么先这样：双向 RPC 的**写方向**需要被证明通畅 ✓（request → 游戏执行 → 回执 → DSH ✓），
+-- 而真下单牵涉异步两段式（分析 → 下令）、Rect 坐标、config 字段，风险大得多 ✓。
 function CopilotLinkIn.onOrder(data)
     data = data or {}
+    local ship = data.ship
+    local action = data.action
+
+    -- 入参校验（空执行也要校验，否则回执没意义 ✓）
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "order needs data.ship"
+    end
+    if type(action) ~= "string" or action == "" then
+        return false, "BAD_REQUEST", "order needs data.action"
+    end
+
     self.lastOrder = data
-    return false, "NOT_IMPLEMENTED",
-        "order routing to the ops layer is not wired yet (ship=" .. tostring(data.ship) .. ")"
+    self.orders = (self.orders or 0) + 1
+
+    CopilotRpc.trace(string.format("onOrder STUB ship=%s action=%s（空执行，未真正下单 ✓）", ship, action))
+
+    -- ★ 回执：成功 + 说明这是空执行 ✓
+    return true, {
+        accepted = true,
+        executed = false,
+        stub = true,
+        ship = ship,
+        action = action,
+        note = "order accepted by the game side (stub: no real command issued yet)",
+        count = self.orders,
+    }
+end
+
+-- setGoal：DSH 设定/清除某船的运营目标（真实现 ✓，用 lib/copilotgoal）
+function CopilotLinkIn.onSetGoal(data)
+    data = data or {}
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "setGoal needs data.ship"
+    end
+
+    local player = Player()
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local Goal = include("copilotgoal")
+
+    if data.clear == true then
+        Goal.clear(player, ship)
+        CopilotRpc.trace("setGoal CLEAR ship=" .. ship)
+        return true, { ship = ship, cleared = true }
+    end
+
+    if data.text ~= nil then Goal.setText(player, ship, data.text) end
+    if data.options ~= nil then Goal.setOptions(player, ship, data.options) end
+
+    local d = Goal.describe(player, ship)
+    CopilotRpc.trace(string.format("setGoal ship=%s text=[%s] options=%d", ship, d.text, #d.options))
+    return true, d
 end
 
 -- decide（协议 §11）：按设计**由游戏侧发起** ✓（见 link_out.askDecide）。
@@ -120,6 +183,7 @@ function CopilotLinkIn.install()
     CopilotRpc.handle("hello",  CopilotLinkIn.onHello)
     CopilotRpc.handle("query",  CopilotLinkIn.onQuery)
     CopilotRpc.handle("order",  CopilotLinkIn.onOrder)
+    CopilotRpc.handle("setGoal", CopilotLinkIn.onSetGoal)
     CopilotRpc.handle("decide", CopilotLinkIn.onDecide)
     CopilotRpc.handle("reload", CopilotLinkIn.onReload)
     CopilotRpc.handle("ping",   CopilotLinkIn.onPing)
