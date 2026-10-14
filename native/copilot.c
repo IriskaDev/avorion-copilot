@@ -39,8 +39,33 @@
 
 /* 全部日志走 dshlog（每行一次 WriteFile，崩溃也不丢最后一行）。
    旧版直接用 fopen 写死一条绝对路径，结果日志文件根本没生成，排查时毫无可观测性。 */
+/*
+ * Verbose per-call logging.
+ *
+ * 2026-10-15: this used to run on EVERY call, i.e. several times per tick, from
+ * several Lua worker threads at once, inside dshlog -- which keeps a shared
+ * FILE* and several shared buffers. That made the log writer a multi-thread
+ * write target and it was the last shared-state suspect (the API lock did not
+ * make the crash go away, but the crash is definitely inside the native module:
+ * with the DLL unavailable the same Lua scripts run for 5+ minutes untouched).
+ *
+ * It was always meant to be temporary (see AGENTS.md: "DLL 里的 numprobe/逐步日志待清理").
+ * Default is now SILENT. Set DSHLOG_VERBOSE=1 in the environment to bring the
+ * per-call trace back when investigating.
+ */
+static int nlog_enabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("DSHLOG_VERBOSE");
+        cached = (v != NULL && v[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
 static void nlog(const char *fmt, ...)
 {
+    if (!nlog_enabled()) return;
     va_list ap;
     va_start(ap, fmt);
     dshlog_va(fmt, ap);
@@ -501,15 +526,22 @@ static int l_close(lua_State *L)
  * while locked, so there is no deadlock path.
  */
 static CRITICAL_SECTION g_api_lock;
-static LONG             g_api_lock_ready = 0;
+static INIT_ONCE        g_api_lock_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK copilot_lock_ctor(PINIT_ONCE once, PVOID param, PVOID *ctx)
+{
+    (void)once; (void)param; (void)ctx;
+    InitializeCriticalSection(&g_api_lock);
+    return TRUE;
+}
 
 static void copilot_lock_init(void)
 {
-    /* InterlockedCompareExchange is the cheap way to make "initialise once"
-     * safe even if two worker threads arrive together. */
-    if (InterlockedCompareExchange(&g_api_lock_ready, 1, 0) == 0) {
-        InitializeCriticalSection(&g_api_lock);
-    }
+    /* InitOnceExecuteOnce is the correct primitive here: the first thread
+     * initialises, and every other thread BLOCKS until that is done. A plain
+     * InterlockedCompareExchange test would let the losers run straight into
+     * EnterCriticalSection on a lock that is not initialised yet. */
+    InitOnceExecuteOnce(&g_api_lock_once, copilot_lock_ctor, NULL, NULL);
 }
 
 static void copilot_lock(void)
