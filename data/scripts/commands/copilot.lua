@@ -391,6 +391,84 @@ function execute(sender, commandName, arg, ...)
             player:sendChatMessage("Server", ChatMessageType.Information, "Copilot auto-explore is %1%. Use /copilot explore on|off."%_T, state)
         end
 
+    elseif a == "goal" or a == "goals" then
+        -- ★ 目标（主人 2026-10-14 定的核心概念 ✓）
+        --   /copilot goal                              列出所有已设目标
+        --   /copilot goal <船名> <文字...>              设文字目标（最常用 ✓）
+        --   /copilot goal <船名> text <文字...>         同上，显式写法
+        --   /copilot goal <船名> options Mine,Salvage  设选项目标
+        --   /copilot goal <船名> clear                 清掉
+        local player2 = player
+        local Goal = include("copilotgoal")
+
+        local ship = tostring(rest[1] or "")
+        local verb = tostring(rest[2] or ""):lower()
+
+        -- 不带船名 = 列出全部
+        if ship == "" then
+            local names = {}
+            for n in tostring(player2:getValue("copilot_auto_ships") or ""):gmatch("[^\n]+") do
+                table.insert(names, n)
+            end
+            local shown = 0
+            for _, n in ipairs(names) do
+                local d = Goal.describe(player2, n)
+                if d.hasGoal then
+                    shown = shown + 1
+                    local opts = "(none)"
+                    if #d.options > 0 then opts = table.concat(d.options, ", ") end
+                    player2:sendChatMessage("Server", ChatMessageType.Information,
+                        "%1%  text=[%2%]  options=[%3%]"%_T, n, d.text, opts)
+                    if #d.unknown > 0 then
+                        player2:sendChatMessage("Server", ChatMessageType.Warning,
+                            "%1%  unknown options ignored: %2%"%_T, n, table.concat(d.unknown, ", "))
+                    end
+                end
+            end
+            if shown == 0 then
+                player2:sendChatMessage("Server", ChatMessageType.Information,
+                    "No goal set on any listed ship. Usage: /copilot goal <ship> <text>"%_t)
+            end
+
+        elseif verb == "clear" or verb == "none" or verb == "off" then
+            Goal.clear(player2, ship)
+            player2:sendChatMessage("Server", ChatMessageType.Information,
+                "Goal cleared for %1%."%_T, ship)
+
+        elseif verb == "options" or verb == "option" then
+            -- 剩下的词按逗号/顿号/空格切开 ✓
+            local joined = table.concat(rest, " ", 3)
+            local opts = {}
+            for piece in joined:gmatch("[^,，、%s]+") do
+                if piece ~= "" then table.insert(opts, piece) end
+            end
+            local good, bad = Goal.sanitizeOptions(opts)
+            if #good == 0 then
+                player2:sendChatMessage("Server", ChatMessageType.Warning,
+                    "No known action in that list. Known: Mine, Salvage, Trade, Travel"%_t)
+            else
+                Goal.setOptions(player2, ship, good)
+                player2:sendChatMessage("Server", ChatMessageType.Information,
+                    "Options for %1%: %2%"%_T, ship, table.concat(good, ", "))
+                if #bad > 0 then
+                    player2:sendChatMessage("Server", ChatMessageType.Warning,
+                        "Ignored (unknown): %1%"%_T, table.concat(bad, ", "))
+                end
+            end
+
+        else
+            -- 文字目标：verb 是第一个词，从 rest[2] 开始
+            local text = table.concat(rest, " ", 2)
+            if verb == "text" then text = table.concat(rest, " ", 3) end
+            if text == "" then
+                player2:sendChatMessage("Server", ChatMessageType.Warning,
+                    "Usage: /copilot goal <ship> <text>  |  <ship> options Mine,Salvage  |  <ship> clear"%_t)
+            else
+                Goal.setText(player2, ship, text)
+                player2:sendChatMessage("Server", ChatMessageType.Information,
+                    "Goal for %1%: %2%"%_T, ship, text)
+            end
+        end
     elseif a == "status" or a == "state" then
         local enabled = player:getValue("copilot_enabled")
         local craft = player.craft
@@ -433,5 +511,5 @@ function getDescription()
 end
 
 function getHelp()
-    return "Usage: /copilot on | off | explore on|off | status | ops | reload | probe"%_t
+    return "Usage: /copilot on | off | explore on|off | status | ops | reload | probe | goal <ship> <text|options ...|clear>"%_t
 end
