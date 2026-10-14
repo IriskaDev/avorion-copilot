@@ -21,8 +21,8 @@ package.path = package.path .. ";data/scripts/?.lua"
 --
 -- 本文件是 lib：只能 return 命名空间表，不许定义全局生命周期回调 ✓。
 --
--- 本文件是 lib：不挂载、不定义生命周期回调，所以**不写 namespace 声明** ✓
--- ⚠️ 千万别写成 -- namespace xxx 开头 ✗ —— 引擎会解析那行，且 namespace 名里不许有空格/中文 ✓
+-- 本文件是 lib：不挂载、不定义生命周期回调，所以**不写 name-space 声明** ✓
+-- ⚠️ 千万别写成 -- name-space xxx 开头 ✗ —— 引擎会解析那行，且 name-space 名里不许有空格/中文 ✓
 
 local M = {}
 
