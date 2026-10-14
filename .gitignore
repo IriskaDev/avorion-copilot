@@ -32,3 +32,6 @@ Thumbs.db
 desktop.ini
 # ---- 所有 DLL 都是构建产物（含实验探针）----
 *.dll
+
+# 存档备份（大文件，不入库 ✓）
+saves-backup*/
