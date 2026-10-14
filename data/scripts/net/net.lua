@@ -140,6 +140,21 @@ function CopilotNet.updateServer()
     if CopilotFleet ~= nil then
         CopilotFleet.maybeScan()
     end
+
+    -- ★★ 排查心跳（2026-10-15）：每 5 秒落一条，**泵一停日志立刻断** ✓
+    -- 起因：游戏进程活着、画面正常、socket 也 Established，但 Lua 不再被 tick ✗——
+    -- 需要知道它**断在哪一秒**、断之前名单有几艘 ✓
+    if os.clock() - (self.lastHb or 0) > 5 then
+        self.lastHb = os.clock()
+        local roster = 0
+        local pl = Player()
+        if pl ~= nil then
+            for _ in tostring(pl:getValue("copilot_auto_ships") or ""):gmatch("[^\n]+") do
+                roster = roster + 1
+            end
+        end
+        CopilotRpc.trace("hb connected=" .. tostring(connected) .. " roster=" .. roster)
+    end
 end
 
 -- ★ 状态汇报：走 chat，因为 chat **一定**进客户端日志 ✓（已实测 ✓），
