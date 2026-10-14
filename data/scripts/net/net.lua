@@ -135,6 +135,11 @@ function CopilotNet.updateServer()
     if CopilotRpc ~= nil then
         CopilotRpc.tick()
     end
+
+    -- ★ 空闲扫描：名单里有目标的船一空闲就发起 decide ✓（自己控节奏 ✓）
+    if CopilotFleet ~= nil then
+        CopilotFleet.maybeScan()
+    end
 end
 
 -- ★ 状态汇报：走 chat，因为 chat **一定**进客户端日志 ✓（已实测 ✓），
@@ -160,6 +165,7 @@ function CopilotNet.initialize()
     self.outbound = include("net/outbound")
     self.linkOut = include("net/link_out")
     self.linkIn = include("net/link_in")
+    self.fleet = include("net/fleet")          -- ★ 空闲扫描 + 自动发起 decide ✓
 
     self.inbound.install()          -- 自己挂到 net 上：net 一有消息就解包并转发
     self.linkOut.install()          -- game -> DSH
