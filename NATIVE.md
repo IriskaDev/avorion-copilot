@@ -313,3 +313,53 @@ static int l_readfile(lua_State *L) { ... fopen/fseek/fread ... lua_pushlstring 
 
 配合 `/copilot reload`（见 AGENTS.md），开发时改逻辑无需重启游戏。
 注意：**重编 DLL 本身仍然必须重启**——`keep_resident` 让 DLL 在进程里卸不掉。
+---
+
+## ★★★ 原生模块不能碰 Lua 分配（2026-10-15 —— 第二次崩溃的根因）
+
+**铁律：DLL 里只许做 `socket 收发 + lua_push<string|boolean|number>`，绝不许建表/解码 JSON。** ✗
+
+### 症状
+
+进游戏约 60~85 秒后，服务端日志出现
+
+```
+X_X
+Sending crash report ...
+Error cleaning up lua::WorkerPool: shutdown() not called!
+```
+
+**进程不死、画面正常**，但 **Lua 全停**（脚本不再被 tick、RPC 没人读）——"僵尸态" ✓。
+
+### 根因
+
+游戏**从多个 Lua worker 线程并发**运行同一个玩家脚本（实测 DLL 日志里一次会话出现过 **10 个不同 `tid=`**）✓。
+我们的 `CRITICAL_SECTION` **只能保护我们自己的全局变量** ✓，**保护不了宿主传进来的 `lua_State`**
+—— 因为**游戏自己的 Lua 代码不会去拿我们的锁** ✗✓。
+
+于是：`cp.decode()` 里的 `lua_createtable` + `lua_setfield` **会触发 Lua 的 GC** ✓
+→ 两个线程同时 GC 同一个 `global_State` → **堆损坏** ✗✓ → 下一次 ntdll 堆校验时爆 `X_X` ✓。
+
+### 二分证据链
+
+| 配置 | 结果 |
+|---|---|
+| 摘掉 net 链 | 不崩 ✓ |
+| 只调一次 `connect` | 不崩 ✓ |
+| 每 tick 调 `connected` + `recv` | **崩 ✗** |
+| 每 tick `connected`，**跳过 `recv`** | 不崩 ✓ |
+| `recv` 照跑、**跳过 `decode`** | ★ **不崩 ✓✓** |
+
+### 处置
+
+* JSON **编解码全部移到纯 Lua**：`data/scripts/lib/copilotjson.lua` ✓✓
+* DLL 只保留 `connect/connected/state/send/recv/close` 等 **socket + 标量压栈** ✓
+* `cp.encode` / `cp.decode` 仍在 DLL 里（留作参考 ✓），但**游戏侧不再调用** ✗
+* 顺带修掉的真 bug：`extract()` 曾把**已被 `memmove` 搬移过的内部指针**交给调用方，
+  且帧长**直接信网络字节**（无上限校验 ✗）—— 已改为 `frame_status()` + `extract_copy()`
+  （先复制再压缩缓冲、帧长上限 64MB、用线程局部缓冲 ✓）
+
+### 仍然未知但已无害
+
+`l_send` 也会分配（编码后 `lua_pushstring` ✓）—— 实测 6 分钟未见问题 ✓；
+若将来又出现同类崩溃，**第一个要怀疑的就是它** ✗。

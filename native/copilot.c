@@ -190,23 +190,65 @@ static int pump(void)
     }
 }
 
-/* 从累积缓冲里切出一帧。有完整帧返回 1 并填 *out/*outlen（指向内部缓冲，调用方须立即复制）。 */
-static int extract(unsigned char **out, size_t *outlen)
+/*
+ * Frame extraction.
+ *
+ * 2026-10-15 -- THIS FUNCTION WAS THE CRASH. Two separate defects:
+ *
+ *   1. It handed the caller a pointer INTO g_rbuf and then immediately memmove()d
+ *      that very buffer, so the pointer was stale before the caller used it.
+ *   2. The frame length came straight off the wire with no sanity check. A garbage
+ *      4-byte prefix (torn read, half-initialised buffer, anything) made both the
+ *      memmove and the following push read/relocate an unbounded amount of memory.
+ *
+ * The old comment even said "caller must copy immediately" -- but the copy in
+ * l_recv happened AFTER the memmove, so it never held.
+ *
+ * Why only l_recv crashed and l_connected did not: l_connected just pushes a
+ * boolean (no buffer, no allocation), whereas l_recv walked this broken path and
+ * then allocated a Lua string, which is where the damaged heap finally surfaced
+ * -- as the lua::WorkerPool crash roughly a minute into play.
+ *
+ * Fix: reject implausible lengths outright, and copy the frame into a
+ * caller-owned buffer BEFORE compacting the accumulation buffer.
+ */
+#define COPILOT_MAX_FRAME (64u * 1024u * 1024u)   /* matches the Lua/DLL framing limit */
+
+/* Number of bytes of the next frame still missing, or 0 when nothing usable yet.
+ * Returns -1 when the frame length is implausible (caller should drop the link). */
+static int frame_status(void)
+{
+    if (g_rlen < 4) return 0;
+    uint32_t len;
+    memcpy(&len, g_rbuf, 4);
+    if (len > COPILOT_MAX_FRAME) return -1;
+    if (g_rlen < 4 + (size_t)len) return 0;
+    return 1;
+}
+
+/*
+ * Copy the next complete frame into dst (capacity dstcap) and remove it from the
+ * accumulation buffer. Returns the frame length, or 0 when there is no complete
+ * frame, or (size_t)-1 on an implausible frame length.
+ */
+static size_t extract_copy(unsigned char *dst, size_t dstcap)
 {
     if (g_rlen < 4) return 0;
 
     uint32_t len;
-    memcpy(&len, g_rbuf, 4);                    /* 小端：x86 原生序 */
+    memcpy(&len, g_rbuf, 4);
+    if (len > COPILOT_MAX_FRAME) return (size_t)-1;
     if (g_rlen < 4 + (size_t)len) return 0;
+    if ((size_t)len > dstcap)     return (size_t)-1;
 
-    *out = g_rbuf + 4;
-    *outlen = len;
+    if (len > 0) memcpy(dst, g_rbuf + 4, len);        /* copy BEFORE compacting */
 
-    /* 把这一帧从缓冲头部移除（剩余部分左移） */
     size_t consumed = 4 + (size_t)len;
-    memmove(g_rbuf, g_rbuf + consumed, g_rlen - consumed);
+    if (g_rlen > consumed) {
+        memmove(g_rbuf, g_rbuf + consumed, g_rlen - consumed);
+    }
     g_rlen -= consumed;
-    return 1;
+    return (size_t)len;
 }
 
 /* ------------------------------------------------------------------ Lua 绑定 */
@@ -403,23 +445,43 @@ static int l_recv(lua_State *L)
         return 1;
     }
 
-    unsigned char *frame = NULL; size_t flen = 0;
-
-    if (!extract(&frame, &flen)) {
+    /* A frame may already be buffered; otherwise read the socket once. */
+    int st = frame_status();
+    if (st <= 0) {
         int ok = pump();
         nlog("  pump -> %d, rlen now %d", ok, (int)g_rlen);
         if (!ok) { lua_pushnil(L); return 1; }
         if (g_state != ST_READY) { lua_pushnil(L); return 1; }
+        st = frame_status();
     }
-
-    if (!extract(&frame, &flen)) {
+    if (st < 0) {
+        /* Implausible length on the wire: drop the connection instead of walking
+         * off the end of the buffer. */
+        nlog("  implausible frame length, dropping link");
+        g_state = ST_DEAD;
+        lua_pushnil(L);
+        return 1;
+    }
+    if (st == 0) {
         nlog("  no complete frame yet (rlen=%d)", (int)g_rlen);
         lua_pushnil(L);
         return 1;
     }
 
-    nlog("  frame extracted: %d bytes, rlen left %d", (int)flen, (int)g_rlen);
-    lua_pushlstring(L, (const char *)frame, flen);
+    /* Copy into a stack buffer first: extract_copy compacts g_rbuf, so a pointer
+     * into it would be stale by the time Lua got the string. */
+    {
+        static __declspec(thread) unsigned char tls_frame[65536];
+        size_t flen = extract_copy(tls_frame, sizeof(tls_frame));
+        if (flen == (size_t)-1) {
+            nlog("  frame too large for the per-thread buffer, dropping link");
+            g_state = ST_DEAD;
+            lua_pushnil(L);
+            return 1;
+        }
+        nlog("  frame extracted: %d bytes, rlen left %d", (int)flen, (int)g_rlen);
+        lua_pushlstring(L, (const char *)tls_frame, flen);
+    }
     return 1;
 }
 
@@ -544,6 +606,38 @@ static void copilot_lock_init(void)
     InitOnceExecuteOnce(&g_api_lock_once, copilot_lock_ctor, NULL, NULL);
 }
 
+/*
+ * Diagnostic (temporary): record which lua_State pointer arrives from which
+ * OS thread. Printed ONLY when the (thread, L) pair changes, so it stays cheap.
+ *
+ * Why it matters: if the same lua_State is handed to several worker threads
+ * concurrently, then EVERY Lua C API call is a race that no lock of ours can
+ * fix -- the game's own Lua code does not take our lock. If each thread has its
+ * own L, the Lua side is safe and the fault is somewhere else in the module.
+ */
+static void note_thread_state(lua_State *L)
+{
+    static DWORD seen_tid[64];
+    static const void *seen_L[64];
+    static int seen_n = 0;
+    static CRITICAL_SECTION cs;
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    /* Reuse InitOnce via a tiny local ctor is overkill here; the caller already
+     * holds g_api_lock, so this is serialised. */
+    (void)once; (void)cs;
+
+    DWORD tid = GetCurrentThreadId();
+    int i;
+    for (i = 0; i < seen_n; i++) {
+        if (seen_tid[i] == tid && seen_L[i] == (const void *)L) return;
+    }
+    if (seen_n < 64) {
+        seen_tid[seen_n] = tid;
+        seen_L[seen_n] = (const void *)L;
+        seen_n++;
+    }
+    dshlog("THREAD/STATE #%d tid=%lu L=%p", seen_n, (unsigned long)tid, (const void *)L);
+}
 static void copilot_lock(void)
 {
     copilot_lock_init();

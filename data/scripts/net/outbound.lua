@@ -33,11 +33,11 @@ end
 
 -- 底层：表 -> JSON 文本。用 DLL 里的 cJSON，避免手写编解码出错。
 function CopilotOut.encode(msg)
-    local ok, cp = pcall(require, "copilot")
-    if not ok or type(cp) ~= "table" or cp.encode == nil then
-        return nil, "native module 'copilot' unavailable"
-    end
-    local text = cp.encode(msg)
+    -- ★★ 2026-10-15：改用**纯 Lua** JSON 编码 ✓✓（同 inbound.lua 的理由：
+    -- 原生建表会触发 Lua GC，而我们的脚本是被多线程并发跑的 ✗。
+    -- 原生模块从此刻起**只做 socket 收发**（已实测 5 分钟安全 ✓✓）。
+    local Json = include("copilotjson")
+    local text = Json.encode(msg)
     if text == nil then return nil, "encode failed" end
     return text
 end

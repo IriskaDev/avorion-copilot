@@ -25,11 +25,15 @@ self.last = self.last or nil
 
 -- 原始文本 -> 消息表。失败返回 nil, err（**不抛错**：坏帧不能拖垮脚本）
 function CopilotIn.decode(text)
-    local ok, cp = pcall(require, "copilot")
-    if not ok or type(cp) ~= "table" or cp.decode == nil then
-        return nil, "native module 'copilot' unavailable"
-    end
-    local msg = cp.decode(text)
+    -- ★★ 2026-10-15：改用**纯 Lua** JSON 解码 ✓✓
+    --
+    -- 原来调 DLL 里的 cJSON（cp.decode）✗ —— 它会 lua_createtable + 逐字段 setfield，
+    -- 从而**触发 Lua 的 GC** ✓；而游戏从多个 worker 线程并发跑我们的脚本 ✗，
+    -- 我们的锁保护不了那个 lua_State ✓ → 两个线程同时 GC = 堆损坏 ✗✓ →
+    -- 约 80 秒后 X_X + lua::WorkerPool 崩溃（实测：跳过 decode 就 5 分钟不崩 ✓）。
+    -- 详情见 lib/copilotjson.lua 顶部。
+    local Json = include("copilotjson")
+    local msg = Json.decode(text)
     if type(msg) ~= "table" then
         return nil, "not a JSON object"
     end

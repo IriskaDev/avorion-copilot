@@ -89,7 +89,8 @@ function CopilotNet.getUpdateInterval()
     return 1                                -- 每秒拉一次；决策是秒级场景，够用
 end
 
-function CopilotNet.updateServer()
+-- ★ 实验开关（2026-10-15）：true = 只调一次 connect，之后**完全不再碰 DLL** ✓
+--   用来区分：是「DLL 被用」在崩，还是「DLL 被加载」就崩 ✗
     if not onServer() then return end
 
     local cp = CopilotNet.getModule()
@@ -125,7 +126,8 @@ function CopilotNet.updateServer()
     -- 把 DLL 里已到的完整帧全部取干净，一条一条 emit 出去。
     -- 用上限防止坏帧导致死循环；recv 是非阻塞的，没有就返回 nil。
     for _ = 1, 32 do
-        local text = cp.recv()
+        local text = nil
+        if not CopilotNet.SKIP_RECV then text = cp.recv() end   -- ★ 二分：跳过 recv ✓
         if text == nil then break end
         CopilotRpc.trace("收到一帧 " .. tostring(#text) .. " 字节")
         CopilotNet.emit("message", text)    -- 原始文本；解析交给 inbound
