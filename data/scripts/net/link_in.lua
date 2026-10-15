@@ -246,8 +246,14 @@ function CopilotLinkIn.onOrder(data)
         safeMode = data.safeMode == true,
         immediateDelivery = data.immediateDelivery == true,
     }
+    -- ★★ 注意：**只有 Trade 才有"路线"** ✗✓（2026-10-16 实测）
+    --   本鱼原先把这段校验放在**所有动作**上 ✗ → 下 Mine 时也被判
+    --   "this area has no trade routes at all" ✓（Mine 的 routes 当然是空的 ✓）。
+    --   所以整段用 `if ctype == COMMAND_TYPES.Trade then` 圈起来 ✓✓。
+
     -- ★ goodName 必须落在**本区域的**路线表里 ✓，否则**自动挑一条** ✓✓
     --   （原版把最好的排在最前 ✓ —— 它按 profitPerSize 排序 ✓）
+    if ctype == COMMAND_TYPES.Trade then
     local wantGood = (type(data.goodName) == "string" and data.goodName ~= "") and data.goodName or nil
     if wantGood ~= nil then
         local found = false
@@ -268,6 +274,7 @@ function CopilotLinkIn.onOrder(data)
     if config.goodName == nil then
         return false, "NO_ROUTE", "this area has no trade routes at all — try another area"
     end
+    end   -- ★ 结束"仅 Trade"的范围 ✓
     local dep = tonumber(data.deposit)
     if dep ~= nil and dep > 0 then
         config.deposit = math.floor(dep)
