@@ -201,13 +201,34 @@ else
     check("A 推荐 = Oxygen（净收益 12000 最高）",
         rA.recommendation ~= nil and rA.recommendation.goodName == "Oxygen",
         rA.recommendation and rA.recommendation.goodName)
-    check("A 推荐净收益 = 12000~13200",
-        rA.recommendation ~= nil and rA.recommendation.netProfitLow == 12000
-        and rA.recommendation.netProfitHigh == 13200,
-        rA.recommendation and (rA.recommendation.netProfitLow .. "/" .. rA.recommendation.netProfitHigh))
-    check("A 推荐口径 = netProfit",
-        rA.recommendation ~= nil and rA.recommendation.profitBasis == "netProfit",
+    -- ★★ 2026-10-17 改口径：主人要求**风险调整**（不是最好情况 ✓✓）
+    --   本用例的路线：profitPerFlight 6000~6600、flights 2、attackChance 6% ✓
+    --     最好情况   = 6000×2 ~ 6600×2            = 12000 ~ 13200 ✓
+    --     风险调整   = (1−0.06)×12000 + 0.06×(6000×min(1,2))
+    --                = 0.94×12000 + 0.06×6000     = **11280** ✓
+    --                  (1−0.06)×13200 + 0.06×6600 = **12408** ✓
+    --   依据：被伏击 = 强制召回，被中断那一班不计利润、已飞完的班次照算，
+    --   而伏击落在第一或第二班内 → 被伏击时最多结算 1 班 ✓
+    --   （原版 tradecommand.lua:450-506 与 :124-147、:89-96 ✓）
+    check("A 推荐最好情况 = 12000~13200（标注 bestCase ✓）",
+        rA.recommendation ~= nil and rA.recommendation.bestCaseLow == 12000
+        and rA.recommendation.bestCaseHigh == 13200,
+        rA.recommendation and (tostring(rA.recommendation.bestCaseLow) .. "/" .. tostring(rA.recommendation.bestCaseHigh)))
+    check("A 推荐风险调整期望 = 11280~12408（p=6% ✓ 排序主键 ✓）",
+        rA.recommendation ~= nil and rA.recommendation.netProfitLow == 11280
+        and rA.recommendation.netProfitHigh == 12408,
+        rA.recommendation and (tostring(rA.recommendation.netProfitLow) .. "/" .. tostring(rA.recommendation.netProfitHigh)))
+    check("A 推荐口径 = netProfit(riskAdjusted)",
+        rA.recommendation ~= nil and rA.recommendation.profitBasis == "netProfit(riskAdjusted)",
         rA.recommendation and rA.recommendation.profitBasis)
+    check("A 期望必须**低于**最好情况（风险真的被扣掉了 ✓）",
+        rA.recommendation ~= nil
+        and rA.recommendation.netProfitLow < rA.recommendation.bestCaseLow,
+        rA.recommendation and (tostring(rA.recommendation.netProfitLow) .. " vs best " .. tostring(rA.recommendation.bestCaseLow)))
+    check("A attackNote 讲清了被伏击的结算方式 ✓",
+        rA.recommendation ~= nil and type(rA.recommendation.attackNote) == "string"
+        and rA.recommendation.attackNote:find("召回", 1, true) ~= nil,
+        rA.recommendation and tostring(rA.recommendation.attackNote))
     check("A 推荐预付金 = 752000（装满 10000 单位 × 75.2）",
         rA.recommendation ~= nil and rA.recommendation.deposit == 752000,
         rA.recommendation and rA.recommendation.deposit)

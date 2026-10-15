@@ -501,23 +501,71 @@ local function fallbackMetric(c)
     return -1
 end
 
--- ★ 净收益（主人钦定的口径 ✓）：profitPerFlight × flights ✓
---   返回 保守值, 乐观值, 口径名 ✓（缺预测 → 退回 profitPerSize 并**说明** ✓）
-local function netProfit(c)
+-- ★★★ 收益模型（2026-10-16 改：**风险调整**，主人钦定 ✓✓）
+--
+-- 原版证据（tradecommand.lua ✓，全部实读）：
+--   · 被伏击 → 强制召回 → `onRecall`（:450）**不给被中断那一班的利润** ✗
+--       :490  runTime ≥ 0.35×flightTime → 只退「押金 − 货钱」，**利润为 0** ✓
+--       :496/:499 runTime < 0.35×flightTime → 全额退押金，**利润同样为 0** ✓
+--       （★ 货**留在船上** ✗ —— 只能靠 Sell 变现 → Issue B ✓✓）
+--   · 已经飞完的班次**照样结算** ✓（:124-127 每班 addYield、:147 ✓）
+--   · 伏击时刻 = random(0.1,0.85) × flightTime ×（多班则 ×2，否则 ×1）（:89-96 ✓）
+--       → ★ 伏击落在**第一或第二班之内** ✓ → 被伏击时**最多已结算 1 班** ✓✓
+--   · 押金**不是成本** ✓：完成时 :135/:142 `money = money + self.config.deposit` 是**退还** ✓
+--       （所以最好情况就是 profitPerFlight × flights，**不要**再减押金 ✗✓）
+--
+-- 于是（p = attackChance）：
+--     最好情况  best  = profitPerFlight × flights          （标注为 best-case ✓）
+--     期望      exp   = (1−p) × best + p × (1 班的利润)      （★ 排序主键 ✓✓）
+--   p 未知时**不做调整**（= best）并在口径里**明说** ✓（原版闸门对未知也是放行 ✓，
+--   保持一致；未知就乱打折反而会误杀合法候选 ✗）
+--
+-- 返回：bestLow, bestHigh, expLow, expHigh, 口径名（以 "netProfit" 开头 ✓ 供 basisRank 用 ✓）
+local function profitModel(c)
     local fl = flightsOf(c)
     local pf = c.profitPerFlight
-    if type(pf) == "table" and fl ~= nil and fl > 0 then
-        local low, high = tonumber(pf.from), tonumber(pf.to)
-        if low ~= nil and high ~= nil then
-            return low * fl, high * fl, "netProfit"
-        end
+    if type(pf) ~= "table" or fl == nil or fl <= 0 then
+        local m = fallbackMetric(c)
+        return m, m, m, m, "profitPerSize(fallback; no risk adjustment available)"
     end
-    local m = fallbackMetric(c)
-    return m, m, "profitPerSize(fallback)"
+    local low, high = tonumber(pf.from), tonumber(pf.to)
+    if low == nil or high == nil then
+        local m = fallbackMetric(c)
+        return m, m, m, m, "profitPerSize(fallback; no risk adjustment available)"
+    end
+
+    local bestLow, bestHigh = low * fl, high * fl
+
+    local pRaw = tonumber(c.attackChanceEffective)
+    if pRaw == nil then pRaw = tonumber(c.attackChance) end
+    if pRaw == nil then
+        -- 概率未知 → 与闸门口径一致：放行、且**不做**风险调整 ✓（并在口径里写明 ✓）
+        return bestLow, bestHigh, bestLow, bestHigh, "netProfit(chance unknown -> unadjusted)"
+    end
+    local p = pRaw
+    if p < 0 then p = 0 end
+    if p > 1 then p = 1 end
+
+    -- 被伏击时最多结算 1 班（证据见上 ✓）；保守用 from、乐观用 to ✓
+    local keepLow, keepHigh = low * math.min(1, fl), high * math.min(1, fl)
+    local expLow = (1 - p) * bestLow + p * keepLow
+    local expHigh = (1 - p) * bestHigh + p * keepHigh
+    return bestLow, bestHigh, expLow, expHigh, "netProfit(riskAdjusted)"
+end
+
+-- 排序/带宽逻辑用的薄封装：返回**风险调整期望的 low/high** + 口径名 ✓
+-- ★ 必须保持**三个返回值** ✗→✓：调用点写的是 `local lo, hi, basis = netProfit(x)` ✓，
+--   本鱼第一版只返回两个 ✗ → 于是 `hi` 接到了口径**字符串** ✗ →
+--   string.format 的 %d 拿到字符串 → "attempt to perform arithmetic on a string value" ✓✓
+--   （离线自检当场抓到 ✓ —— 这就是要跑测试的价值 ✓）
+local function netProfit(c)
+    local _bl, _bh, expLow, expHigh, basis = profitModel(c)
+    return expLow, expHigh, basis
 end
 
 local function basisRank(c)
-    return (c.profitBasis == "netProfit") and 1 or 0
+    local b = c.profitBasis
+    return (type(b) == "string" and string.sub(b, 1, 9) == "netProfit") and 1 or 0
 end
 
 -- 风险：未知概率按**最差**参与排序（9 ✓）；但**闸门**对未知是放行的 ✓
@@ -629,8 +677,10 @@ local function fillPrediction(cand, pred)
     cand.maxAvailable = pred.maxAvailable and tonumber(pred.maxAvailable.value) or nil
     cand.transportedPerFlight = pred.transportedPerFlight
     cand.predictionError = pred.error
-    local lo, hi, basis = netProfit(cand)
-    cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = lo, hi, basis
+    -- ★ netProfitLow/High = **风险调整期望**（排序主键 ✓）；bestCaseLow/High = 最好情况（标注 ✓）
+    local bl, bh, el, eh, basis = profitModel(cand)
+    cand.bestCaseLow, cand.bestCaseHigh = bl, bh
+    cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = el, eh, basis
 end
 
 -- 扫**一个**区域：分析（pcall ✓）+ 每条路线算预测（pcall ✓）
@@ -750,8 +800,9 @@ local function summariseArea(rec, Trade, factsBase, opts)
     rec.best = pass[1] or any[1]
     rec.candidatesByProfit = any
     if rec.best ~= nil then
-        local lo, hi, basis = netProfit(rec.best)
-        rec.bestNetLow, rec.bestNetHigh, rec.bestBasis = lo, hi, basis
+        local bl, bh, el, eh, basis = profitModel(rec.best)
+        rec.bestCaseLow, rec.bestCaseHigh = bl, bh
+        rec.bestNetLow, rec.bestNetHigh, rec.bestBasis = el, eh, basis
         rec.bestRouteName = rec.best.name
         rec.bestChance = tonumber(rec.best.attackChanceEffective)
         rec.bestChanceBase = tonumber(rec.best.attackChance)
@@ -779,6 +830,8 @@ local function buildRanking(scanned)
             netProfitLow = rec.bestNetLow,
             netProfitHigh = rec.bestNetHigh,
             netProfitBasis = rec.bestBasis,
+            bestCaseLow = rec.bestCaseLow,
+            bestCaseHigh = rec.bestCaseHigh,
             attackChance = rec.bestChance,
             attackChanceBase = rec.bestChanceBase,
             profitPerSize = rec.bestMetric,
@@ -1047,6 +1100,11 @@ function CopilotLinkIn.tradePlan(player, data)
             netProfitLow = lo,
             netProfitHigh = hi,
             profitBasis = basis,
+            bestCaseLow = profitModel(top),
+            bestCaseHigh = select(2, profitModel(top)),
+            attackNote = "被伏击 = 强制召回：被中断那一班**不计利润** ✗，已飞完的班次照算 ✓，"
+                .. "货会留在船上（靠 Sell 变现 ✓）—— 所以 netProfit* 是**风险调整后的期望** ✓，"
+                .. "bestCase* 才是最好情况 ✓（原版 tradecommand.lua:450-506 / :124-147 ✓）",
             profitPerSize = top.profitPerSize,
             flights = top.flights,
             flightTime = top.flightTime,
@@ -1056,8 +1114,10 @@ function CopilotLinkIn.tradePlan(player, data)
             to = top.to,
         }
         recommendation.reason = string.format(
-            "净收益 C%d~%d（保守~乐观，口径 %s／航班 %s 次）；伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；商品「%s」；预付金 %d；护航 %s",
+            "净收益**期望** C%d~%d（★ 风险调整后 ✓，口径 %s；最好情况 C%d~%d）／航班 %s 次；伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；商品「%s」；预付金 %d；护航 %s",
             math.floor((lo or 0) + 0.5), math.floor((hi or 0) + 0.5), tostring(basis),
+            math.floor((recommendation.bestCaseLow or 0) + 0.5),
+            math.floor((recommendation.bestCaseHigh or 0) + 0.5),
             tostring(flightsOf(top)),
             top.attackChanceEffective and string.format("%.1f%%", top.attackChanceEffective * 100) or "未知",
             gate * 100, recTop.offset.x, recTop.offset.y, tostring(top.name),
@@ -1152,15 +1212,17 @@ function CopilotLinkIn.tradePlan(player, data)
     --   这里用**该路线自己的"装满货舱"预付金**改回来 ✓✓。
     if plan ~= nil and chosen.best ~= nil then
         local b = chosen.best
-        local lo, hi, basis = netProfit(b)
+        local _bl2, _bh2, lo, hi, basis = profitModel(b)
+        plan.bestCaseLow, plan.bestCaseHigh = _bl2, _bh2
         plan.config.goodName = b.name
         plan.config.deposit = b.deposit
         plan.config.escorts = b.escortsForGate or {}
         plan.netProfitLow, plan.netProfitHigh, plan.profitBasis = lo, hi, basis
         plan.attackChance = tonumber(b.attackChanceEffective)
         plan.reason = tostring(plan.reason) .. string.format(
-            "  ★ 按主人钦定的**净收益**口径重排：本区域最优是「%s」（净收益 C%d~%d，伏击概率 %s）",
+            "  ★ 按主人钦定的**净收益**口径重排：本区域最优是「%s」（净收益**期望** C%d~%d，风险调整 ✓；最好情况 C%d~%d；伏击概率 %s）",
             tostring(b.name), math.floor(lo + 0.5), math.floor(hi + 0.5),
+            math.floor((_bl2 or 0) + 0.5), math.floor((_bh2 or 0) + 0.5),
             b.attackChanceEffective and string.format("%.1f%%", b.attackChanceEffective * 100) or "未知")
         if #(b.escortsForGate or {}) > 0 then planWithEscorts = true end
     end
@@ -1188,10 +1250,12 @@ function CopilotLinkIn.tradePlan(player, data)
             shipX, shipY)
     end
     if recommendation ~= nil then
-        notes[#notes + 1] = string.format("推荐「%s」净收益 C%d~%d，伏击概率 %s ≤ %.0f%%",
+        notes[#notes + 1] = string.format("推荐「%s」净收益**期望** C%d~%d（风险调整 ✓；最好情况 C%d~%d），伏击概率 %s ≤ %.0f%%",
             tostring(recommendation.goodName),
             math.floor((recommendation.netProfitLow or 0) + 0.5),
             math.floor((recommendation.netProfitHigh or 0) + 0.5),
+            math.floor((recommendation.bestCaseLow or 0) + 0.5),
+            math.floor((recommendation.bestCaseHigh or 0) + 0.5),
             recommendation.attackChance and string.format("%.1f%%", recommendation.attackChance * 100) or "未知",
             gate * 100)
     elseif riskWarning ~= nil then
