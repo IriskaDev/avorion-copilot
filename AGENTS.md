@@ -401,3 +401,11 @@ pcall(chunk)
 > 另一个同源教训（也在本文件里）：`CopilotRpc.handle(cmd, **CopilotLinkIn.onQuery**)` 是
 > **抓函数指针** ✗ —— 与「引擎按名字查表」相反，重载后会留下旧指针 ✓。
 > 现已改成 `bind(name)` 间接调用，**每次现场查表** ✓✓。
+### ⚠️ SYSTEM_PROMPT 里**禁止用反引号**（2026-10-16，踩了两次 ✗）
+
+`src/index.ts` 的 `SYSTEM_PROMPT` 是一个**模板字符串**（反引号界定 ✓）。
+在里面写 `action=None` 这类**行内代码**时若用反引号 ✗，会**提前结束模板** →
+TypeScript 报 `TS1005: ',' expected` ✓。
+
+**规矩**：在 SYSTEM_PROMPT / buildPrompt 的模板串里，**一律不要用反引号** ✓。
+（同理：`${` 也要避免出现在正文里 ✓。）
