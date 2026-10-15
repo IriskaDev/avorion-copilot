@@ -252,7 +252,10 @@ function M.shipCard(player, name)
             yield = "recycled output goes straight into the faction stockpile of GLOBAL RESOURCES; cargo space is NOT a constraint",
         },
         Trade = {
-            areaSize = { 29, 29 },
+            -- ★ 修正（2026-10-16 ✓）：合法形状只有 17x17 / 29x11 / 11x29 ✗
+            --   原写 29x29 ✗ → 原版 startCommand 核对尺寸时会拒
+            --   「Area size for X changed.」（simulation.lua:528-543 ✓）
+            areaSize = { 17, 17 },
             shipMustBeInside = true,
             needsCaptain = true,
             captainClass = "Merchant",
