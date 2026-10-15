@@ -330,6 +330,20 @@ function CopilotLinkIn.onOrder(data)
     --   "this area has no trade routes at all" ✓（Mine 的 routes 当然是空的 ✓）。
     --   所以整段用 `if ctype == COMMAND_TYPES.Trade then` 圈起来 ✓✓。
 
+    -- ★★★ Trade 的**货舱感知**（Issue B ✓✓）：船上有货 → 先卖 ✗→✓
+    --   原因（原版 tradecommand.lua ✓）：被伏击召回时货**留在船上**（:460-464 ✓），
+    --   而 Trade 只能装**剩余空间** ✗（:773-797 transportedPerFlight 受 freeCargoSpace 限制 ✓）
+    --   → 有货还去贸易 = 装得少、赚得少、钱被压在货里 ✓（主人明确点出的场景 ✓✓）
+    if ctype == COMMAND_TYPES.Trade then
+        local hold, _herr, used = readHoldGoods(player, ship)
+        if hold ~= nil and #hold > 0 then
+            return false, "HOLD_HAS_GOODS", string.format(
+                "the hold still holds %d units (%d kinds) — run action=Sell first, "
+                .. "then trade with an empty hold (otherwise the trade carries almost nothing)",
+                math.floor(used or 0), #hold)
+        end
+    end
+
     -- ★ goodName 必须落在**本区域的**路线表里 ✓，否则**自动挑一条** ✓✓
     --   （原版把最好的排在最前 ✓ —— 它按 profitPerSize 排序 ✓）
     if ctype == COMMAND_TYPES.Trade then
@@ -393,19 +407,6 @@ function CopilotLinkIn.onOrder(data)
             math.floor(used or 0)))
     end
 
-    -- ★★★ Trade 的**货舱感知**（Issue B ✓✓）：船上有货 → 先卖 ✗→✓
-    --   原因（原版 tradecommand.lua ✓）：被伏击召回时货**留在船上**（:460-464 ✓），
-    --   而 Trade 只能装**剩余空间** ✗（:773-797 transportedPerFlight 受 freeCargoSpace 限制 ✓）
-    --   → 有货还去贸易 = 装得少、赚得少、钱被压在货里 ✓（主人明确点出的场景 ✓✓）
-    if ctype == COMMAND_TYPES.Trade then
-        local hold, _herr, used = readHoldGoods(player, ship)
-        if hold ~= nil and #hold > 0 then
-            return false, "HOLD_HAS_GOODS", string.format(
-                "the hold still holds %d units (%d kinds) — run action=Sell first, "
-                .. "then trade with an empty hold (otherwise the trade carries almost nothing)",
-                math.floor(used or 0), #hold)
-        end
-    end
     local dep = tonumber(data.deposit)
     if dep ~= nil and dep > 0 then
         config.deposit = math.floor(dep)
@@ -514,11 +515,19 @@ local function legalAreaSizes(command, player, ship)
     return out
 end
 
--- 尺寸：没给 → 17（与原实现一致 ✓）；给了 → 合法就用 ✓；不合法 → 用原版第一个正方形 ✓；
--- 连合法尺寸都问不到 → 就照请求的来（note 里说明 ✓）。
-local function pickSquareSize(templates, requested)
+-- 尺寸：没给 → ★ **用该命令自己的合法正方形** ✓（2026-10-17 修 bug ✗✓）
+--   病因：原来 `want == nil → return 17` 是**硬编码** ✗（Trade 的味道 ✗），
+--   于是 Sell（原版就是 15x15，sellcommand.lua:414 ✓）会拿到 **17** ✗✓ —— 离线自检当场抓到 ✓。
+--   改后：Trade 的合法正方形仍是 17 ✓（无回归 ✓）、Mine/Salvage/Sell → 15 ✓✓。
+-- 给了 → 合法就用 ✓；不合法 → 用原版第一个正方形 ✓；一个都问不到 → 用 fallback（缺省 17 ✓）。
+local function pickSquareSize(templates, requested, fallback)
     local want = tonumber(requested)
-    if want == nil then return 17 end
+    if want == nil then
+        for _, t in ipairs(templates) do
+            if t.x == t.y then return t.x end
+        end
+        return tonumber(fallback) or 17
+    end
     for _, t in ipairs(templates) do
         if t.x == want and t.y == want then return want end
     end
