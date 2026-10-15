@@ -153,6 +153,36 @@ function M.shipCard(player, name)
     --   「缺少当前星区、可贸易路线及船长职业信息，无法安全指派贸易任务。」
     -- 它是对的 ✗ —— 之前的卡片只有 busy/captain/status，模型没法决策 ✓。
 
+    -- ★★ 装备构成 ✓✓（2026-10-16 补，为"没设目标时按装备派活"服务 ✓）
+    --
+    -- 依据：原版采矿能力就是**从炮塔算出来的** ✓（minecommand.lua:545
+    --   `MineCommand:getMiningProperties` → `entry:getTurrets()` ✓）。
+    -- 而 `getNumMiningTurrets()` 这个名字**不存在** ✗（本 mod 早先实测过 ✓）。
+    -- 每个炮塔的字段名不确定 → 逐个 pcall ✓（读不到就跳过，绝不让卡片崩 ✗）。
+    do
+        local okT, list = pcall(function() return { entry:getTurrets() } end)
+        if okT and type(list) == "table" then
+            card.turretCount = #list
+            local kinds = {}
+            for _, t in ipairs(list) do
+                local okW, wt = pcall(function() return t.weaponType end)
+                if okW and wt ~= nil then
+                    local k = tostring(wt)
+                    kinds[k] = (kinds[k] or 0) + 1
+                end
+            end
+            if next(kinds) ~= nil then card.turretTypes = kinds end
+        else
+            probeNotes.turrets = tostring(list)
+        end
+    end
+
+    -- 货舱（贸易/采矿都要看容量 ✓）
+    do
+        local okC, cs = pcall(function() return entry:getFreeCargoSpace() end)
+        if okC and cs ~= nil then card.freeCargoSpace = math.floor(tonumber(cs) or 0) end
+    end
+
     -- ① 船当前所在星区 ✓（决策的第一步：先知道它在哪 ✓）
     local okPos, px, py = pcall(function() return player:getShipPosition(name) end)
     if okPos and px ~= nil and py ~= nil then

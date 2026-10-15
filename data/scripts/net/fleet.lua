@@ -86,7 +86,14 @@ function CopilotFleet.scan()
             -- 跳过：玩家在开 / 已经在处理 ✓
         else
             local goal = Goal.describe(player, name)
-            if goal.hasGoal then
+            -- ★★ 没设目标也决策 ✓✓（主人 2026-10-16 要求）
+            --
+            --   原话：「在玩家未设置明确说明的时候，也可以试着根据船的装备/命名，
+            --          来决定给船派什么指令」
+            --   → 所以这里不再要求 hasGoal ✓；没目标时把 goal.hasGoal=false 传给 DSH ✓，
+            --     由 DSH 侧的 prompt 告诉模型"玩家没给目标，请按船名与装备自行判断" ✓✓
+            --     （prompt 里早就写了这个分支 ✓，只需放行 ✓）
+            do
                 local busy, avail = Card.isBusy(player, name)
                 if busy == false then
                     -- ★ 只在**本轮空闲期**发起一次决策 ✓✓
