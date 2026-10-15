@@ -451,17 +451,40 @@ end
 -- 安装：把自己注册进 RPC 框架 ✓
 -- ---------------------------------------------------------------------------
 
+-- ★★★ 注册必须走**间接调用**（2026-10-16 实测的坑 ✓✓）
+--
+-- 原来写的是 `CopilotRpc.handle("query", CopilotLinkIn.onQuery)` ✗
+--   —— 那抓的是**函数对象**（函数指针 ✗）。
+--   于是 `/copilot reload link_in` 重执行本文件后，**新函数定义好了 ✓，
+--   但派发表里还是旧指针 ✗** → 新加的 what=tradePlan 分支根本不会被调用 ✗✓。
+--   （实测现象：DSH 发 query{tradePlan} → 游戏回 "unknown what: tradePlan" ✓）
+--
+-- 这正好违背本仓库的既有教训（AGENTS.md）✗：
+--   「引擎是按名字查表调用，不是抓函数指针」—— 重载靠的就是这一条 ✓。
+--   守卫（installed）让 install 只跑一次 ✓，所以旧指针会一直留着 ✗。
+--
+-- 修法：包一层，**每次调用时现场查表** ✓✓ —— 这样重载立即生效，无需重启游戏 ✓✓。
+local function bind(name)
+    return function(data)
+        local fn = CopilotLinkIn[name]
+        if type(fn) ~= "function" then
+            return false, "NO_HANDLER", "handler '" .. name .. "' is missing"
+        end
+        return fn(data)
+    end
+end
+
 function CopilotLinkIn.install()
     if self.installed then return end
     self.installed = true
 
-    CopilotRpc.handle("hello",  CopilotLinkIn.onHello)
-    CopilotRpc.handle("query",  CopilotLinkIn.onQuery)
-    CopilotRpc.handle("order",  CopilotLinkIn.onOrder)
-    CopilotRpc.handle("setGoal", CopilotLinkIn.onSetGoal)
-    CopilotRpc.handle("decide", CopilotLinkIn.onDecide)
-    CopilotRpc.handle("reload", CopilotLinkIn.onReload)
-    CopilotRpc.handle("ping",   CopilotLinkIn.onPing)
+    CopilotRpc.handle("hello",   bind("onHello"))
+    CopilotRpc.handle("query",   bind("onQuery"))
+    CopilotRpc.handle("order",   bind("onOrder"))
+    CopilotRpc.handle("setGoal", bind("onSetGoal"))
+    CopilotRpc.handle("decide",  bind("onDecide"))
+    CopilotRpc.handle("reload",  bind("onReload"))
+    CopilotRpc.handle("ping",    bind("onPing"))
 end
 
 function CopilotLinkIn.status()
