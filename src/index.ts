@@ -848,10 +848,32 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           live(`  ├ tradePlan 无推荐：${pd.riskWarning.slice(0, 140)}`)
         }
         // 只给模型有用的部分：候选表 + 最优计划 ✓（area 里那 289 个坐标太占 token ✗）
+        // ★★ 把**三维搜索**的结果都喂给模型 ✓✓（2026-10-16 修 e3 —— 子代理指出：
+        //   此前只喂了旧的 candidates/best/planReason ✗，于是新加的
+        //   recommendation / areaRanking / orderHint **模型完全看不到** ✗✓，
+        //   多区域搜索白做了 ✓。）
+        //   areaRanking 会裁剪到关键字段，免得把 RPC 响应原样灌进 prompt 撑爆上下文 ✓。
+        const rank = Array.isArray(pd.areaRanking) ? (pd.areaRanking as Record<string, unknown>[]) : []
         facts.tradeRoutes = {
+          recommendation: pd.recommendation ?? null,
+          riskWarning: pd.riskWarning ?? null,
+          orderHint: pd.orderHint ?? null,
+          scanMs: pd.scanMs ?? null,
+          areasScanned: pd.areasScanned ?? null,
+          areas: rank.slice(0, 9).map((a) => ({
+            offset: (a.area as Record<string, unknown> | undefined)?.offset,
+            bestRouteName: a.bestRouteName,
+            netProfitLow: a.netProfitLow,
+            netProfitHigh: a.netProfitHigh,
+            attackChance: a.attackChance,
+            attackChanceWithEscorts: a.attackChanceWithEscorts ?? null,
+            profitPerSize: a.profitPerSize,
+            flights: a.flights,
+            deposit: a.deposit,
+            escortsNeeded: a.escortsNeeded ?? null,
+            acceptable: a.acceptable,
+          })),
           candidates: pd.candidates,
-          best: (pd.plan as Record<string, unknown> | undefined)?.route,
-          planReason: (pd.plan as Record<string, unknown> | undefined)?.reason,
         }
         logger.info(`avorion-copilot: ${ship} 已取到 ${String(pd.routeCount ?? 0)} 条贸易候选 ✓`)
       } else {
