@@ -75,6 +75,45 @@ interface CopilotConfig {
   temperature?: number
 }
 
+/**
+ * ★★ 一次决策的完整记录（主人在 DSH 里要看得见的东西 ✓✓）。
+ *
+ * 分五段，正好对应主人的问法 "决策过程" ✓：
+ *   ① 触发  ship / at / goalText
+ *   ② 输入  card（星区·船长·忙闲）+ routes（候选路线表 ✓）
+ *   ③ 推理  modelText + **reasoning**（思维链 ✓✓）
+ *   ④ 结论  answer（action / params / reason）
+ *   ⑤ 结果  orderResult（下单回执 ✓）/ code + message（失败时 ✓）
+ */
+export interface DecisionRecord {
+  at: string
+  ship: string
+  goalText: string
+  goalOptions: string[]
+  card?: unknown
+  routes?: unknown
+  ok: boolean
+  code?: string
+  message?: string
+  modelText?: string
+  reasoning?: string
+  truncated?: boolean
+  answer?: { action: string; params: Record<string, unknown>; reason?: string }
+  orderResult?: unknown
+}
+
+/**
+ * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。
+ * 只在内存里 —— 够主人现场回看 ✓；要长期留档再落文件 ✓。
+ */
+export const decisionLog: DecisionRecord[] = []
+export const DECISION_LOG_LIMIT = 50
+
+function recordDecision(rec: DecisionRecord): void {
+  decisionLog.push(rec)
+  while (decisionLog.length > DECISION_LOG_LIMIT) decisionLog.shift()
+}
+
 const DEFAULTS = {
   port: 8765,
   provider: 'deepseek-official',
@@ -348,11 +387,53 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
    *
    * 返回 `{action, params}` ✓；游戏侧拿到后走 `order` 真正下单 ✓。
    */
+  /**
+   * ★★ decide 的外层：保证**任何出口都留下一条决策记录** ✓✓（主人要在 DSH 里看得见 ✓）。
+   * 真正的逻辑在内层 decideInner 里，它边做边把过程写进 rec ✓。
+   */
   peer.handle('decide', async (data: any) => {
     const req = (data ?? {}) as DecideRequest
+    const rec: DecisionRecord = {
+      at: new Date().toISOString(),
+      ship: typeof req.ship === 'string' ? req.ship : '(none)',
+      goalText: '',
+      goalOptions: [],
+      ok: false,
+    }
+    try {
+      const out = await decideInner(req, rec)
+      if (out[0] === true) {
+        rec.ok = true
+        rec.answer = out[1] as DecisionRecord['answer']
+      } else {
+        rec.ok = false
+        rec.code = String(out[1])
+        rec.message = out[2]
+      }
+      return out
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      rec.ok = false
+      rec.code = 'EXCEPTION'
+      rec.message = message
+      return [false, 'EXCEPTION', message] as [boolean, any, string]
+    } finally {
+      recordDecision(rec)
+      logger.info(
+        `avorion-copilot: 决策记录 #${decisionLog.length} ` +
+        `${rec.ship} ok=${rec.ok}${rec.answer ? ' -> ' + rec.answer.action : ''}`,
+      )
+    }
+  })
+
+  // 内层：真正的决策逻辑（边做边填 rec ✓）
+  const decideInner = async (
+    req: DecideRequest,
+    rec: DecisionRecord,
+  ): Promise<[boolean, any, string?]> => {
     const ship = req.ship
     if (typeof ship !== 'string' || ship === '') {
-      return [false, 'BAD_REQUEST', 'decide needs data.ship'] as [boolean, any, string]
+      return [false, 'BAD_REQUEST', 'decide needs data.ship']
     }
 
     logger.info(`avorion-copilot: 为 ${ship} 决策中…`)
@@ -361,12 +442,12 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     const goalR = await ask(peer, 'query', { what: 'goal', ship }, 10)
     if (!goalR.ok) {
       logger.warn(`avorion-copilot: 拉目标失败 ${goalR.why ?? ''}`)
-      return [false, 'GOAL_QUERY_FAILED', goalR.why ?? 'unknown'] as [boolean, any, string]
+      return [false, 'GOAL_QUERY_FAILED', goalR.why ?? 'unknown']
     }
     const cardR = await ask(peer, 'query', { what: 'ship', ship }, 10)
     if (!cardR.ok) {
       logger.warn(`avorion-copilot: 拉能力卡失败 ${cardR.why ?? ''}`)
-      return [false, 'CARD_QUERY_FAILED', cardR.why ?? 'unknown'] as [boolean, any, string]
+      return [false, 'CARD_QUERY_FAILED', cardR.why ?? 'unknown']
     }
 
     const gd = (goalR.data ?? {}) as Record<string, unknown>
@@ -376,6 +457,10 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       goalOptions: Array.isArray(gd.options) ? (gd.options as string[]) : [],
       card: cardR.data ?? {},
     }
+    // ★ 记录②"输入"（主人要看的 ✓）
+    rec.goalText = facts.goalText
+    rec.goalOptions = facts.goalOptions
+    rec.card = facts.card
     logger.info(
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
     )
@@ -386,19 +471,26 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.warn(`avorion-copilot: 模型调用异常 ${message}`)
-      return [false, 'MODEL_ERROR', message] as [boolean, any, string]
+      return [false, 'MODEL_ERROR', message]
     }
     if (result.failure !== undefined) {
       logger.warn(`avorion-copilot: 模型调用失败 ${result.failure}`)
-      return [false, 'MODEL_FAILED', result.failure] as [boolean, any, string]
+      return [false, 'MODEL_FAILED', result.failure]
     }
+
+    // ★ 记录③"推理"（含思维链 ✓✓ —— 这是主人最想看的一段 ✓）
+    rec.modelText = result.text
+    rec.reasoning = result.reasoning
+    rec.truncated = result.truncated
 
     const decision = parseDecision(result.text)
     const answer = toAnswer(decision, facts, result.text)
     if (typeof answer === 'string') {
       logger.warn(`avorion-copilot: 决策无法解析 —— ${answer}`)
-      return [false, 'BAD_MODEL_REPLY', answer] as [boolean, any, string]
+      return [false, 'BAD_MODEL_REPLY', answer]
     }
+    // ★ 记录④"结论"（先记下，⑤ 结果随后补 ✓）
+    rec.answer = answer
 
     logger.info(
       `avorion-copilot: ${ship} -> ${answer.action} ${JSON.stringify(answer.params)}` +
@@ -410,6 +502,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     // ★ 真下单：DSH 主动调游戏的 order ✓✓（游戏侧会走两段式 ✓）
     if (answer.action !== 'None') {
       const ord = await ask(peer, 'order', { ship, action: answer.action, ...answer.params }, 30)
+      // ★ 记录⑤"结果"（下单回执 ✓）
+      rec.orderResult = ord.ok ? ord.data : { failed: ord.why ?? 'unknown' }
       if (ord.ok) {
         logger.info(`avorion-copilot: 已下单 ${ship} -> ${answer.action} → ${JSON.stringify(ord.data)}`)
       } else {
@@ -417,8 +511,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       }
     }
 
-    return [true, answer] as [boolean, any]
-  })
+    return [true, answer]
+  }
 
   // ---- 我调游戏（DSH 主动查询 / 下单）---------------------------------------
 
@@ -471,7 +565,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
   }, 'dsh-avorion-copilot:rpc')
 
   // ★ 把游戏能力暴露成 DSH 工具（主人要的"会话接管"就靠它们 ✓✓）
-  registerFleetTools(ctx, peer)
+  registerFleetTools(ctx, peer, decisionLog)
 
   // 供将来从 DSH 侧主动操作（例如命令面板、定时巡检）使用 ✓
   void queryShip

@@ -50,5 +50,41 @@ interface CopilotConfig {
     maxTokens?: number;
     temperature?: number;
 }
+/**
+ * ★★ 一次决策的完整记录（主人在 DSH 里要看得见的东西 ✓✓）。
+ *
+ * 分五段，正好对应主人的问法 "决策过程" ✓：
+ *   ① 触发  ship / at / goalText
+ *   ② 输入  card（星区·船长·忙闲）+ routes（候选路线表 ✓）
+ *   ③ 推理  modelText + **reasoning**（思维链 ✓✓）
+ *   ④ 结论  answer（action / params / reason）
+ *   ⑤ 结果  orderResult（下单回执 ✓）/ code + message（失败时 ✓）
+ */
+export interface DecisionRecord {
+    at: string;
+    ship: string;
+    goalText: string;
+    goalOptions: string[];
+    card?: unknown;
+    routes?: unknown;
+    ok: boolean;
+    code?: string;
+    message?: string;
+    modelText?: string;
+    reasoning?: string;
+    truncated?: boolean;
+    answer?: {
+        action: string;
+        params: Record<string, unknown>;
+        reason?: string;
+    };
+    orderResult?: unknown;
+}
+/**
+ * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。
+ * 只在内存里 —— 够主人现场回看 ✓；要长期留档再落文件 ✓。
+ */
+export declare const decisionLog: DecisionRecord[];
+export declare const DECISION_LOG_LIMIT = 50;
 export declare function apply(ctx: CopilotCtx, config?: CopilotConfig): void;
 export {};

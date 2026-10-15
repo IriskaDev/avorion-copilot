@@ -21,6 +21,7 @@
  * occasionally (see NATIVE.md), and a broken plugin would need a DSH restart to detect.
  */
 import type { RpcPeer } from './rpc.js';
+import type { DecisionRecord } from './index.js';
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
     logger?: {
@@ -38,5 +39,5 @@ export declare function ask(peer: RpcPeer, cmd: string, data: unknown, timeoutSe
     data?: any;
     why?: string;
 }>;
-export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer): void;
+export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[]): void;
 export {};

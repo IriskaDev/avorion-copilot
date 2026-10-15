@@ -23,6 +23,8 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { RpcPeer } from './rpc.js'
+// Type-only import: erased at compile time, so the index <-> tools cycle is harmless.
+import type { DecisionRecord } from './index.js'
 
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
@@ -75,7 +77,7 @@ function addTool(ctx: ToolCtx, def: any, label: string): void {
   }, label)
 }
 
-export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer): void {
+export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[]): void {
   // ---------------------------------------------------------------------
   // fleet_query -- read game data (the "eyes")
   // ---------------------------------------------------------------------
@@ -179,5 +181,107 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer): void {
       },
     },
     'fleet_goal tool',
+  )
+
+  // ---------------------------------------------------------------------
+  // fleet_decisions -- READ THE DECISION PROCESS (requested by the master)
+  //
+  // Every decide request from the game leaves one record: the goal, the facts
+  // fetched over RPC, the MODEL CHAIN OF THOUGHT, the chosen action, and the
+  // order receipt. Purely local memory -- safe to call with the game closed.
+  // ---------------------------------------------------------------------
+  addTool(
+    ctx,
+    {
+      name: 'fleet_decisions',
+      description:
+        'Show the AI DECISION PROCESS. Each time an idle roster ship asked for a decision, one ' +
+        'record is kept here: the standing goal, the facts DSH fetched over RPC (sector, captain, ' +
+        'busy), the model CHAIN OF THOUGHT, the chosen action with its parameters, and the order ' +
+        'receipt. Use this to explain or audit what the AI decided and why. This is pure local ' +
+        'memory, so it is always safe to call -- even with the game closed. verbose=false gives a ' +
+        'one-line-per-record summary; verbose=true prints the full chain of thought.',
+      parameters: {
+        ship: { type: 'string', description: 'only records for this ship (optional)' },
+        limit: { type: 'number', description: 'how many recent records to show, default 5, max 50' },
+        verbose: { type: 'boolean', description: 'true = print the full chain of thought (default false)' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+      },
+      async execute(args: { ship?: string; limit?: number; verbose?: boolean }) {
+        if (decisionLog === undefined || decisionLog.length === 0) {
+          return 'no decisions recorded yet ' +
+            '(a ship must be on the roster, have a goal, and be idle)'
+        }
+        const limit = Math.max(1, Math.min(args.limit ?? 5, 50))
+        const verbose = args.verbose === true
+        const filtered = (args.ship !== undefined && args.ship !== '')
+          ? decisionLog.filter((r) => r.ship === args.ship)
+          : decisionLog
+
+        if (filtered.length === 0) return `no decisions recorded for ship ${args.ship}`
+
+        const recent = filtered.slice(-limit)
+        const okCount = filtered.filter((r) => r.ok).length
+        const lines: string[] = []
+        lines.push(
+          `decision records: ${filtered.length} total (${okCount} ok / ${filtered.length - okCount} failed), ` +
+          `showing the latest ${recent.length}` + (args.ship !== undefined ? ` for ${args.ship}` : ''),
+        )
+
+        // Newest first reads better.
+        for (let i = recent.length - 1; i >= 0; i--) {
+          const rec = recent[i]
+          const idx = filtered.length - recent.length + i + 1
+          lines.push('')
+          lines.push(`--- #${idx}  ${rec.ship}  ${rec.at}  ${rec.ok ? 'OK' : 'FAILED'} ---`)
+          lines.push(`goal: ${rec.goalText !== '' ? rec.goalText : '(no free text)'}`)
+          if (rec.goalOptions.length > 0) lines.push(`allowed actions: ${rec.goalOptions.join(', ')}`)
+
+          const card = rec.card as Record<string, unknown> | undefined
+          if (card !== undefined) {
+            const sector = card.sector as { x?: number; y?: number } | undefined
+            const bits: string[] = []
+            if (sector !== undefined) bits.push(`sector=(${sector.x},${sector.y})`)
+            if (card.busy !== undefined) bits.push(`busy=${String(card.busy)}`)
+            if (card.hasCaptain !== undefined) bits.push(`captain=${String(card.hasCaptain)}`)
+            if (bits.length > 0) lines.push(`facts: ${bits.join('  ')}`)
+          }
+
+          if (verbose) {
+            if (rec.reasoning !== undefined && rec.reasoning.trim() !== '') {
+              lines.push('reasoning (chain of thought):')
+              for (const l of rec.reasoning.trim().split('\n')) lines.push(`  | ${l}`)
+            }
+            if (rec.modelText !== undefined && rec.modelText.trim() !== '') {
+              lines.push('model reply:')
+              for (const l of rec.modelText.trim().split('\n')) lines.push(`  | ${l}`)
+            }
+            if (rec.truncated === true) lines.push('  WARNING: reply was cut off by maxTokens')
+          } else {
+            lines.push(`reasoning: ${(rec.reasoning ?? '').length} chars (pass verbose=true to see it)`)
+          }
+
+          if (rec.answer !== undefined) {
+            const extra = Object.keys(rec.answer.params).length > 0
+              ? ' ' + JSON.stringify(rec.answer.params)
+              : ''
+            lines.push(`decision: action=${rec.answer.action}${extra}`)
+            if (rec.answer.reason !== undefined) lines.push(`why: ${rec.answer.reason}`)
+          }
+          if (rec.orderResult !== undefined) {
+            lines.push(`order: ${JSON.stringify(rec.orderResult)}`)
+          }
+          if (!rec.ok && rec.code !== undefined) {
+            lines.push(`error: ${rec.code} - ${rec.message ?? ''}`)
+          }
+        }
+
+        return lines.join('\n')
+      },
+    },
+    'fleet_decisions tool',
   )
 }
