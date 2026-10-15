@@ -136,6 +136,60 @@ function M.shipCard(player, name)
     -- 再决定接入方式 ✓。在那之前，诚实标记未接入 ✓，绝不硬猜 ✗。
     probeNotes.status = "not wired (needs a verified read-only probe for Simulation.getDescription)"
 
+    -- ★★ 2026-10-15：补厚能力卡 —— 模型明确说缺这三样（原话见 rpc_dsh.log ✓）：
+    --   「缺少当前星区、可贸易路线及船长职业信息，无法安全指派贸易任务。」
+    -- 它是对的 ✗ —— 之前的卡片只有 busy/captain/status，模型没法决策 ✓。
+
+    -- ① 船当前所在星区 ✓（决策的第一步：先知道它在哪 ✓）
+    local okPos, px, py = pcall(function() return player:getShipPosition(name) end)
+    if okPos and px ~= nil and py ~= nil then
+        card.sector = { x = px, y = py }
+    else
+        probeNotes.position = tostring(px)
+    end
+
+    -- ② 船长职业 ✓（Trade 要求 Merchant ✓ —— 这个必须让模型看到 ✓）
+    --    上面已经试过 captain:getClass()；这里再补一个显式的、便于模型读取的字段 ✓
+    if card.captainClass ~= nil then
+        card.captainClassKnown = true
+    elseif card.hasCaptain == true then
+        card.captainClassKnown = false
+        probeNotes.captainClass = "has a captain but getClass() did not answer"
+    end
+
+    -- ③ 合法动作与它们的约束 ✓
+    --    来源：LLM-OPS.md 的调研（四条后台命令的区域规则、船长要求、距离要求 ✓）
+    --    ★ 形状故意做成**自解释**的，模型不用再猜 ✓
+    card.actions = {
+        Mine = {
+            areaSize = { 15, 15 },
+            shipMustBeInside = true,
+            needsCaptain = true,
+            note = "mining in a 15x15 sector area; the ship must already be inside it",
+        },
+        Salvage = {
+            areaSize = { 15, 15 },
+            shipMustBeInside = true,
+            needsCaptain = true,
+            note = "salvaging wrecks in a 15x15 sector area; ship must already be inside it",
+        },
+        Trade = {
+            areaSize = { 29, 29 },
+            shipMustBeInside = true,
+            needsCaptain = true,
+            captainClass = "Merchant",
+            note = "trade route within a 29x29 area; ship must be inside it and the captain must be a Merchant",
+        },
+        Travel = {
+            areaSize = { 1, 1 },
+            shipMustBeInside = false,
+            needsCaptain = true,
+            minDistance = 2,
+            note = "jump to one target sector; destination must be at least 2 jumps away",
+        },
+    }
+    card.actionNames = { "Mine", "Salvage", "Trade", "Travel" }
+
     if next(probeNotes) ~= nil then card.probe = probeNotes end
     return card
 end
