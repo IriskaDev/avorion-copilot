@@ -134,6 +134,27 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
         y: { type: 'number', description: 'target sector y' },
         size: { type: 'number', description: 'area edge length (Mine/Salvage 15; Trade 17/29/11)' },
         duration: { type: 'number', description: 'task duration in hours, optional' },
+        goodName: {
+          type: 'string',
+          description:
+            'Trade only: WHICH trade route to fly. Must be a route name from ' +
+            'fleet_query what=tradePlan (e.g. "Drill", "Antigrav Unit"). Without it the ' +
+            'game answers "No route selected."',
+        },
+        deposit: {
+          type: 'number',
+          description:
+            'Trade only: upfront budget in credits. MUST be > 0 (the game refuses 0 with ' +
+            '"Error starting command.") and the player must be able to pay it. It decides how ' +
+            'much cargo each flight carries.',
+        },
+        escorts: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Trade only: escort ship names. HARD RULE: an escort must be in the SAME SECTOR as ' +
+            'the action ship, otherwise it cannot take part.',
+        },
       },
       output: {
         schema: { type: 'string' },
