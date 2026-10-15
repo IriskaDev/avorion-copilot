@@ -209,3 +209,36 @@ HUD 右上角的**快速访问栏**（本 mod 的 Copilot 圆形按钮就对齐�
 3. 松开 SHIFT 后 F12 ✗（那一排已经消失了）
 
 **结论**：涉及「按住某键才出现」的 UI，交给人类确认，不要硬碰 ✗。
+---
+
+## ★★★ 启动游戏必须用 explorer 代发（2026-10-15，血泪）
+
+**不要**在 agent 的 pwsh 里直接 `Start-Process "steam://rungameid/445220"` ✗✓。
+
+原因：agent 的 pwsh 是 **DSH 的子进程** ✓，而 DSH 用 job object 管它的进程树 ✓。
+直接启动的话**游戏会挂进 DSH 的进程树** ✗ → **主人一关 DSH，游戏跟着被杀** ✗✓。
+
+实测证据（进程树）：
+
+```
+DSH 主进程 → … → DSH 子进程 → powershell.exe（agent 跑的）
+                                    └─ 游戏   ← ✗ 挂在 DSH 下
+```
+
+**正确做法**：让一个**独立的系统进程**代发链接 ✓：
+
+```powershell
+Start-Process explorer.exe -ArgumentList "steam://rungameid/445220"
+```
+
+验证（必须看到父进程是 steam.exe ✓）：
+
+```powershell
+$av = Get-CimInstance Win32_Process -Filter "Name='Avorion.exe'" | Select-Object -First 1
+Get-CimInstance Win32_Process -Filter ("ProcessId=" + $av.ParentProcessId) |
+    Select-Object Name, ProcessId        # 期望：steam.exe ✓
+```
+
+> ⚠️ 这个坑还**冒充过崩溃** ✗✓ —— 2026-10-15 凌晨"游戏自己不见了"，当时判断成崩溃，
+> 其实是被 agent 顺带重启 DSH 时一起带走的 ✓。
+> 以后遇到"游戏莫名消失"，**先看它当时挂在谁的进程树下** ✓。
