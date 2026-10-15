@@ -392,12 +392,15 @@ function execute(sender, commandName, arg, ...)
     elseif a == "netstop" then
         player:removeScript("data/scripts/net/net.lua")
         player:sendChatMessage("Server", ChatMessageType.Information,
-            "Copilot net chain: unmounted. Now run /copilot netstart."%_t)
+            -- ⚠️ 这里**不能**用 %_t 后缀 ✗：引擎没把这两个字符串当本地化字面量处理 ✓，
+            --    于是 Lua 见到 `"…" % _t` 就当成**取模运算** ✗ →
+            --    "attempt to perform arithmetic on a string value" ✓（2026-10-16 实测 ✓）
+            "Copilot net chain: unmounted. Now run /copilot netstart.")
 
     elseif a == "netstart" then
         player:addScriptOnce("data/scripts/net/net.lua")
         player:sendChatMessage("Server", ChatMessageType.Information,
-            "Copilot net chain: remounted (fresh VM, all libs reloaded)."%_t)
+            "Copilot net chain: remounted (fresh VM, all libs reloaded).")
 
     elseif a == "explore" then
         local sub = tostring(rest[1] or ""):lower()
