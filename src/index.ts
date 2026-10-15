@@ -177,6 +177,8 @@ reason=<一句话理由，用中文>`
 
 interface Decision {
   action?: string
+  /** ★ Trade 专用：模型选中的货物名（2026-10-16 补 ✓） */
+  goodName?: string
   x?: number
   y?: number
   duration?: number
@@ -222,6 +224,13 @@ function parseDecision(text: string): Decision {
     const hit = known.find((k) => k.toLowerCase() === word.toLowerCase())
     if (hit !== undefined) decision.action = hit
     else if (word.length > 0) decision.action = word          // 原样带出，由 toAnswer 判合法性 ✓
+  }
+
+  const gn = field(text, 'goodName')
+  if (gn !== undefined && gn !== '') {
+    // 去掉模型爱加的引号/星号；「none」之类当没写 ✓
+    const cleaned = gn.replace(/[`*"']/g, '').trim()
+    if (cleaned !== '' && !NONE_WORDS.has(cleaned.toLowerCase())) decision.goodName = cleaned
   }
 
   const x = field(text, 'x')
@@ -353,7 +362,8 @@ function buildPrompt(f: DecideFacts): string {
     lines.push('  同时看 attackChance 伏击概率，必须低于 10%）：')
     lines.push(JSON.stringify(f.tradeRoutes, null, 2))
     lines.push('')
-    lines.push('若选 action=Trade，请在 reason 里写明选了哪个 goodName 及其 profitPerSize。')
+    lines.push('若选 action=Trade：goodName 必须**原样**取自上面的 name；')
+    lines.push('x/y 请**直接填船当前的星区坐标**（区域必须以船为中心，挪走会让这张候选表作废）。')
     lines.push('')
   }
   lines.push('请按系统提示的格式回复。')
@@ -373,6 +383,7 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
   }
 
   const params: Record<string, unknown> = {}
+  if (decision.goodName !== undefined) params.goodName = decision.goodName   // ★ Trade 的选货 ✓
   if (decision.x !== undefined) params.x = decision.x
   if (decision.y !== undefined) params.y = decision.y
   if (decision.duration !== undefined) params.duration = decision.duration
