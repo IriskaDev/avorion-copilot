@@ -32,7 +32,7 @@ interface ToolCtx {
 }
 
 /** Wrap the callback-based RpcPeer.call into a Promise (tool execute is async). */
-function ask(
+export function ask(
   peer: RpcPeer,
   cmd: string,
   data: unknown,

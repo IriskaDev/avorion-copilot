@@ -32,5 +32,11 @@ interface ToolCtx {
     };
     effect(fn: () => void | (() => void), label?: string): void;
 }
+/** Wrap the callback-based RpcPeer.call into a Promise (tool execute is async). */
+export declare function ask(peer: RpcPeer, cmd: string, data: unknown, timeoutSec?: number): Promise<{
+    ok: boolean;
+    data?: any;
+    why?: string;
+}>;
 export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer): void;
 export {};
