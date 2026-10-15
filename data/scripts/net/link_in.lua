@@ -557,6 +557,31 @@ function CopilotLinkIn.onReload(data)
 end
 
 -- ping：最便宜的往返，用来确认链路活着 ✓（§6：任何帧都要求 ack ✓）
+-- recall：把船从后台命令里叫回来 ✓✓（2026-10-16 加，为主人"随时看决策"服务 ✓）
+--
+-- 原版能力：`Simulation.forceRecall(shipName)` —— **已注册 callable** ✓
+--   （simulation.lua:759 `callable(Simulation, "forceRecall")` ✓）
+-- 用途：后台命令会被 BGS 从存档恢复 ✓，所以重启游戏也叫不回来 ✗；
+--   有了它，主人随时能把船叫回空闲态 → 立刻触发新一轮 decide ✓✓。
+function CopilotLinkIn.onRecall(data)
+    data = data or {}
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "recall needs data.ship"
+    end
+    local ok, err = invokeSimulation("forceRecall", ship)
+    if not ok then
+        return false, "RECALL_FAILED", tostring(err)
+    end
+    -- 叫回来后应该转入"新的一轮空闲" ✓ —— 顺手清掉记账，让它下轮立刻发起决策 ✓
+    if CopilotFleet ~= nil and type(CopilotFleet.idleSeen) == "table" then
+        CopilotFleet.idleSeen[ship] = false
+        CopilotFleet.decided[ship] = nil
+    end
+    CopilotRpc.trace("onRecall " .. ship .. "（已发 forceRecall ✓）")
+    return true, { ship = ship, recalled = true, note = "forceRecall sent; the ship returns to idle shortly" }
+end
+
 function CopilotLinkIn.onPing(data)
     return true, { pong = true, clock = os.clock() }
 end
@@ -602,6 +627,7 @@ function CopilotLinkIn.install()
     CopilotRpc.handle("decide",  bind("onDecide"))
     CopilotRpc.handle("reload",  bind("onReload"))
     CopilotRpc.handle("ping",    bind("onPing"))
+    CopilotRpc.handle("recall",  bind("onRecall"))   -- ★ 召回（随时把船叫回空闲 ✓）
 end
 
 function CopilotLinkIn.status()
