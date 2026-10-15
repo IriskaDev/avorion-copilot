@@ -276,12 +276,20 @@ function CopilotLinkIn.tradePlan(player, data)
     if area == nil then return false, "BAD_AREA", aerr end
 
     -- ★ ① 自己跑区域分析（**同步** ✓ —— run 直接返回 results ✓）
-    local okA, AreaAnalysisOrErr = pcall(function() return include("areaanalysis") end)
-    if not okA then return false, "NO_ANALYSIS_MODULE", tostring(AreaAnalysisOrErr) end
-    local AreaAnalysis = AreaAnalysisOrErr
+    --
+    -- ⚠️ 坑：`areaanalysis.lua` 是**引擎脚本**，不是 lib ✗✓
+    --   → 文件末尾**没有 return** ✗（它的 `run` 是**全局函数** ✓，是给 asyncf 调的 ✓）
+    --   → 所以 `include("areaanalysis")` 返回 **nil** ✗
+    --     （实测报 "attempt to index upvalue 'AreaAnalysis' (a nil value)" ✓）
+    --   正确做法：include 一下把文件**执行掉**（定义全局 run ✓），然后**直接调全局 run** ✓✓。
+    local okInc, incErr = pcall(function() return include("areaanalysis") end)
+    if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
+    if type(run) ~= "function" then
+        return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define a global run()"
+    end
 
     local okRun, r1, r2, r3, results, r5 = pcall(function()
-        return AreaAnalysis.run(player.index, ship, ctype, area, player.index)
+        return run(player.index, ship, ctype, area, player.index)
     end)
     if not okRun then
         return false, "ANALYSIS_FAILED", tostring(r1)
