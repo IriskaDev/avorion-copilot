@@ -103,7 +103,10 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
         if (args.what !== 'fleet' && (args.ship === undefined || args.ship === '')) {
           return `what=${args.what} needs the ship parameter`
         }
-        const r = await ask(peer, 'query', { what: args.what, ship: args.ship }, 10)
+        // tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
+        // which takes far longer than a plain query -- give it room (2026-10-16).
+        const timeout = args.what === 'tradePlan' ? 120 : 10
+        const r = await ask(peer, 'query', { what: args.what, ship: args.ship }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`
         return text(r.data)
       },
