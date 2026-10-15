@@ -377,6 +377,28 @@ function execute(sender, commandName, arg, ...)
         player:setValue("copilot_enabled", false)
         player:sendChatMessage("Server", ChatMessageType.Information, "Copilot disabled."%_t)
 
+    -- ★★ net 链的专用重挂（2026-10-16 ✓）
+    --
+    -- 为什么需要它 ✗✓：`/copilot reload` 只能重载**同一个 VM** 的文件 ✗，
+    --   而 net 链活在另一个 VM（见 AGENTS.md 的「热重载的 VM 边界」✓）。
+    --   net 链的改动要生效，原本只能**重启游戏** ✗ —— 而重启会丢掉
+    --   名单与目标（player value 未必落盘 ✗）。
+    --   本命令用「摘掉挂载的脚本再挂回去」来**在同一个 VM 里重跑整条链** ✓✓，
+    --   不需要重启游戏 ✓，名单目标全部保留 ✓✓。
+    --
+    -- ⚠️ 必须**分成两条命令** ✗：removeScript 是延迟生效的 ✓，
+    --    同一次执行里紧接着 addScriptOnce 可能被那次延迟移除连带干掉 ✗。
+    --    所以：先 /copilot netstop，等两秒，再 /copilot netstart ✓✓。
+    elseif a == "netstop" then
+        player:removeScript("data/scripts/net/net.lua")
+        player:sendChatMessage("Server", ChatMessageType.Information,
+            "Copilot net chain: unmounted. Now run /copilot netstart."%_t)
+
+    elseif a == "netstart" then
+        player:addScriptOnce("data/scripts/net/net.lua")
+        player:sendChatMessage("Server", ChatMessageType.Information,
+            "Copilot net chain: remounted (fresh VM, all libs reloaded)."%_t)
+
     elseif a == "explore" then
         local sub = tostring(rest[1] or ""):lower()
         if sub == "on" or sub == "true" or sub == "1" then
