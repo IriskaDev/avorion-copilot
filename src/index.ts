@@ -150,6 +150,38 @@ export function live(msg: string): void {
   }
 }
 
+/**
+ * ★★★ 原始 token 流（2026-10-16 补，主人要求"实时看原始思维过程及输出" ✓✓）
+ *
+ * 与 decisions.live.log 的区别：
+ *   decisions.live = **加工过的行**（本鱼组织的步骤文字 ✓ + 思维链按行 ✓）
+ *   decisions.raw  = ★ **一字不改的 delta 流** ✓✓
+ *                    模型的推理 token 与正文 token **到达的瞬间**就落盘 ✓，
+ *                    顺序、断行、半截词全都保留 ✓ —— 这才是"原始" ✓✓
+ *
+ * 注意：**内容是否完整取决于模型/服务商** ✗ ——
+ *   若端点返回的是整理过的 reasoning，那这里也就是整理版 ✓（本鱼无法还原 ✗）。
+ *   要真正完整，需换成返回完整 CoT 的模型 ✓。
+ */
+const rawFile = path.join(
+  os.homedir(), 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'decisions.raw.log',
+)
+
+let rawKind: 'reasoning' | 'text' | null = null
+
+/** 收到一个 delta → 立刻追加（不做任何组织/截断 ✓✓） */
+export function liveRaw(kind: 'reasoning' | 'text', delta: string): void {
+  try {
+    if (kind !== rawKind) {
+      fs.appendFileSync(rawFile, `\n\n===== ${kind === 'reasoning' ? '思维过程 (reasoning)' : '正文 (output)'} =====\n`)
+      rawKind = kind
+    }
+    fs.appendFileSync(rawFile, delta)
+  } catch {
+    /* 写不进去也不能影响决策 ✓ */
+  }
+}
+
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export function readDecisionFile(limit: number): DecisionRecord[] {
   try {
@@ -291,7 +323,7 @@ interface StreamResult {
 }
 
 /** 跑一次模型调用，把正文与思维链分别收拢。★ 逐字段保留（猜不得 ✗） */
-async function askModel(ctx: CopilotCtx, cfg: Required<Pick<CopilotConfig, 'provider' | 'model' | 'maxTokens' | 'temperature'>>, prompt: string): Promise<StreamResult> {
+async function askModel(ctx: CopilotCtx, cfg: Required<Pick<CopilotConfig, 'provider' | 'model' | 'maxTokens' | 'temperature'>>, prompt: string, onDelta?: (kind: 'reasoning' | 'text', delta: string) => void): Promise<StreamResult> {
   let text = ''
   let reasoning = ''
   let failure: string | undefined
@@ -311,8 +343,10 @@ async function askModel(ctx: CopilotCtx, cfg: Required<Pick<CopilotConfig, 'prov
   for await (const chunk of stream) {
     if (chunk.type === 'text-delta') {
       text += chunk.text
+      if (onDelta !== undefined) onDelta('text', chunk.text)        // ★ 原文流 ✓✓
     } else if (chunk.type === 'reasoning-delta') {
       reasoning += chunk.text
+      if (onDelta !== undefined) onDelta('reasoning', chunk.text)   // ★ 推理流 ✓✓
     } else if (chunk.type === 'finish') {
       // 失败与取消都以 finish 结束，细节在 reason 里，带稳定 code（NO_ADAPTER / AUTH / RATE_LIMIT ...）
       const reason = chunk.reason
@@ -570,7 +604,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
 
     let result: StreamResult
     try {
-      result = await askModel(ctx, cfg, buildPrompt(facts))
+      rawKind = null                                  // 每次调用重新分段 ✓
+      liveRaw('reasoning', '')
+      result = await askModel(ctx, cfg, buildPrompt(facts), liveRaw)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.warn(`avorion-copilot: 模型调用异常 ${message}`)
@@ -585,8 +621,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     rec.modelText = result.text
     rec.reasoning = result.reasoning
     rec.truncated = result.truncated
-    live(`  ├ 模型回复 正文 ${result.text.length} 字 / 思维链 ${result.reasoning.length} 字`)
-    for (const line of result.reasoning.trim().split('\n').slice(0, 40)) {
+    live(`  ├ 模型回复 正文 ${result.text.length} 字 / 思维链 ${result.reasoning.length} 字${result.truncated ? "  ⚠️被maxTokens截断" : ""}`)
+    for (const line of result.reasoning.trim().split('\n')) {   // ★ 不再截断（主人要看原始全过程 ✓）
       if (line.trim() !== '') live(`  │ ${line.trim()}`)     // ★ 思维链**逐行**进流水 ✓✓
     }
 

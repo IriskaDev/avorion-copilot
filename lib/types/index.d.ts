@@ -87,6 +87,8 @@ export interface DecisionRecord {
 export declare const decisionLog: DecisionRecord[];
 export declare const DECISION_LOG_LIMIT = 50;
 export declare function live(msg: string): void;
+/** 收到一个 delta → 立刻追加（不做任何组织/截断 ✓✓） */
+export declare function liveRaw(kind: 'reasoning' | 'text', delta: string): void;
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export declare function readDecisionFile(limit: number): DecisionRecord[];
 export declare function apply(ctx: CopilotCtx, config?: CopilotConfig): void;
