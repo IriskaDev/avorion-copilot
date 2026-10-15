@@ -91,5 +91,55 @@ export declare function live(msg: string): void;
 export declare function liveRaw(kind: 'reasoning' | 'text', delta: string): void;
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export declare function readDecisionFile(limit: number): DecisionRecord[];
+/** `escortNeedOf` 的结论 ✓ */
+export interface EscortNeed {
+    needed: boolean;
+    why: string;
+    route?: string;
+    risk?: number;
+    riskWithEscort?: number;
+    gate?: number;
+}
+/**
+ * ★ 判断"这一轮的 tradePlan 是不是**真的缺一艘护航**" ✓
+ *
+ * 只**读**游戏给的字段，不改扫描逻辑 ✓：
+ *   recommendation 非空        → 已经有能出海的推荐 → 不需要 ✓
+ *   本星系已有护航候选          → 现有流程会处理 → 不需要 ✓
+ *   一条路线都没有              → 护航只降伏击概率，救不了"没货可运" ✗ → 不需要 ✓
+ *   最好候选 ×0.75 仍超门槛     → 派过去也压不下来 ✗ → 不派（诚实说明 ✓，别白跑一趟 ✓）
+ *
+ * 兼容两种形状：新的多区域 areaRanking ✓、老的 candidates ✓。
+ */
+export declare function escortNeedOf(plan: unknown, sameSectorEscorts: string[]): EscortNeed;
+/** 挑出来的护航船 ✓ */
+export interface EscortPick {
+    name: string;
+    sector: {
+        x: number;
+        y: number;
+    };
+    turretCount?: number;
+    basis: string;
+}
+/**
+ * ★ 从舰队快照里挑一艘**别的星系**的护航 ✓
+ *
+ * 硬规矩（一条都不能松 ✗）：
+ *   · 绝不挑玩家正在开的那条（`fd.piloted` ✓ —— 本项目的老规矩 ✓）
+ *   · 绝不挑行动船自己 ✓
+ *   · 跳过忙船 ✓（后台命令是异步的，忙船派不动 ✓）
+ *   · 必须有船长 ✓（没船长接不了后台命令 ✓）
+ *   · 必须在**别的**星系 ✓（同星系就直接当候选了，不用旅行 ✓）
+ *   · "像战斗舰"：**名字命中战斗词** 或 **有炮塔** ✓ —— 只看名字太窄 ✗
+ *     （实测有些船 turretCount 探针读不到 ✗，只认名字会把能用的船全漏掉 ✓）
+ *
+ * 打分：名字命中数 ×10 + 炮塔数（封顶 10）✓ —— 名字最重（主人点名 Combat/Raven ✓）。
+ * 并列时按船名排序 → **确定性** ✓（同一局不会一会儿挑 A 一会儿挑 B ✓）。
+ */
+export declare function pickRendezvousEscort(ships: Record<string, unknown>[], actionShip: string, pilotedName: string, targetSector: {
+    x?: number;
+    y?: number;
+}): EscortPick | null;
 export declare function apply(ctx: CopilotCtx, config?: CopilotConfig): void;
 export {};

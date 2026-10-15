@@ -234,6 +234,10 @@ const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘
 - ★ 若这艘船**本来就没有合适的商业动作**（例如纯武装船、没有货舱也没有采矿设备），
      就回 action=None 并说明理由 ✓ —— **这是合法且常见的决策** ✓，不要硬凑一个动作 ✗。
 - 派一艘"自身够硬"的护卫大约把伏击基础概率乘 0.75，但护卫本身占用了另一艘船。
+- ★ 若某条路线**只有加护航才压得下风险**，而**同星系根本没有护航候选**（上面会写"同星系护航候选：无"）：
+      DSH 会先派一艘空闲的战斗船**跃迁过去**（Travel），**本轮不要硬下单** ✗ ——
+      下一轮那艘船到位后，你会看到它出现在护航候选里，那时再带上它出海 ✓。
+      所以看到"无候选"时，正确的回答通常是 action=None，并在 reason 里说明"在等护航" ✓。
 - 任务时长越长风险越高：超过 1 小时后，每多 1 小时伏击概率再增加约 40%。收益随时长增加，但边际有限。
 - 收益区间（yield）已经是"含可选护卫"的预估。
 
@@ -478,6 +482,206 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
 }
 
 // ---------------------------------------------------------------------------
+// ★★ 护航 rendezvous（2026-10-17，主人要的"旅行"能力 ✓）
+// ---------------------------------------------------------------------------
+//
+// 主人的原话：
+//   「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
+//
+// 游戏规则（硬）：护航**只有和行动船在同一星系**才算数 ✗ —— 所以"先把船调过去"是唯一办法 ✓。
+// 但 Travel 是**异步**的：船离开后要好一阵才到 ✓，而"目标星系没有护航"这个条件
+// 在它到达前**一直成立** ✗ → 每轮 decide 都会想再派一艘 ✓。
+// 所以下面留了一张**记忆表**：同一艘行动船，30 分钟内只派一次 ✓（无论成功在途还是被游戏拒 ✓）。
+
+/** 风险硬门槛（与游戏侧 copilottrade 的 MAX_ATTACK_CHANCE 同值 ✓） */
+const ESCORT_RISK_GATE = 0.10
+
+/** 一艘"自身够硬"的护航大约把伏击概率乘这个系数（与 SYSTEM_PROMPT 的说法一致 ✓） */
+const ESCORT_RISK_FACTOR = 0.75
+
+/** 船名像不像战斗舰（主人点名的例子：Combat / Raven ✓；实测名单里就有 Combat-00001 ✓） */
+const COMBAT_NAME_HINTS = [
+  'combat', 'raven', 'fighter', 'gunship', 'warship', 'military', 'corvette', 'frigate',
+  'destroyer', 'cruiser', 'battleship', 'sentinel', 'guard', 'escort',
+  '战', '护卫', '炮', '巡洋', '驱逐', '武',
+]
+
+/** 从 JSON 来的数字（可能是 number / string / nil ✓ —— 绝不让 undefined 变成 NaN ✗） */
+function toNum(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined
+  if (typeof value === 'string' && value !== '') {
+    const n = Number(value)
+    return Number.isFinite(n) ? n : undefined
+  }
+  return undefined
+}
+
+/** 概率 → 百分比文字（拿不到就写 ?） */
+function fmtPct(value: number | undefined): string {
+  return value === undefined ? '?' : `${(value * 100).toFixed(1)}%`
+}
+
+/** 船名里命中几个战斗词 ✓ */
+function combatNameHits(name: string): number {
+  const lower = name.toLowerCase()
+  let hits = 0
+  for (const hint of COMBAT_NAME_HINTS) if (lower.includes(hint)) hits += 1
+  return hits
+}
+
+/** `escortNeedOf` 的结论 ✓ */
+export interface EscortNeed {
+  needed: boolean
+  why: string
+  route?: string
+  risk?: number
+  riskWithEscort?: number
+  gate?: number
+}
+
+/**
+ * ★ 判断"这一轮的 tradePlan 是不是**真的缺一艘护航**" ✓
+ *
+ * 只**读**游戏给的字段，不改扫描逻辑 ✓：
+ *   recommendation 非空        → 已经有能出海的推荐 → 不需要 ✓
+ *   本星系已有护航候选          → 现有流程会处理 → 不需要 ✓
+ *   一条路线都没有              → 护航只降伏击概率，救不了"没货可运" ✗ → 不需要 ✓
+ *   最好候选 ×0.75 仍超门槛     → 派过去也压不下来 ✗ → 不派（诚实说明 ✓，别白跑一趟 ✓）
+ *
+ * 兼容两种形状：新的多区域 areaRanking ✓、老的 candidates ✓。
+ */
+export function escortNeedOf(plan: unknown, sameSectorEscorts: string[]): EscortNeed {
+  if (plan === null || plan === undefined || typeof plan !== 'object') {
+    return { needed: false, why: '没有 tradePlan 数据' }
+  }
+  const p = plan as Record<string, unknown>
+  if (p.recommendation !== null && p.recommendation !== undefined) {
+    return { needed: false, why: 'tradePlan 已有能出海的推荐' }
+  }
+  if (sameSectorEscorts.length > 0) {
+    return { needed: false, why: `本星系已有护航候选 ${sameSectorEscorts.join(',')}` }
+  }
+
+  const scan = (p.scan ?? {}) as Record<string, unknown>
+  const gate = toNum(scan.maxAttackChance) ?? ESCORT_RISK_GATE
+
+  // 收集"有路线、但过不了闸门"的候选 ✓（新形状优先，老形状兜底 ✓）
+  const risky: { name: string; risk: number; profit: number }[] = []
+  const ranking = Array.isArray(p.areaRanking) ? (p.areaRanking as Record<string, unknown>[]) : []
+  for (const entry of ranking) {
+    const route = typeof entry.bestRouteName === 'string' ? entry.bestRouteName : ''
+    if (route === '' || entry.acceptable === true) continue
+    const base = toNum(entry.attackChanceBase)
+    const risk = toNum(entry.attackChance) ?? base
+    if (risk === undefined) continue
+    risky.push({ name: route, risk, profit: toNum(entry.netProfitLow) ?? 0 })
+  }
+  if (risky.length === 0) {
+    const cands = Array.isArray(p.candidates) ? (p.candidates as Record<string, unknown>[]) : []
+    for (const c of cands) {
+      const route = typeof c.name === 'string' ? c.name : ''
+      const risk = toNum(c.attackChanceEffective) ?? toNum(c.attackChance)
+      if (route === '' || risk === undefined) continue
+      risky.push({ name: route, risk, profit: toNum(c.netProfitLow) ?? 0 })
+    }
+  }
+  if (risky.length === 0) {
+    const warn = typeof p.riskWarning === 'string' ? p.riskWarning : ''
+    return {
+      needed: false,
+      why: warn !== '' ? `没有路线可护航（${warn.slice(0, 80)}）` : '这个区域没有可用贸易路线',
+      gate,
+    }
+  }
+
+  risky.sort((a, b) => b.profit - a.profit)
+  const best = risky[0]
+  const withEscort = best.risk * ESCORT_RISK_FACTOR
+  if (best.risk <= gate) {
+    return { needed: false, why: `最好候选「${best.name}」本来就在门槛内（${fmtPct(best.risk)}）`, gate }
+  }
+  if (withEscort > gate) {
+    return {
+      needed: false,
+      why: `最好候选「${best.name}」伏击概率 ${fmtPct(best.risk)}，加一艘护航估约 ${fmtPct(withEscort)}` +
+        ` 仍高于门槛 ${fmtPct(gate)} —— 派了也压不下来，不派 ✓`,
+      route: best.name, risk: best.risk, riskWithEscort: withEscort, gate,
+    }
+  }
+  return {
+    needed: true,
+    why: `最好候选「${best.name}」伏击概率 ${fmtPct(best.risk)} > 门槛 ${fmtPct(gate)}，` +
+      `加一艘护航估约 ${fmtPct(withEscort)} ✓ —— 但本星系没有护航 → 需要考虑 rendezvous`,
+    route: best.name, risk: best.risk, riskWithEscort: withEscort, gate,
+  }
+}
+
+/** 挑出来的护航船 ✓ */
+export interface EscortPick {
+  name: string
+  sector: { x: number; y: number }
+  turretCount?: number
+  basis: string
+}
+
+/**
+ * ★ 从舰队快照里挑一艘**别的星系**的护航 ✓
+ *
+ * 硬规矩（一条都不能松 ✗）：
+ *   · 绝不挑玩家正在开的那条（`fd.piloted` ✓ —— 本项目的老规矩 ✓）
+ *   · 绝不挑行动船自己 ✓
+ *   · 跳过忙船 ✓（后台命令是异步的，忙船派不动 ✓）
+ *   · 必须有船长 ✓（没船长接不了后台命令 ✓）
+ *   · 必须在**别的**星系 ✓（同星系就直接当候选了，不用旅行 ✓）
+ *   · "像战斗舰"：**名字命中战斗词** 或 **有炮塔** ✓ —— 只看名字太窄 ✗
+ *     （实测有些船 turretCount 探针读不到 ✗，只认名字会把能用的船全漏掉 ✓）
+ *
+ * 打分：名字命中数 ×10 + 炮塔数（封顶 10）✓ —— 名字最重（主人点名 Combat/Raven ✓）。
+ * 并列时按船名排序 → **确定性** ✓（同一局不会一会儿挑 A 一会儿挑 B ✓）。
+ */
+export function pickRendezvousEscort(
+  ships: Record<string, unknown>[],
+  actionShip: string,
+  pilotedName: string,
+  targetSector: { x?: number; y?: number },
+): EscortPick | null {
+  let best: (EscortPick & { score: number }) | null = null
+  for (const s of ships) {
+    const name = typeof s.name === 'string' ? s.name : ''
+    if (name === '' || name === actionShip || name === pilotedName) continue
+    if (s.busy === true) continue
+    if (s.hasCaptain !== true) continue
+    const sec = (s.sector ?? {}) as { x?: unknown; y?: unknown }
+    const sx = toNum(sec.x)
+    const sy = toNum(sec.y)
+    if (sx === undefined || sy === undefined) continue
+    if (sx === targetSector.x && sy === targetSector.y) continue
+    const turrets = toNum(s.turretCount)
+    const hits = combatNameHits(name)
+    if (hits === 0 && !(turrets !== undefined && turrets > 0)) continue
+    const score = hits * 10 + Math.min(turrets ?? 0, 10)
+    const basis = `名字命中战斗词 ${hits} 个 / 炮塔 ${turrets ?? '?'}`
+    if (best === null || score > best.score || (score === best.score && name < best.name)) {
+      best = { name, sector: { x: sx, y: sy }, turretCount: turrets, basis, score }
+    }
+  }
+  if (best === null) return null
+  return { name: best.name, sector: best.sector, turretCount: best.turretCount, basis: best.basis }
+}
+
+/**
+ * ★ 已经在路上的 rendezvous 记忆表（船名 → 记录 ✓）。
+ *
+ * 没有它会怎样：Travel 异步 ✗ → 护航到达前的每一轮 decide 都看不见它 ✗ →
+ *   同一艘船会被反复派（或被反复拒）✗。所以同一艘行动船 X 分钟内只派一次 ✓。
+ */
+const RENDEZVOUS_MEMO_MS = 30 * 60 * 1000
+const rendezvousMemo = new Map<
+  string,
+  { escort: string; at: number; ok: boolean; why: string; x: number; y: number }
+>()
+
+// ---------------------------------------------------------------------------
 // 插件入口：把 RPC 接起来
 // ---------------------------------------------------------------------------
 
@@ -602,6 +806,10 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       : []
     const wantsTrade = nameList.includes('Trade') &&
       (facts.goalOptions.length === 0 || facts.goalOptions.includes('Trade'))
+    // ★★ rendezvous 要用的**原始数据**（不改喂给模型的那份 ✓ —— 见下面的 rendezvous 段 ✓）
+    let planRaw: Record<string, unknown> | undefined
+    let fleetShips: Record<string, unknown>[] = []
+    let pilotedName = ''
     if (wantsTrade) {
       // ★★ 先算**同星系护航候选** ✓✓（主人 ⑧ 的硬规则：护航必须与行动船同星系 ✓）
       //   缺了这一步，模型手里就没有"降低伏击概率"这张牌 ✗ →
@@ -612,6 +820,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           const fd = (fr.data ?? {}) as Record<string, unknown>
           const shipSector = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
           const ships = Array.isArray(fd.ships) ? (fd.ships as Record<string, unknown>[]) : []
+          fleetShips = ships                        // ★ rendezvous 的候选池（**别的**星系 ✓）
+          pilotedName = String(fd.piloted ?? '')    // ★ 玩家在开的那条永不碰 ✓
           const cands: string[] = []
           for (const s of ships) {
             const nm = typeof s.name === 'string' ? s.name : ''
@@ -628,6 +838,15 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       const planR = await ask(peer, 'query', { what: 'tradePlan', ship, escorts: facts.escortCandidates ?? [] }, 120)
       if (planR.ok) {
         const pd = (planR.data ?? {}) as Record<string, unknown>
+        planRaw = pd                               // ★ rendezvous 只看它 ✓（喂模型的仍是下面那份 ✓）
+        // ★★ 多区域 tradePlan 的结论也进实时流水 ✓（人要看"为什么不推荐" ✓）
+        const plan0 = pd.recommendation as Record<string, unknown> | null | undefined
+        if (plan0 !== undefined && plan0 !== null) {
+          live(`  ├ tradePlan 推荐「${String(plan0.goodName)}」伏击 ${fmtPct(toNum(plan0.attackChance))}` +
+            `（扫 ${String(pd.areasScanned ?? '?')} 区 / ${String(pd.scanMs ?? '?')}ms）`)
+        } else if (typeof pd.riskWarning === 'string' && pd.riskWarning !== '') {
+          live(`  ├ tradePlan 无推荐：${pd.riskWarning.slice(0, 140)}`)
+        }
         // 只给模型有用的部分：候选表 + 最优计划 ✓（area 里那 289 个坐标太占 token ✗）
         facts.tradeRoutes = {
           candidates: pd.candidates,
@@ -653,6 +872,59 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     logger.info(
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
     )
+
+    // ★★ 护航 rendezvous（2026-10-17 ✓）--------------------------------------
+    //   主人：「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
+    //   触发：tradePlan 真的缺护航 ✓ + 本星系没有护航候选 ✓ + 别的星系有闲置战斗船 ✓
+    //   → 先派船 Travel 过去 ✓；**本轮不下单** ✓（等它到位，下一轮就看得见护航了 ✓）。
+    if (wantsTrade && planRaw !== undefined) {
+      const need = escortNeedOf(planRaw, facts.escortCandidates ?? [])
+      live(`  ├ 护航需求：${need.needed ? '缺护航' : '不需要'} —— ${need.why}`)
+      if (need.needed) {
+        const target = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
+        const prev = rendezvousMemo.get(ship)
+        const fresh = prev !== undefined && (Date.now() - prev.at) < RENDEZVOUS_MEMO_MS
+        if (prev !== undefined && fresh) {
+          // ★ 已经派过（在途 / 被拒）→ **不重复派** ✓（Travel 是异步的，护航没到之前条件一直成立 ✗）
+          const mins = Math.round((Date.now() - prev.at) / 60000)
+          const reason = prev.ok
+            ? `护航 ${prev.escort} 已在飞往 (${prev.x},${prev.y}) 的路上（${mins} 分钟前派出），本轮不下单，` +
+              `等它到位后下一轮再带上它出海`
+            : `上一轮派 ${prev.escort} 去 (${prev.x},${prev.y}) 被游戏拒绝（${prev.why}），` +
+              `${Math.round(RENDEZVOUS_MEMO_MS / 60000)} 分钟内不重复派，本轮不出海`
+          live(`  ├ rendezvous 已记录（${mins} 分钟前，${prev.ok ? '在途' : '被拒'}）→ 不重复派 ✓`)
+          const answer: DecideAnswer = { action: 'None', params: { escort: prev.escort, x: prev.x, y: prev.y }, reason }
+          return [true, answer]
+        }
+
+        const pick = pickRendezvousEscort(fleetShips, ship, pilotedName, target)
+        if (pick === null) {
+          live('  └ 别的星系没有空闲的、有船长的战斗船 → 派不出去（照常交给模型判断 ✓）')
+        } else if (target.x === undefined || target.y === undefined) {
+          live('  └ 读不到行动船的星区坐标 → 不敢乱派（照常交给模型判断 ✓）')
+        } else {
+          live(`  ├ 选中护航 ${pick.name}（在 ${pick.sector.x},${pick.sector.y}；${pick.basis}）`)
+          live(`  ├ 下单 Travel：${pick.name} → (${target.x},${target.y})（目的地必须 ≥2 跳，太近游戏会拒 ✓）`)
+          const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 30)
+          const why = ord.ok ? '' : (ord.why ?? 'unknown')
+          rendezvousMemo.set(ship, {
+            escort: pick.name, at: Date.now(), ok: ord.ok, why, x: target.x, y: target.y,
+          })
+          rec.orderResult = ord.ok ? ord.data : { failed: why }
+          if (ord.ok) {
+            live('  └ Travel 已接受 ✓ 本轮不下单（等护航到位 → 下一轮它就在同星系护航候选里 ✓）')
+          } else {
+            live(`  └ Travel 被游戏拒绝 ✗ ${why} —— 本轮不出海，记下不盲目重试 ✓`)
+          }
+          const reason = ord.ok
+            ? `已派护航 ${pick.name} 前往本星系 (${target.x},${target.y})，本轮不下单，等它到位后下一轮再出海`
+            : `想派护航 ${pick.name} 前往 (${target.x},${target.y})，但被游戏拒绝（${why}），本轮不出海`
+          const answer: DecideAnswer = { action: 'None', params: { escort: pick.name, x: target.x, y: target.y }, reason }
+          logger.info(`avorion-copilot: ${ship} 护航 rendezvous → ${pick.name} Travel (${target.x},${target.y}) accepted=${String(ord.ok)}`)
+          return [true, answer]
+        }
+      }
+    }
 
     let result: StreamResult
     try {
