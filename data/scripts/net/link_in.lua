@@ -130,7 +130,7 @@ local COMMAND_TYPES = {
 }
 
 -- 各命令的默认区域边长（与 LLM-OPS.md 的调研一致 ✓）
-local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 29, Travel = 1 }
+local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1 }   -- ★ Trade 与 tradePlan 保持一致（29 会换一张商品表 ✗）
 
 -- 排队中的第二阶段：{ {at=时刻, ...}, ... }
 CopilotLinkIn.pendingOrders = CopilotLinkIn.pendingOrders or {}
@@ -198,6 +198,35 @@ function CopilotLinkIn.onOrder(data)
         upper = { x = cx - half + size - 1, y = cy - half + size - 1 },
     }
 
+    -- ★★ 0) 先自己**同步**跑一遍分析 ✓✓（2026-10-16 实测的坑 ✓）
+    --
+    -- 起因：DSH 给的 goodName 可能属于**另一个区域** ✗ ——
+    --   实测就是如此：tradePlan 用 17×17 拿到 "Antigrav Unit" ✓，
+    --   而这里默认 29×29 → 商品表完全不同 ✗ →
+    --   游戏回 **"No route selected."** ✓（tradecommand.lua:762 ✓）
+    --
+    -- `run` 是**同步**的（areaanalysis.lua 末尾直接 return ✓），所以这里能立刻
+    -- 拿到本区域**真实存在**的路线表 ✓，用来校验并兜底 ✓✓。
+    local routeNames = {}
+    do
+        local okInc = pcall(function() return include("areaanalysis") end)
+        if okInc and type(run) == "function" then
+            local okPre, _s, _ty, _ar, preResults = pcall(function()
+                return run(player.index, ship, ctype, area, player.index)
+            end)
+            if okPre and type(preResults) == "table" and type(preResults.routes) == "table" then
+                for _, r in ipairs(preResults.routes) do
+                    if type(r) == "table" and type(r.name) == "string" then
+                        routeNames[#routeNames + 1] = r.name
+                    end
+                end
+            end
+        end
+    end
+    CopilotRpc.trace(string.format("onOrder 预算：%s 在 [%d,%d]-[%d,%d] 里有 %d 条路线: %s",
+        ship, area.lower.x, area.lower.y, area.upper.x, area.upper.y,
+        #routeNames, table.concat(routeNames, ", ")))
+
     -- ① 异步分析
     local ok1, err1 = invokeSimulation("startAreaAnalysis", ship, ctype, area)
     if not ok1 then
@@ -217,8 +246,27 @@ function CopilotLinkIn.onOrder(data)
         safeMode = data.safeMode == true,
         immediateDelivery = data.immediateDelivery == true,
     }
-    if type(data.goodName) == "string" and data.goodName ~= "" then
-        config.goodName = data.goodName
+    -- ★ goodName 必须落在**本区域的**路线表里 ✓，否则**自动挑一条** ✓✓
+    --   （原版把最好的排在最前 ✓ —— 它按 profitPerSize 排序 ✓）
+    local wantGood = (type(data.goodName) == "string" and data.goodName ~= "") and data.goodName or nil
+    if wantGood ~= nil then
+        local found = false
+        for _, n in ipairs(routeNames) do
+            if n == wantGood then found = true; break end
+        end
+        if found then
+            config.goodName = wantGood
+        else
+            CopilotRpc.trace(string.format(
+                "onOrder：goodName「%s」不在本区域路线里 → 自动改选 ✓", tostring(wantGood)))
+            wantGood = nil
+        end
+    end
+    if config.goodName == nil and #routeNames > 0 then
+        config.goodName = routeNames[1]
+    end
+    if config.goodName == nil then
+        return false, "NO_ROUTE", "this area has no trade routes at all — try another area"
     end
     local dep = tonumber(data.deposit)
     if dep ~= nil and dep > 0 then config.deposit = math.floor(dep) end
