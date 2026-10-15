@@ -129,6 +129,27 @@ function recordDecision(rec: DecisionRecord): void {
   }
 }
 
+/**
+ * ★★ 实时流水（2026-10-16 补 ✓）：主人希望**边发生边看** ✓✓
+ *
+ * 与 decisions.log 的区别：
+ *   decisions.log  = 一条决策**结束后**的完整快照 ✓
+ *   decisions.live = **每一步发生时就追加一行**（毫秒时间戳 ✓），
+ *                    所以主人（或本 agent）可以一边跑一边 tail -f ✓✓
+ */
+const liveFile = path.join(
+  os.homedir(), 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'decisions.live.log',
+)
+
+export function live(msg: string): void {
+  const ts = new Date().toISOString().replace('T', ' ').replace('Z', '')
+  try {
+    fs.appendFileSync(liveFile, `${ts}  ${msg}\n`)
+  } catch {
+    /* 流水写不进去也不能影响决策 ✓ */
+  }
+}
+
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export function readDecisionFile(limit: number): DecisionRecord[] {
   try {
@@ -449,6 +470,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       goalOptions: [],
       ok: false,
     }
+    live(`▶ 收到 decide  ship=${rec.ship}  hasGoal=${String(req.hasGoal)}`)
     try {
       const out = await decideInner(req, rec)
       if (out[0] === true) {
@@ -468,6 +490,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       return [false, 'EXCEPTION', message] as [boolean, any, string]
     } finally {
       recordDecision(rec)
+      live(rec.ok
+        ? `✔ 完成  ${rec.ship}  action=${rec.answer?.action ?? '?'}  ${JSON.stringify(rec.answer?.params ?? {})}`
+        : `✘ 失败  ${rec.ship}  ${rec.code ?? ''} ${rec.message ?? ''}`)
       logger.info(
         `avorion-copilot: 决策记录 #${decisionLog.length} ` +
         `${rec.ship} ok=${rec.ok}${rec.answer ? ' -> ' + rec.answer.action : ''}`,
@@ -486,6 +511,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     }
 
     logger.info(`avorion-copilot: 为 ${ship} 决策中…`)
+    live(`  ├ 开始决策  ${ship}`)
 
     // ★★ 按主人的架构：DSH **自己**用 RPC 去拉数据 ✓✓（游戏侧只给船名 ✗）
     const goalR = await ask(peer, 'query', { what: 'goal', ship }, 10)
@@ -533,6 +559,11 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     rec.goalOptions = facts.goalOptions
     rec.card = facts.card
     rec.routes = facts.tradeRoutes
+    live(`  ├ 事实  目标=[${facts.goalText}] 允许=[${facts.goalOptions.join(',') || '不限'}]`)
+    if (facts.tradeRoutes !== undefined) {
+      const cand = (facts.tradeRoutes as Record<string, unknown>).candidates
+      live(`  ├ 贸易候选 ${Array.isArray(cand) ? cand.length : '?'} 条已喂给模型`)
+    }
     logger.info(
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
     )
@@ -554,6 +585,10 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     rec.modelText = result.text
     rec.reasoning = result.reasoning
     rec.truncated = result.truncated
+    live(`  ├ 模型回复 正文 ${result.text.length} 字 / 思维链 ${result.reasoning.length} 字`)
+    for (const line of result.reasoning.trim().split('\n').slice(0, 40)) {
+      if (line.trim() !== '') live(`  │ ${line.trim()}`)     // ★ 思维链**逐行**进流水 ✓✓
+    }
 
     const decision = parseDecision(result.text)
     const answer = toAnswer(decision, facts, result.text)
@@ -563,6 +598,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     }
     // ★ 记录④"结论"（先记下，⑤ 结果随后补 ✓）
     rec.answer = answer
+    live(`  ├ 决策 ${answer.action} ${JSON.stringify(answer.params)}  (${answer.reason ?? ''})`)
 
     logger.info(
       `avorion-copilot: ${ship} -> ${answer.action} ${JSON.stringify(answer.params)}` +
