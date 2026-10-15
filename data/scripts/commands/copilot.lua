@@ -312,8 +312,11 @@ local RELOADABLE = {
     "data\\scripts\\net\\net.lua",
     "data\\scripts\\net\\inbound.lua",
     "data\\scripts\\net\\outbound.lua",
-    "data\\scripts\\net\\link_out.lua",
-    "data\\scripts\\net\\link_in.lua",
+    -- ★ 已删除 net 链的两条（2026-10-16 实测 ✗）：
+    --   reload 是在**命令脚本那个 VM** 里 load 文件的 ✗，而 net 链活在**另一个 VM** ✗
+    --   → 重执行 net/*.lua 只会把表定义在错误的 VM 里，**改了也白改** ✗✓
+    --   → 更糟的是顶层语句会因 CopilotRpc 为 nil 而报错 ✓
+    --   结论：**net 链的改动必须重启游戏** ✓（见 AGENTS.md 的热重载章节 ✓）
 }
 
 local function copilotReloadOne(cp, rel)

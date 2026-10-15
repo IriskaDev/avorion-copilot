@@ -75,10 +75,11 @@ function CopilotLinkIn.onQuery(data)
         -- 为什么可行 ✗✓：areaanalysis.run 的末尾是
         --     return shipName, type, area, results, callingPlayer
         --   —— 它把结果交出来了 ✓✓（见该文件 line 138 ✓）
-        -- ★ 文件被 /copilot reload 重执行时，这一行会立刻把派发表换成新的间接绑定 ✓✓
---   （首次加载时 net.lua 也会调一次 install ✓ —— 重复注册是覆盖语义，无害 ✓）
-CopilotLinkIn.install()
-
+        -- ⚠️ 这里**不要**放任何顶层可执行语句 ✗（2026-10-16 实测 ✓）：
+--   `/copilot reload` 是用**命令脚本那个 VM 的 _ENV** 去 load 本文件的 ✗，
+--   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
+--   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
+--   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
 return CopilotLinkIn.tradePlan(player, data)
 
     elseif what == "goal" then
@@ -499,8 +500,9 @@ function CopilotLinkIn.status()
         .. " peerCaps=[" .. table.concat(self.peerCaps or {}, ",") .. "]"
 end
 
--- ★ 文件被 /copilot reload 重执行时，这一行会立刻把派发表换成新的间接绑定 ✓✓
---   （首次加载时 net.lua 也会调一次 install ✓ —— 重复注册是覆盖语义，无害 ✓）
-CopilotLinkIn.install()
-
+-- ⚠️ 这里**不要**放任何顶层可执行语句 ✗（2026-10-16 实测 ✓）：
+--   `/copilot reload` 是用**命令脚本那个 VM 的 _ENV** 去 load 本文件的 ✗，
+--   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
+--   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
+--   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
 return CopilotLinkIn
