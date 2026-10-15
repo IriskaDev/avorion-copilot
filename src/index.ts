@@ -225,6 +225,27 @@ const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘
      请从里面挑一个，并把该区域的 **offset 加到船当前星区坐标**上得到 x/y ✓✓
      （★ 硬约束：区域必须**包含船**，所以绝不要凭感觉乱挪 ✓）
 
+★ **采矿 / 打捞的目标（主人钦定，与上面同等优先级 ✓✓）**：
+   「采矿应该尽可能采高级矿，而废弃物则应尽可能地收集高科技等级的舰船装备与插件，两者都需要在合理的风险下。」
+   · 请用请求里给的 **jobPlans**（游戏侧算好的真实计划 ✓）：里面的 action 说明它这份是哪件事 ✓
+     （Mine 一份、Salvage 一份；只有该动作在"允许的动作"里才会给 ✓）。
+   · **Mine**：主指标 = valueLow / valueHigh —— 它是**材料层级加权**的期望产量
+     （越高级的矿权重越大 ✓，**不是吨位** ✗：高阶矿的产量少一些，也可能压过吨位更大的低阶矿 ✓；
+      权重的来源与口径写在 scoreBasis / weights 里 ✓，有疑问就看它 ✓）。
+     topTier / topMaterial = 这片区域这艘船**真正采得到**的最高阶矿 ✓ —— 优先选它更高的 ✓。
+   · **Salvage**：主指标 = **装备件数**（items）× 稀有度期望层级（rarity.expectedTier ✓）
+     —— 战利品才是主角 ✓，废铁（scrapHigh）只是参考 ✓。
+     fieldTier（残骸场材料层级均值）是**次级键** ✓：件数相同时，取它更高的区域 ✓。
+   · **capability** 说明这艘船**到底采得动什么**（dps=0 的材料就是完全采不动 ✓）——
+     别派它去采不动的矿 ✗；某片星区的高阶矿采不动时，那里对它的层级贡献就是 0 ✓。
+   · 两份计划里都带 **recommendation**（= 算出来的最优档 ✓）和 **riskWarning**（= 一个档位都没过闸门 ✗）。
+     有 recommendation 时**照它的 orderHint 下单** ✓（orderHint 里 x/y 已经是**绝对星区坐标** ✓，
+     duration / safeMode / escorts 也都算好了 ✓，直接照抄成下面那几行 ✓）。
+     只有 riskWarning、没有 recommendation 时 → 回 action=None 并说明理由 ✓（不要自己硬凑 ✗）。
+   · Mine/Salvage 的**风险救援手段**与原版窗口一一对应 ✓：缩短 duration ✓ /
+     开 safeMode（原版把伏击概率 ×0.1 ✓，代价是产量下降 ✓）/ 带同星系护航 ✓
+     —— 这三样在 jobPlans 的参数档里都算过了 ✓，直接照 orderHint 抄即可 ✓。
+
 判断依据：
 - ★ **风险口径（玩家定的规矩，最高优先级 ✓）**：attackChance 是整段任务期间遭遇伏击的概率（0~1）。
      · **低于 0.10 才出海** ✓；**越低越好** ✓。
@@ -247,6 +268,7 @@ x=<目标星区 x 坐标，整数；action=None 时省略>
 y=<目标星区 y 坐标，整数；action=None 时省略>
 escorts=<护航舰船名，逗号分隔，可选；**只能从上面给出的同星系候选里选**>
 duration=<小时，可选>
+safeMode=<true | false，可选；Mine/Salvage 专用：按 jobPlans 的 orderHint 照抄>
 reason=<一句话理由，用中文>`
 
 interface Decision {
@@ -256,6 +278,8 @@ interface Decision {
   x?: number
   y?: number
   duration?: number
+  /** ★ Mine/Salvage 专用：安全模式（原版把伏击概率 ×0.1 ✓）—— 2026-10-17 补 ✓ */
+  safeMode?: boolean
   escorts?: string[]
   reason?: string
   error?: string
@@ -324,6 +348,16 @@ function parseDecision(text: string): Decision {
       .split(/[,，、]/)
       .map((s) => s.trim())
       .filter((s) => !NONE_WORDS.has(s.toLowerCase()))
+  }
+
+  // ★ safeMode（Mine/Salvage ✓）：容忍 true/false、yes/no、1/0、是/否 ✓
+  //   游戏侧 `order` 早就读 data.safeMode == true（见 net/link_in.lua 的 onOrder ✓），
+  //   这里只要把它**解析出来并透传**，原版那条"伏击概率 ×0.1"的救援牌才真的能用 ✓✓
+  const safeMode = field(text, 'safeMode')
+  if (safeMode !== undefined) {
+    const w = safeMode.replace(/[`*"'。，,]/g, '').trim().toLowerCase()
+    if (['true', 'yes', 'y', '1', '是', '开', 'on'].includes(w)) decision.safeMode = true
+    else if (['false', 'no', 'n', '0', '否', '关', 'off'].includes(w)) decision.safeMode = false
   }
 
   const reason = field(text, 'reason')
@@ -416,6 +450,59 @@ interface DecideFacts {
   escortCandidates?: string[]
   /** ★ 贸易候选（只有 Trade 船才有）：游戏算出来的真实路线表 ✓ */
   tradeRoutes?: unknown
+  /**
+   * ★★ Mine / Salvage 的候选（只有对应动作在"允许的动作"里才有 ✓）：游戏侧算好的真实计划 ✓
+   *   —— 与 tradeRoutes 同款做法 ✓✓（2026-10-17 补）
+   *   形状：游戏侧 query { what = minePlan | salvagePlan } 的返回，**已裁成**给模型看的那份 ✓
+   */
+  jobPlans?: Array<{ action: string; plan: Record<string, unknown> }>
+}
+
+/**
+ * 把游戏侧 jobPlan 的巨型返回**裁成**喂模型的那份 ✓
+ *
+ * 为什么不整份丢给模型 ✗：一份 minePlan 的原始返回约 37 KB（含 9 个区域 × 各参数档 ×
+ * 逐材料明细 ✓），token 太贵且噪声太多 ✓。模型真正要的是：
+ *   * scoreBasis  —— 分数**到底怎么算的**（口径必须可见 ✓）
+ *   * capability  —— 这艘船采得动什么（原版权威口径 ✓）
+ *   * recommendation / riskWarning —— 有解还是无解 ✓
+ *   * orderHint   —— 直接照着下单的坐标 + duration + safeMode + escorts ✓
+ *   * areaRanking —— 裁成标量，用来横向比区域 ✓
+ * 逐材料的完整明细留在**推荐**那一份里（人要审计时看它 ✓），其余区域只给标量 ✓。
+ */
+function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
+  const rank = Array.isArray(p.areaRanking) ? (p.areaRanking as Record<string, unknown>[]) : []
+  const areas = rank.map((e) => ({
+    offset: (e.area as Record<string, unknown> | undefined)?.offset,
+    acceptable: e.acceptable,
+    bestTag: e.bestTag,
+    valueLow: e.valueLow,
+    valueHigh: e.valueHigh,
+    attackChance: e.attackChance,
+    topTier: e.topTier,
+    topMaterial: e.topMaterial,
+    fieldTier: e.fieldTier,
+    duration: e.duration,
+    safeMode: e.safeMode,
+    parameterTags: e.parameterTags,
+    error: e.error,
+  }))
+  return {
+    scoreBasis: p.scoreBasis,
+    weightSource: p.weightSource,
+    weights: p.weights,                 // 层级权重表（原版 costFactor / 矿价 ✓ —— 能审计 ✓）
+    capability: p.capability,           // ★ 这艘船到底采得动什么 ✓
+    rarity: p.rarity,                   // Salvage：稀有度混合表 + E[层级] ✓
+    durationChoices: p.durationChoices, // 原版 duration 合法区间 ✓
+    recommendation: p.recommendation,   // null/缺省 = 没有档位过闸门 ✗ → 看 riskWarning ✓
+    riskWarning: p.riskWarning,
+    orderHint: p.orderHint,             // ★ 直接照抄下单：x/y 绝对坐标 + duration + safeMode + escorts ✓
+    areasScanned: p.areasScanned,
+    scanMs: p.scanMs,
+    scanNote: p.scanNote,
+    areaRanking: areas,
+    note: p.note,
+  }
 }
 
 /** 组一份给模型看的请求：目标 + 边界 + 事实 ✓ */
@@ -432,6 +519,25 @@ function buildPrompt(f: DecideFacts): string {
   lines.push('这艘船的现状（能力卡）：')
   lines.push(JSON.stringify(f.card ?? {}, null, 2))
   lines.push('')
+  if (f.jobPlans !== undefined && f.jobPlans.length > 0) {
+    // ★★ Mine / Salvage 的真实计划（游戏侧算好的 ✓ —— 2026-10-17 补）
+    //   之前 Mine/Salvage 是**瞎猜**的 ✗：卡片只说"15x15、要船长、产出进全局资源"，
+    //   模型不知道区域里有什么矿、这船采得动什么、伏击概率多少 ✗ → 只能挑自己所在星区 ✓。
+    for (const jp of f.jobPlans) {
+      lines.push(`★★ 游戏侧算好的 ${jp.action} 计划（多区域 × 参数（时长/安全模式/护航）× 层级加权 ✓）：`)
+      lines.push(JSON.stringify(jp.plan, null, 2))
+      lines.push('')
+    }
+    lines.push('★ 上面这份计划的读法（与系统提示一致 ✓）：')
+    lines.push('  · recommendation = 唯一被推荐的档位（attackChance 已 ≤ 10% ✓，绝不会推荐超闸门的 ✗）')
+    lines.push('    —— 有它就照它的 orderHint 下单 ✓（orderHint 的 x/y 是**绝对星区坐标**，直接照抄 ✓）')
+    lines.push('  · recommendation 缺省/为 null + riskWarning 有字 = **一个档位都没过闸门** ✗ →')
+    lines.push('    回 action=None 并说明理由（可为它派护航 / 换区域 / 换船 ✓）')
+    lines.push('  · Mine 看 valueLow/valueHigh（材料层级加权产量，**不是吨位** ✗）与 topTier/topMaterial ✓')
+    lines.push('  · Salvage 看 recommendation.items（装备件数 ✓ 主角）与 rarity.expectedTier ✓、fieldTier（次级键 ✓）')
+    lines.push('  · capability.materials[i].dps = 0 表示这艘船**完全采不动**那种材料 ✗（别派它去 ✗）')
+    lines.push('')
+  }
   if (f.tradeRoutes !== undefined) {
     // ★★ 把游戏算出来的**真实贸易路线表**给模型 ✓✓（2026-10-16 补）
     //   之前不给 ✗ → 模型只能猜"就地贸易"，完全不知道有更赚钱的货可选 ✗。
@@ -476,6 +582,7 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
   if (decision.x !== undefined) params.x = decision.x
   if (decision.y !== undefined) params.y = decision.y
   if (decision.duration !== undefined) params.duration = decision.duration
+  if (decision.safeMode !== undefined) params.safeMode = decision.safeMode    // ★ Mine/Salvage ✓
   if (decision.escorts !== undefined && decision.escorts.length > 0) params.escorts = decision.escorts
 
   return { action, params, reason: decision.reason, raw }
@@ -806,14 +913,29 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       : []
     const wantsTrade = nameList.includes('Trade') &&
       (facts.goalOptions.length === 0 || facts.goalOptions.includes('Trade'))
+    // ★★ 2026-10-17：Mine / Salvage 也要拉**真实计划** ✓✓（原来它们是瞎猜的 ✗ —— 见 buildPrompt 的注释）
+    //   与 wantsTrade 同一套判断：卡片有这能力 ✓ 且（没限动作 或 动作被允许）✓
+    const wantsMine = nameList.includes('Mine') &&
+      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Mine'))
+    const wantsSalvage = nameList.includes('Salvage') &&
+      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Salvage'))
+    const jobWants: Array<{ action: 'Mine' | 'Salvage'; what: string }> = []
+    if (wantsMine) jobWants.push({ action: 'Mine', what: 'minePlan' })
+    if (wantsSalvage) jobWants.push({ action: 'Salvage', what: 'salvagePlan' })
+    // ★ 两份都要算时，把候选区域收窄到**最近的 5 个** ✓ ——
+    //   游戏侧 jobPlan 是**同步**算的（会占住游戏主循环 ✓），每个 ≈ 一个 tradePlan 的开销 ✓。
+    //   两份各扫 9 区就是两倍开销；各扫 5 区仍然覆盖船周围的 3×3/十字范围 ✓，够用 ✓。
+    const jobAreaCap = jobWants.length > 1 ? 5 : undefined
     // ★★ rendezvous 要用的**原始数据**（不改喂给模型的那份 ✓ —— 见下面的 rendezvous 段 ✓）
     let planRaw: Record<string, unknown> | undefined
     let fleetShips: Record<string, unknown>[] = []
     let pilotedName = ''
-    if (wantsTrade) {
+    if (wantsTrade || jobWants.length > 0) {
       // ★★ 先算**同星系护航候选** ✓✓（主人 ⑧ 的硬规则：护航必须与行动船同星系 ✓）
       //   缺了这一步，模型手里就没有"降低伏击概率"这张牌 ✗ →
       //   实测它只能一遍遍答 None（"every route is above the attack-chance limit" ✓）。
+      //   ★ Mine/Salvage 同样吃这张牌 ✓：护航既降伏击概率，又把自己那份产量加进来 ✓
+      //     （原版 minecommand.lua:1121-1134 / salvagecommand.lua:1294-1300 ✓）
       try {
         const fr = await ask(peer, 'query', { what: 'fleet' }, 10)
         if (fr.ok) {
@@ -835,6 +957,44 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           live(`  ├ 同星系护航候选 ${cands.length} 艘${cands.length > 0 ? ': ' + cands.join(',') : ''}`)
         }
       } catch { /* 拿不到护航候选不影响决策 ✓ */ }
+    }
+
+    // ★★ Mine / Salvage：拉游戏侧算好的真实计划 ✓✓（多区域 × 参数 × 层级加权 ✓）
+    if (jobWants.length > 0) {
+      const planned: Array<{ action: string; plan: Record<string, unknown> }> = []
+      for (const jw of jobWants) {
+        const q: Record<string, unknown> = { what: jw.what, ship, escorts: facts.escortCandidates ?? [] }
+        if (jobAreaCap !== undefined) q.maxAreas = jobAreaCap
+        const jr = await ask(peer, 'query', q, 120)
+        if (!jr.ok) {
+          logger.warn(`avorion-copilot: ${ship} 拉 ${jw.what} 失败 ${jr.why ?? ''}`)
+          live(`  ├ ${jw.what} 拉取失败：${String(jr.why ?? '')}`)
+          continue
+        }
+        const jd = (jr.data ?? {}) as Record<string, unknown>
+        const rec0 = jd.recommendation as Record<string, unknown> | null | undefined
+        if (rec0 !== undefined && rec0 !== null) {
+          // ★ 主人要看的核心数字：**采到最高阶什么**（Mine）/ **多少件装备**（Salvage）
+          const head = jw.action === 'Mine'
+            ? `最高矿 ${String(rec0.topMaterial ?? '?')}（层级 ${String(rec0.topTier ?? '?')}）价值 ${String(rec0.valueLow ?? '?')}~${String(rec0.valueHigh ?? '?')}`
+            : `${String((rec0.items as Record<string, unknown> | undefined)?.to ?? '?')} 件装备 × E[层级] ${String(rec0.rarityTier ?? '?')} = ${String(rec0.valueHigh ?? '?')}`
+          live(`  ├ ${jw.action} 推荐「${String(rec0.tag)}」${head}` +
+            ` 伏击 ${fmtPct(toNum(rec0.attackChance))}（扫 ${String(jd.areasScanned ?? '?')} 区 / ${String(jd.scanMs ?? '?')}ms）` +
+            `${rec0.safeMode === true ? ' [安全模式]' : ''}` +
+            `${Array.isArray(rec0.escorts) && (rec0.escorts as unknown[]).length > 0 ? ' [护航 ' + (rec0.escorts as string[]).join(',') + ']' : ''}`)
+        } else if (typeof jd.riskWarning === 'string' && jd.riskWarning !== '') {
+          live(`  ├ ${jw.action} 无推荐：${jd.riskWarning.slice(0, 160)}`)
+        }
+        planned.push({ action: jw.action, plan: compactJobPlan(jd) })
+        logger.info(
+          `avorion-copilot: ${ship} 已取到 ${jw.what}（扫 ${String(jd.areasScanned ?? 0)} 区 / ` +
+          `${String(jd.scanMs ?? 0)}ms，推荐=${rec0 ? String(rec0.tag) : 'none'}）`,
+        )
+      }
+      if (planned.length > 0) facts.jobPlans = planned
+    }
+
+    if (wantsTrade) {
       const planR = await ask(peer, 'query', { what: 'tradePlan', ship, escorts: facts.escortCandidates ?? [] }, 120)
       if (planR.ok) {
         const pd = (planR.data ?? {}) as Record<string, unknown>
