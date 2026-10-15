@@ -123,10 +123,13 @@ end
 
 -- 调玩家自己的 simulation 脚本（它上面有 callable ✓）
 local function invokeSimulation(fn, ...)
+    -- ⚠️ Lua 5.2：`...` 不能用在**非 vararg 的内层闭包**里 ✗
+    --    （实测报 "cannot use '...' outside a vararg function" ✓）→ 先收进表 ✓
+    local args = { ... }
     local player = Player()
     if player == nil then return false, "no player" end
     local ok, err = pcall(function()
-        player:invokeFunction(simulationPath(), fn, ...)
+        player:invokeFunction(simulationPath(), fn, table.unpack(args, 1, #args))
     end)
     if not ok then return false, tostring(err) end
     return true
