@@ -51,11 +51,20 @@ M.MAX_ATTACK_CHANCE = 0.10
 -- `basePrice` 由调用方填 ✓（游戏侧从 `goods[name].price` 取 ✓；
 --  拿不到就退化成相对毛利，并在 reason 里标注 ✓）。
 function M.unitProfit(r)
+    -- ★★★ 第一优先：**游戏自己算的 profitPerSize** ✓✓（2026-10-16 修正 ✗→✓）
+    --   它就是"每**体积**利润" ✓ —— 既是绝对值 ✓，又天然按货舱容量归一 ✓，
+    --   正是主人说的那个口径 ✓，也是原版自己排序用的那个 ✓（tradecommand.lua:410 ✓）。
+    --   本鱼原先自己用 basePrice×(high-low) 算 ✗ —— 拿不到基准价时就会退化成
+    --   相对毛利 ✗，于是选错了路线（实测选了 Drill，而原版排第一的是 Antigrav Unit ✗）。
+    local pps = tonumber(r.profitPerSize)
+    if pps ~= nil then return pps, true end
+
+    -- 退回：绝对毛利（有基准价时 ✓）
     local lo = tonumber(r.lowest) or 0
     local hi = tonumber(r.highest) or 0
     local rel = hi - lo
     local base = tonumber(r.basePrice)
-    if base == nil or base <= 0 then return rel, false end     -- 第二返回值：是否缺基准价 ✓
+    if base == nil or base <= 0 then return rel, false end
     return base * rel, true
 end
 

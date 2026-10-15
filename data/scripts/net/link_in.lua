@@ -269,8 +269,37 @@ function CopilotLinkIn.onOrder(data)
         return false, "NO_ROUTE", "this area has no trade routes at all — try another area"
     end
     local dep = tonumber(data.deposit)
-    if dep ~= nil and dep > 0 then config.deposit = math.floor(dep) end
+    if dep ~= nil and dep > 0 then
+        config.deposit = math.floor(dep)
+    else
+        -- ★ 兜底：收不到预付金时**不能留 nil** ✗✓
+        --   实测：config.deposit 为 nil 会让命令在
+        --   "tradecommand.lua:797: attempt to perform arithmetic on field 'deposit'" 处炸掉 ✓，
+        --   而且那是**静默失败**——船干脆不动 ✗。所以给一个"付得起"的默认值 ✓。
+        local want = 1000000
+        local okPay, canPay = pcall(function() return player:canPay(want) end)
+        if okPay and canPay ~= true then
+            for _, cand in ipairs({ 500000, 200000, 100000, 50000, 20000, 10000, 5000, 1000 }) do
+                local ok2, can2 = pcall(function() return player:canPay(cand) end)
+                if ok2 and can2 == true then want = cand; break end
+            end
+        end
+        config.deposit = want
+        CopilotRpc.trace("onOrder：未给预付金 → 兜底 " .. tostring(want))
+    end
     if type(data.escorts) == "table" then config.escorts = data.escorts end
+
+    -- ★ Mine/Salvage 还要一个 `collected` 表 ✗✓（2026-10-16 实测）
+    --   源码：minecommand.lua:964 `if materialProperties.dps > 0 and config.collected[material - 1] then`
+    --   缺了它 → "attempt to index field 'collected' (a nil value)" ✓，命令直接起不来 ✗。
+    --   MaterialType 从 0 起，取够 16 个位置、全填 true（所有材料都收 ✓）。
+    if ctype == COMMAND_TYPES.Mine or ctype == COMMAND_TYPES.Salvage then
+        if type(config.collected) ~= "table" then
+            local collected = {}
+            for i = 0, 15 do collected[i] = true end
+            config.collected = collected
+        end
+    end
     table.insert(CopilotLinkIn.pendingOrders, {
         at = os.clock() + 6,
         ship = ship,
