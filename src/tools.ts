@@ -25,6 +25,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { RpcPeer } from './rpc.js'
 // Type-only import: erased at compile time, so the index <-> tools cycle is harmless.
 import type { DecisionRecord } from './index.js'
+import { readDecisionFile } from './index.js'
 
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
@@ -235,15 +236,22 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
         render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
       },
       async execute(args: { ship?: string; limit?: number; verbose?: boolean }) {
-        if (decisionLog === undefined || decisionLog.length === 0) {
+        // ★ 内存空时回落到**落盘记录** ✓（DSH 刚重启、还没新决策时也能看历史 ✓）
+        let source: DecisionRecord[] = decisionLog ?? []
+        let fromFile = false
+        if (source.length === 0) {
+          const hist = readDecisionFile(200)
+          if (hist.length > 0) { source = hist; fromFile = true }
+        }
+        if (source.length === 0) {
           return 'no decisions recorded yet ' +
             '(a ship must be on the roster, have a goal, and be idle)'
         }
         const limit = Math.max(1, Math.min(args.limit ?? 5, 50))
         const verbose = args.verbose === true
         const filtered = (args.ship !== undefined && args.ship !== '')
-          ? decisionLog.filter((r) => r.ship === args.ship)
-          : decisionLog
+          ? source.filter((r) => r.ship === args.ship)
+          : source
 
         if (filtered.length === 0) return `no decisions recorded for ship ${args.ship}`
 

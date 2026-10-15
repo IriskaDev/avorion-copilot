@@ -86,5 +86,7 @@ export interface DecisionRecord {
  */
 export declare const decisionLog: DecisionRecord[];
 export declare const DECISION_LOG_LIMIT = 50;
+/** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
+export declare function readDecisionFile(limit: number): DecisionRecord[];
 export declare function apply(ctx: CopilotCtx, config?: CopilotConfig): void;
 export {};
