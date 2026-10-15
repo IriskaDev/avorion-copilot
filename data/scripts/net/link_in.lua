@@ -480,6 +480,56 @@ function CopilotLinkIn.tradePlan(player, data)
         ship, analysedArea.lower.x, analysedArea.lower.y, analysedArea.upper.x, analysedArea.upper.y,
         #routes, plan and plan.config.goodName or ("none(" .. tostring(perr) .. ")")))
 
+    -- ★★★ 护航重算 ✓✓（2026-10-16 加 —— 主人教的流程里，选完护航**伏击概率会实时变** ✓）
+    --
+    -- 病因：原来 `escorts = {}` 永远为空 ✗ → 模型看到"加护航能降风险"这句话 ✓，
+    --   却**无法验证加完能不能压到 10% 以下** ✗ → 它只能保守拒绝 ✓✓（实测连续答 None ✓）。
+    -- 修法：把 DSH 传来的**同星系护航候选**代入，对每条候选**再算一次**预测 ✓，
+    --   两个概率都给模型 ✓ → 它就能自己判断"加 Combat-00001 后 9% → 可以出海" ✓✓。
+    local wantedEscorts = {}
+    if type(data.escorts) == "table" then
+        for _, n2 in ipairs(data.escorts) do
+            if type(n2) == "string" and n2 ~= "" then wantedEscorts[#wantedEscorts + 1] = n2 end
+        end
+    end
+
+    local planWithEscorts, predsWith = nil, {}
+    if #wantedEscorts > 0 then
+        for _, c in ipairs(candidates) do
+            if type(c.name) == "string" then
+                local ok2, p2 = pcall(function()
+                    return command:calculatePrediction(player.index, ship, analysedArea,
+                        { goodName = c.name, deposit = tonumber(data.depositProbe) or 1000000,
+                          escorts = wantedEscorts })
+                end)
+                if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
+                    c.attackChanceWithEscorts = p2.attackChance.value
+                    predsWith[c.name] = p2
+                end
+            end
+        end
+
+        -- 基础预测全超标、但加护航后达标 → 用护航版**重算计划** ✓✓
+        if plan == nil and next(predsWith) ~= nil then
+            local facts2 = {}
+            for k, v in pairs(facts) do facts2[k] = v end
+            facts2.predictions = predsWith
+            facts2.escorts = wantedEscorts
+            local p2, e2 = Trade.plan(routes, facts2, {
+                maxAttackChance = tonumber(data.maxAttackChance) or Trade.MAX_ATTACK_CHANCE,
+            })
+            if p2 ~= nil then
+                plan, perr = p2, nil
+                p2.config.escorts = wantedEscorts
+                p2.reason = tostring(p2.reason) .. "  ★（加护航 " .. table.concat(wantedEscorts, ",") .. " 后才达标）"
+                planWithEscorts = true
+                CopilotRpc.trace("tradePlan 护航版达标 ✓ escorts=" .. table.concat(wantedEscorts, ","))
+            else
+                perr = e2
+            end
+        end
+    end
+
     -- ★★★ 只**组装**，不发起 ✓✓（主人 2026-10-16 指定 ✓）
     return true, {
         ship = ship,
@@ -489,6 +539,8 @@ function CopilotLinkIn.tradePlan(player, data)
         plan = plan,                       -- 含 config + reason ✓；nil 表示本轮不建议下单 ✓
         planError = perr,
         note = "plan only — nothing was issued (order is a separate call)",
+        escortsOffered = wantedEscorts,
+        planNeededEscorts = planWithEscorts == true,
         analysis = {
             sectors = results.sectors, reachable = results.reachable,
             unreachable = results.unreachable,
