@@ -200,7 +200,12 @@ function M.shipCard(player, name)
                 --   "这种形式的采矿其实没有满舱一说，这种**精采矿**会直接算进**全局资源**。"
                 --   → 所以货舱剩余多少，**对后台的采矿/打捞毫无影响** ✓✓
                 --   → 它只对**贸易**有意义（贸易要装货 ✓）
-                card.cargoNote = "0 = 货舱已满；但这**不影响采矿/打捞**（后台精采矿的产出直接进全局资源 ✓），只影响贸易"
+                -- ★★★ 主人的机制纠正（2026-10-16 ✓✓ 权威，逐条采纳）：
+                --   ① "这种形式的采矿其实没有满舱一说，这种**精采矿**会直接算进**全局资源**"
+                --   ② "会满舱的是**另外一种采矿形式**，需要**另外一种采矿设备**，不是当前这种"
+                --   → 本命令 + **精炼型设备** = 产出进全局资源 ✓ 不看货舱 ✓
+                --     而"装满货舱"属于**另一套设备** ✗ ≠ 本命令 ✓
+                card.cargoNote = "0 = 货舱已满。注意：本命令用精炼型采矿设备，产出直接进全局资源、不占货舱 ✓；装满货舱是另一种采矿形式（另一种设备）的事 ✗。货舱只对贸易有意义 ✓"
             end
         else
             probeNotes.cargo = "getFreeCargoSpace failed: " .. tostring(cs)
@@ -235,7 +240,8 @@ function M.shipCard(player, name)
             note = "mining in a 15x15 sector area; the ship must already be inside it",
             -- ★★ 权威机制（主人 2026-10-16 ✓）：后台采矿是**精采矿**，
             --    产出**直接进全局资源** ✓ —— 不看货舱、没有满舱一说 ✓✓
-            yield = "refined output goes straight into the faction's global resources (cargo space is NOT a constraint)",
+            -- ★ 主人（2026-10-16 ✓）：这种精采矿产出直接进全局资源，没有满舱一说；会满舱的是另一种采矿形式（另一种设备）
+            yield = "refined mining output goes straight into the faction stockpile of GLOBAL RESOURCES; cargo space is NOT a constraint (only a different mining device fills cargo)",
         },
         Salvage = {
             areaSize = { 15, 15 },
@@ -243,7 +249,7 @@ function M.shipCard(player, name)
             needsCaptain = true,
             note = "salvaging wrecks in a 15x15 sector area; ship must already be inside it",
             -- ★ 同上（主人机制 ✓）：产出直接进全局资源，货舱不是限制 ✓
-            yield = "recycled output goes straight into the faction's global resources (cargo space is NOT a constraint)",
+            yield = "recycled output goes straight into the faction stockpile of GLOBAL RESOURCES; cargo space is NOT a constraint",
         },
         Trade = {
             areaSize = { 29, 29 },
