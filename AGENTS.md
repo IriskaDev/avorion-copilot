@@ -354,3 +354,22 @@ Lua 文件必须**逐字节原样** ✓ —— 任何行尾转换都可能影响
 | ② | **原生 DLL 碰 Lua 分配**（`lua_createtable` → 触发 GC），而脚本被**多线程并发**执行 | 进程活着但 **Lua 全停**（僵尸态 ✗） | JSON 全部移到纯 Lua（`lib/copilotjson.lua` ✓）；DLL 只做 socket ✓ |
 
 **验证**：进游戏后连续 **6 分钟零 `X_X`**，心跳每 5 秒不断，RPC 握手与 `query` 均正常 ✓✓。
+### ★★ 强杀的**第二个**代价：player value 不落盘（2026-10-15 实测）
+
+游戏的 player value 是**周期性保存 + 退出时保存** ✓。用 `Stop-Process -Force` 强杀 ✗，
+保存不会发生 → 重启后**全部丢失** ✓：
+
+```
+copilot_auto_ships（面板名单）   → 变回空 ✗
+copilot_goal_*（每船目标）        → 全没 ✗
+copilot_enabled（总开关）         → 也可能回默认 ✗
+```
+
+**现象**：重启后 `[net]` 心跳里 `roster=0`、`fleet_query{goal}` 返回 `hasGoal:false` ✓。
+
+**规矩**：测试结束**正常退出游戏**（回主菜单 / 退出）✗✓，不要养成一律强杀的习惯 ✓。
+确需强杀时，**记着下一轮要重新勾名单、重设目标** ✓。
+
+> 两次被强杀坑到的记录：
+> ① Steam P2P 会话残留 → 玩家进不去（见上一节 ✓）
+> ② player value 不落盘 → 名单与目标丢失（本节 ✓）
