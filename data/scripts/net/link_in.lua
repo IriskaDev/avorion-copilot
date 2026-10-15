@@ -339,22 +339,431 @@ end
 --   { plan = { config = {...}, reason = "..." }, candidates = {...}, analysis = {...} }
 -- 失败则 ok=false + 明确原因 ✓。
 
-local function makeTradeArea(ship, data)
-    local size = tonumber(data.size) or 17          -- 原版 Trade 的合法边长 17 / 29 / 11 ✓
-    local cx, cy = tonumber(data.x), tonumber(data.y)
-    if cx == nil or cy == nil then
-        local okPos, px, py = pcall(function() return Player():getShipPosition(ship) end)
-        if not okPos or px == nil then return nil, "cannot read ship position; pass x,y" end
-        cx, cy = px, py
+-- ===========================================================================
+-- ★★★ 决策总目标（主人 2026-10-17 钦定，**原文照抄**，后人不得丢失 ✓✓）
+--
+--    「应从**多区域**、**多商品**、**净收益**去决策，
+--      应在尽可能**低的风险**下，获取尽可能**高**的利润。」
+--
+-- 落到代码上 = **三维搜索** ✓：
+--   ① 区域 (area)        —— 多个候选方框，每个都**必须含船** ✓（原版硬约束 ✓）
+--   ② 商品/路线 (route)  —— 每个区域最多 4 条（原版只给 4 条 ✓），条条都算预测 ✓
+--   ③ 参数 (params)      —— 预付金（按**装满货舱**算 ✓）+ 护航（只给**过不了闸门**的
+--      路线补算一次带护航的预测 ✓）
+-- 排序口径 = **净收益** ✓：profitPerFlight.from × flights.to（保守 ✓，用它排）
+--   与 profitPerFlight.to × flights.to（乐观 ✓，一起返回给人看 ✓）——
+--   原版窗口那两列「利润/航班」×「航班」的乘积，就是这趟活赚到的钱 ✓。
+-- 风险闸门 = attackChance ≤ maxAttackChance（默认 0.10 ✓）**是硬线** ✗：
+--   一条都不达标时必须**明说**（riskWarning ✓），绝不偷偷挑一条高风险的 ✓。
+-- 并列处理：净收益相差 ≤10% 时**风险低的优先** ✓（"尽可能低的风险" ✓）。
+-- ===========================================================================
+
+local SCAN_STEP = 4            -- 候选区域中心的偏移步长（星区 ✓）
+local SCAN_MAX_AREAS = 9       -- 默认最多扫几个区域（3×3 ≈ 船可及范围 ✓）
+local SCAN_BUDGET_MS = 20000   -- 默认时间预算 ms（RPC 有 120 秒，留足余量 ✓）
+local SCAN_DETAIL = 4          -- 每个区域最多回传几条候选（控 RPC 载荷 ✓）
+local NET_PROFIT_BAND = 0.10   -- 净收益差 ≤10% → 改比风险 ✓
+
+-- 原版在 startCommand 时会**核对区域尺寸**（simulation.lua:528 ✓）：
+--   尺寸不在 getAreaSize 列表里 → 直接拒绝 "Area size for X changed." ✗
+-- 所以候选区域**只能用合法模板** ✓✓（Trade 的合法形状：17x17 / 29x11 / 11x29 ✓）。
+-- ★ 本实现只用其中的**正方形** ✓ —— order 通道只接受 (x, y, size)（正方形 ✓），
+--   非正方形区域下不回去 ✗（要改 onOrder 才支持，见本轮回复里的待办 ✓）。
+local function legalAreaSizes(command, player, ship)
+    local out = {}
+    local ok, a, b, c = pcall(function() return command:getAreaSize(player.index, ship) end)
+    if not ok then return out end
+    for _, t in ipairs({ a, b, c }) do
+        local tx = (type(t) == "table") and tonumber(t.x) or nil
+        local ty = (type(t) == "table") and tonumber(t.y) or nil
+        if tx ~= nil and ty ~= nil and tx > 0 and ty > 0 then
+            out[#out + 1] = { x = math.floor(tx), y = math.floor(ty) }
+        end
     end
+    return out
+end
+
+-- 尺寸：没给 → 17（与原实现一致 ✓）；给了 → 合法就用 ✓；不合法 → 用原版第一个正方形 ✓；
+-- 连合法尺寸都问不到 → 就照请求的来（note 里说明 ✓）。
+local function pickSquareSize(templates, requested)
+    local want = tonumber(requested)
+    if want == nil then return 17 end
+    for _, t in ipairs(templates) do
+        if t.x == want and t.y == want then return want end
+    end
+    for _, t in ipairs(templates) do
+        if t.x == t.y then return t.x end
+    end
+    return want
+end
+
+-- 与 vanilla 一致地夹进星系范围 ✓（areaanalysis.lua:36 `math.min(500, math.max(-499, x))` ✓）
+local function clampCoord(v)
+    return math.min(500, math.max(-499, v))
+end
+
+local function buildArea(cx, cy, size)
     local half = math.floor((size - 1) / 2)
     return {
-        lower = { x = cx - half, y = cy - half },
-        upper = { x = cx - half + size - 1, y = cy - half + size - 1 },
+        lower = { x = clampCoord(cx - half), y = clampCoord(cy - half) },
+        upper = { x = clampCoord(cx - half + size - 1), y = clampCoord(cy - half + size - 1) },
     }
 end
 
+local function areaHasSector(area, sx, sy)
+    return sx >= area.lower.x and sx <= area.upper.x and sy >= area.lower.y and sy <= area.upper.y
+end
+
+-- 候选偏移：{0, ±step, ±2step …}（两轴都封顶在 half ✓），按到中心的距离排序 →
+-- **offset (0,0) 永远排第一** ✓（它必含船 → 保证至少扫到一个合法区域 ✓✓）
+local function scanOffsets(half, step)
+    local vals = { 0 }
+    local d = step
+    while d <= half do
+        vals[#vals + 1] = d
+        vals[#vals + 1] = -d
+        d = d + step
+    end
+    local out = {}
+    for _, dx in ipairs(vals) do
+        for _, dy in ipairs(vals) do
+            out[#out + 1] = { x = dx, y = dy }
+        end
+    end
+    table.sort(out, function(a, b)
+        local da, db = a.x * a.x + a.y * a.y, b.x * b.x + b.y * b.y
+        if da == db then
+            if a.y == b.y then return a.x < b.x end
+            return a.y < b.y
+        end
+        return da < db
+    end)
+    return out
+end
+
+local function flightsOf(c)
+    local f = c.flights
+    if type(f) == "table" then return tonumber(f.to) end
+    return tonumber(f)
+end
+
+-- 退化口径：profitPerSize（原版自己算的"每体积利润" ✓），再退到绝对毛利 ✓
+local function fallbackMetric(c)
+    local pps = tonumber(c.profitPerSize)
+    if pps ~= nil then return pps end
+    local up = tonumber(c.unitProfit)
+    if up ~= nil then return up end
+    return -1
+end
+
+-- ★ 净收益（主人钦定的口径 ✓）：profitPerFlight × flights ✓
+--   返回 保守值, 乐观值, 口径名 ✓（缺预测 → 退回 profitPerSize 并**说明** ✓）
+local function netProfit(c)
+    local fl = flightsOf(c)
+    local pf = c.profitPerFlight
+    if type(pf) == "table" and fl ~= nil and fl > 0 then
+        local low, high = tonumber(pf.from), tonumber(pf.to)
+        if low ~= nil and high ~= nil then
+            return low * fl, high * fl, "netProfit"
+        end
+    end
+    local m = fallbackMetric(c)
+    return m, m, "profitPerSize(fallback)"
+end
+
+local function basisRank(c)
+    return (c.profitBasis == "netProfit") and 1 or 0
+end
+
+-- 风险：未知概率按**最差**参与排序（9 ✓）；但**闸门**对未知是放行的 ✓
+-- （与 lib/copilottrade.lua 里 `chance == nil or chance <= maxChance` 一致 ✓✓）
+local function chanceOf(c)
+    local v = tonumber(c.attackChanceEffective)
+    if v == nil then v = tonumber(c.attackChance) end
+    if v == nil then return 9 end
+    return v
+end
+
+-- 排序：先按**保守净收益**降序 ✓，再做一遍"10% 带宽内风险优先"的插入调整 ✓
+--   ⚠️ 不能把"带宽比较器"直接喂 table.sort ✗ —— 那不是一致的大小关系，
+--      会触发 "invalid order function for sorting" ✓（所以用插入调整 ✓）。
+local function rankByNetProfit(list, gate)
+    table.sort(list, function(a, b)
+        local ba, bb = basisRank(a), basisRank(b)
+        if ba ~= bb then return ba > bb end
+        local na, nb = netProfit(a), netProfit(b)
+        if na ~= nb then return na > nb end
+        local ca, cb = chanceOf(a), chanceOf(b)
+        if ca ~= cb then return ca < cb end
+        return tostring(a.name) < tostring(b.name)
+    end)
+    for i = 2, #list do
+        local j = i
+        while j > 1 do
+            local cur, prev = list[j], list[j - 1]
+            if basisRank(cur) ~= basisRank(prev) then break end
+            local np = netProfit(prev)
+            local nc = netProfit(cur)
+            if np <= 0 then break end
+            if nc < np * (1 - NET_PROFIT_BAND) then break end
+            if not (chanceOf(cur) < chanceOf(prev) - 1e-9) then break end
+            if gate ~= nil and chanceOf(cur) > gate and chanceOf(prev) <= gate then
+                break                       -- 别把"不达标"的顶到"达标"的前面 ✗
+            end
+            list[j], list[j - 1] = prev, cur
+            j = j - 1
+        end
+    end
+    return list
+end
+
+-- 区域排序 ✓：达标的在前 ✓；按该区域最优路线的**净收益**降序 ✓；带宽内风险优先 ✓
+local function rankAreasByNet(recs)
+    table.sort(recs, function(a, b)
+        if a.acceptable ~= b.acceptable then return a.acceptable end
+        local na, nb = tonumber(a.bestNetLow) or -1, tonumber(b.bestNetLow) or -1
+        if na ~= nb then return na > nb end
+        local ca, cb = tonumber(a.bestChance) or 9, tonumber(b.bestChance) or 9
+        if ca ~= cb then return ca < cb end
+        return tostring(a.bestRouteName) < tostring(b.bestRouteName)
+    end)
+    for i = 2, #recs do
+        local j = i
+        while j > 1 do
+            local cur, prev = recs[j], recs[j - 1]
+            if cur.acceptable ~= prev.acceptable then break end
+            local np, nc = tonumber(prev.bestNetLow), tonumber(cur.bestNetLow)
+            if np == nil or nc == nil or np <= 0 then break end
+            if nc < np * (1 - NET_PROFIT_BAND) then break end
+            local cc, pc = tonumber(cur.bestChance), tonumber(prev.bestChance)
+            if cc == nil or pc == nil or not (cc < pc - 1e-9) then break end
+            recs[j], recs[j - 1] = prev, cur
+            j = j - 1
+        end
+    end
+    return recs
+end
+
+-- 基准价 ✓（原版按 profitPerSize 排 ✓；本鱼还要算绝对 C/u ✓）
+local function attachGoodsPrices(goodsLib, routes)
+    if type(goodsLib) ~= "table" then return end
+    for _, r in ipairs(routes) do
+        local okG, g = pcall(function() return goodsLib[r.name]:good() end)
+        if okG and type(g) == "table" and tonumber(g.price) then
+            r.basePrice = tonumber(g.price)
+            if tonumber(g.size) then r.unitSize = tonumber(g.size) end
+        end
+    end
+end
+
+-- ★ 参数维度①：预付金 —— 按"**装满货舱**"算 ✓✓（不是拍脑袋的 1e6 ✗）
+--   依据：原版 profitPerFlight 直接取决于 config.deposit（tradecommand.lua:797 ✓），
+--   而 attackChance 也随 deposit 上升（tradecommand.lua:849 那个 lerp ✓）
+--   → 用**真要下的那个** deposit 去算预测，收益与风险两个口径才自洽 ✓✓。
+local function depositForRoute(cand, opts)
+    local space = tonumber(opts.freeCargoSpace)
+    local bp = tonumber(cand.basePrice)
+    -- 拿不到货舱（API 失败）或货舱已满（=0）→ 一律用兜底探测金 ✓
+    -- ★ 绝不能让预付金落到 1 ✗（那会让预测算出 0 利润，把整张榜带偏 ✓）
+    if space == nil or space <= 0 or bp == nil or bp <= 0 then
+        return opts.fallbackDeposit
+    end
+    local buy = bp * (1 + (tonumber(cand.lowest) or 0))
+    local d = opts.Trade.planDeposit(space, tonumber(cand.unitSize) or 1, buy,
+        opts.budget, opts.maxDeposit)
+    d = tonumber(d) or 0
+    if d < 1 then d = 1 end
+    return math.floor(d)
+end
+
+local function fillPrediction(cand, pred)
+    cand.attackChance = pred.attackChance and tonumber(pred.attackChance.value) or nil
+    cand.profitPerFlight = pred.profitPerFlight
+    cand.flights = pred.flights
+    cand.flightTime = pred.flightTime and tonumber(pred.flightTime.value) or nil
+    cand.maxAvailable = pred.maxAvailable and tonumber(pred.maxAvailable.value) or nil
+    cand.transportedPerFlight = pred.transportedPerFlight
+    cand.predictionError = pred.error
+    local lo, hi, basis = netProfit(cand)
+    cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = lo, hi, basis
+end
+
+-- 扫**一个**区域：分析（pcall ✓）+ 每条路线算预测（pcall ✓）
+-- ★ 任何一步失败都只写进 rec.error / cand.predictionFailed，**绝不中断整轮扫描** ✓✓
+local function scanOneArea(command, player, ship, ctype, area, opts)
+    local rec = {
+        area = area, offset = { x = 0, y = 0 }, routeCount = 0,
+        candidates = {}, predictions = {}, predictionsWithEscorts = {},
+        routes = {}, acceptable = false,
+    }
+
+    local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+        return run(player.index, ship, ctype, area, player.index)
+    end)
+    if not okRun then
+        rec.error = "area analysis failed: " .. tostring(rShipName)
+        return rec
+    end
+    local results = rResults or rArea
+    if type(rArea) == "table" then rec.area = rArea end
+    if type(results) ~= "table" then
+        rec.error = "area analysis returned nothing"
+        return rec
+    end
+
+    local routes = (type(results.routes) == "table") and results.routes or {}
+    rec.results = results
+    rec.routes = routes
+    rec.routeCount = #routes
+    if #routes == 0 then
+        rec.error = "no trade routes in this area"
+        return rec
+    end
+
+    attachGoodsPrices(opts.goodsLib, routes)
+
+    -- ★★ 必须把分析结果挂回 area 上 ✓（否则 tradecommand.lua:743 报 analysis nil ✓✓）
+    rec.area.analysis = results
+
+    local aArea = rec.area
+    for _, r in ipairs(routes) do
+        local cand = {
+            name = r.name, lowest = r.lowest, highest = r.highest,
+            basePrice = r.basePrice, unitSize = r.unitSize,
+            profitPerSize = r.profitPerSize, from = r.from, to = r.to,
+        }
+        cand.unitProfit = (r.basePrice and r.basePrice * ((r.highest or 0) - (r.lowest or 0))) or nil
+
+        local deposit = opts.depositProbe
+        if deposit == nil then deposit = depositForRoute(cand, opts) end
+        cand.deposit = deposit
+
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, aArea,
+                { goodName = r.name, deposit = deposit, escorts = {} })
+        end)
+        if okP and type(pred) == "table" then
+            fillPrediction(cand, pred)
+            rec.predictions[r.name] = pred
+        else
+            cand.predictionFailed = tostring(pred)
+        end
+        rec.candidates[#rec.candidates + 1] = cand
+    end
+
+    -- ★ 参数维度②：护航 —— 只给**过不了闸门**的路线补算一次带护航的预测 ✓✓
+    --   护航不改货物经济性 ✓，只降伏击概率 ✓ → 只有它能把"高风险高收益"救回闸门内 ✓
+    --   没有护航候选 → 整段跳过（零额外开销 ✓）
+    if #opts.escorts > 0 then
+        for _, cand in ipairs(rec.candidates) do
+            local ch = tonumber(cand.attackChance)
+            if ch == nil or ch > opts.gate then
+                local ok2, p2 = pcall(function()
+                    return command:calculatePrediction(player.index, ship, aArea,
+                        { goodName = cand.name, deposit = cand.deposit, escorts = opts.escorts })
+                end)
+                if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
+                    cand.attackChanceWithEscorts = tonumber(p2.attackChance.value)
+                    rec.predictionsWithEscorts[cand.name] = p2
+                end
+            end
+        end
+    end
+
+    -- 每条的有效风险：带护航更低就用带护航的 ✓（护航只用来**降风险** ✓）
+    for _, cand in ipairs(rec.candidates) do
+        local base = tonumber(cand.attackChance)
+        local we = tonumber(cand.attackChanceWithEscorts)
+        if we ~= nil and (base == nil or we < base) then
+            cand.attackChanceEffective = we
+            cand.escortsForGate = opts.escorts
+        else
+            cand.attackChanceEffective = base
+            cand.escortsForGate = {}
+        end
+    end
+    return rec
+end
+
+-- 一个区域算完：plan（复用纯函数库 ✓）+ 该区域的**最优路线** ✓
+local function summariseArea(rec, Trade, factsBase, opts)
+    local f = {}
+    for k, v in pairs(factsBase) do f[k] = v end
+    f.predictions = rec.predictions
+    rec.plan, rec.planError = Trade.plan(rec.routes, f, { maxAttackChance = opts.gate })
+
+    local pass, any = {}, {}
+    for _, c in ipairs(rec.candidates) do
+        any[#any + 1] = c
+        local ch = tonumber(c.attackChanceEffective)
+        if ch == nil or ch <= opts.gate then pass[#pass + 1] = c end
+    end
+    rankByNetProfit(pass, nil)
+    rankByNetProfit(any, nil)
+
+    rec.acceptable = (#pass > 0)
+    rec.best = pass[1] or any[1]
+    rec.candidatesByProfit = any
+    if rec.best ~= nil then
+        local lo, hi, basis = netProfit(rec.best)
+        rec.bestNetLow, rec.bestNetHigh, rec.bestBasis = lo, hi, basis
+        rec.bestRouteName = rec.best.name
+        rec.bestChance = tonumber(rec.best.attackChanceEffective)
+        rec.bestChanceBase = tonumber(rec.best.attackChance)
+        rec.bestMetric = fallbackMetric(rec.best)
+        rec.bestFlights = flightsOf(rec.best)
+        rec.bestFlightTime = tonumber(rec.best.flightTime)
+        rec.bestDeposit = rec.best.deposit
+    end
+    return rec
+end
+
+-- 回传给 DSH 的区域榜（**裁掉**重字段 ✓ —— area 不带 .analysis ✓，候选只留前 4 条 ✓）
+local function buildRanking(scanned)
+    local out = {}
+    for _, rec in ipairs(scanned) do
+        local a = rec.area
+        local entry = {
+            area = {
+                lower = { x = a.lower.x, y = a.lower.y },
+                upper = { x = a.upper.x, y = a.upper.y },
+                offset = { x = rec.offset.x, y = rec.offset.y },
+            },
+            routeCount = rec.routeCount,
+            bestRouteName = rec.bestRouteName,
+            netProfitLow = rec.bestNetLow,
+            netProfitHigh = rec.bestNetHigh,
+            netProfitBasis = rec.bestBasis,
+            attackChance = rec.bestChance,
+            attackChanceBase = rec.bestChanceBase,
+            profitPerSize = rec.bestMetric,
+            flights = rec.bestFlights,
+            flightTime = rec.bestFlightTime,
+            deposit = rec.bestDeposit,
+            escortsNeeded = (rec.best and rec.best.escortsForGate) or {},
+            acceptable = rec.acceptable,
+            candidates = {},
+        }
+        if rec.best and rec.best.attackChanceWithEscorts ~= nil then
+            entry.attackChanceWithEscorts = rec.best.attackChanceWithEscorts
+        end
+        local list = rec.candidatesByProfit or rec.candidates
+        for i = 1, math.min(SCAN_DETAIL, #list) do
+            entry.candidates[i] = list[i]
+        end
+        if rec.error ~= nil then entry.error = rec.error end
+        if rec.planError ~= nil then entry.planError = rec.planError end
+        if rec.plan ~= nil and rec.plan.config ~= nil then
+            entry.plannedGoodName = rec.plan.config.goodName
+            entry.plannedDeposit = rec.plan.config.deposit
+        end
+        out[#out + 1] = entry
+    end
+    return out
+end
+
 function CopilotLinkIn.tradePlan(player, data)
+    local t0 = os.clock()          -- ★ 扫描耗时基准（scanMs ✓ —— 同一个时钟本文件已在用 ✓）
     local ship = data.ship
     if type(ship) ~= "string" or ship == "" then
         return false, "BAD_REQUEST", "tradePlan needs data.ship"
@@ -366,146 +775,323 @@ function CopilotLinkIn.tradePlan(player, data)
     end
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
-    local area, aerr = makeTradeArea(ship, data)
-    if area == nil then return false, "BAD_AREA", aerr end
+    -- ★ ① 船在哪 —— 所有候选区域**必须含船** ✓✓
+    --   原版硬约束：simulation.lua:546 `isShipRequiredInArea` → 船不在区域内直接拒绝 ✓
+    --   → 所以候选区域一律**围绕船的星区**生成 ✓（显式给的 x,y 也要能含住船 ✓）
+    local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if not okPos or tonumber(px) == nil or tonumber(py) == nil then
+        return false, "NO_POSITION", "cannot read ship position for " .. ship .. "; pass x,y"
+    end
+    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
 
-    -- ★ ① 自己跑区域分析（**同步** ✓ —— run 直接返回 results ✓）
+    -- ★ ② 自己跑区域分析（**同步** ✓ —— run 直接返回 results ✓）
     --
     -- ⚠️ 坑：`areaanalysis.lua` 是**引擎脚本**，不是 lib ✗✓
     --   → 文件末尾**没有 return** ✗（它的 `run` 是**全局函数** ✓，是给 asyncf 调的 ✓）
     --   → 所以 `include("areaanalysis")` 返回 **nil** ✗
-    --     （实测报 "attempt to index upvalue 'AreaAnalysis' (a nil value)" ✓）
     --   正确做法：include 一下把文件**执行掉**（定义全局 run ✓），然后**直接调全局 run** ✓✓。
+    -- ⚠️ 坑：`pcall` 会在最前面**多返回一个 true** ✗✓ —— 漏算它就会整体错位一格 ✓
+    --   （run 的真实返回值: shipName, type, area, results, callingPlayer ✓）
     local okInc, incErr = pcall(function() return include("areaanalysis") end)
     if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
     if type(run) ~= "function" then
         return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define a global run()"
     end
 
-    -- ⚠️ 坑：`pcall` 会在最前面**多返回一个 true** ✗✓ —— 漏算它就会整体错位一格 ✓，
-    --   实测表现：把 `type`（字符串）当成了 area ✗ → "attempt to index field 'lower' (a function value)"
-    --   （因为 "…".lower 取到的是 string.lower 这个函数 ✓✓）。
-    --   run 的真实返回值: shipName, type, area, results, callingPlayer ✓
-    local okRun, rShip, rType, rArea, rResults, rPlayer = pcall(function()
-        return run(player.index, ship, ctype, area, player.index)
-    end)
-    if not okRun then
-        return false, "ANALYSIS_FAILED", tostring(rShip)
+    -- ★ ③ 命令实例：问合法区域尺寸 + 算每条路线的**真实预测** ✓✓
+    --   （原版是把分析结果**挂回 area 上**再算预测的 ✓ —— 见 scanOneArea ✓）
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF or type(factory) ~= "table" then
+        return false, "NO_COMMAND_FACTORY", tostring(factory)
     end
-    local results = rResults or rArea
-    local analysedArea = rArea or area
-    if type(results) ~= "table" then
-        return false, "ANALYSIS_EMPTY", "area analysis returned nothing for " .. ship
-    end
-
-    local routes = results.routes or {}
-    if #routes == 0 then
-        return true, {
-            ship = ship, area = analysedArea, routes = {},
-            plan = nil,
-            note = "no trade routes in this area — a different area may have some",
-            analysis = {
-                sectors = results.sectors, reachable = results.reachable,
-                unreachable = results.unreachable,
-                biggestFactionInArea = results.biggestFactionInArea,
-            },
-        }
-    end
-
-    -- ★ ② 给每条候选补**基准价**（原版按 profitPerSize 排 ✓，本鱼要算绝对 C/u ✓）
-    local okGoods, goodsLib = pcall(function() return include("goods") end)
-    if okGoods and type(goodsLib) == "table" then
-        for _, r in ipairs(routes) do
-            local okG, g = pcall(function() return goodsLib[r.name]:good() end)
-            if okG and type(g) == "table" and tonumber(g.price) then
-                r.basePrice = tonumber(g.price)
-                if tonumber(g.size) then r.unitSize = tonumber(g.size) end
-            end
-        end
-    end
-
-    -- ★ ③ 造一个 TradeCommand 实例，用它算每条路线的**真实预测** ✓✓
-    -- ★ 原版是把分析结果**挂回 area 上**再算预测的 ✓（本鱼漏了这一步 ✗ →
-    --   报 "tradecommand.lua:743: attempt to index field 'analysis' (a nil value)" ✓）
-    analysedArea.analysis = results
-
-    local okF, factoryOrErr = pcall(function() return include("commandfactory") end)
-    if not okF then return false, "NO_COMMAND_FACTORY", tostring(factoryOrErr) end
-    local okCmd, command = pcall(function() return factoryOrErr.makeCommand(ctype) end)
+    local okCmd, command = pcall(function() return factory.makeCommand(ctype) end)
     if not okCmd or command == nil then
         return false, "NO_COMMAND", tostring(command)
     end
 
-    local predictions = {}
-    local candidates = {}
-    for _, r in ipairs(routes) do
-        local cfg = { goodName = r.name, deposit = tonumber(data.depositProbe) or 1000000, escorts = {} }
-        local okP, pred = pcall(function()
-            return command:calculatePrediction(player.index, ship, analysedArea, cfg)
-        end)
-        if okP and type(pred) == "table" then
-            predictions[r.name] = pred
-            candidates[#candidates + 1] = {
-                name = r.name,
-                lowest = r.lowest, highest = r.highest, basePrice = r.basePrice,
-                unitProfit = (r.basePrice and r.basePrice * ((r.highest or 0) - (r.lowest or 0))) or nil,
-                attackChance = pred.attackChance and pred.attackChance.value or nil,
-                profitPerFlight = pred.profitPerFlight,
-                flights = pred.flights,
-                flightTime = pred.flightTime and pred.flightTime.value or nil,
-                maxAvailable = pred.maxAvailable and pred.maxAvailable.value or nil,
-                error = pred.error,
-            }
-        else
-            candidates[#candidates + 1] = { name = r.name, predictionFailed = tostring(pred) }
+    local Trade = include("copilottrade")
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if not okGoods then goodsLib = nil end
+
+    -- 尺寸 / 偏移 / 预算（全部可用 data 覆盖，方便主人自己调 ✓）
+    local templates = legalAreaSizes(command, player, ship)
+    local reqSize = tonumber(data.size)
+    local size = pickSquareSize(templates, reqSize)
+    local sizeAdjusted = (reqSize ~= nil and reqSize ~= size)
+    local half = math.floor((size - 1) / 2)
+    local step = math.floor(tonumber(data.step) or SCAN_STEP)
+    if step < 1 then step = 1 end
+    local maxAreas = math.floor(tonumber(data.maxAreas) or SCAN_MAX_AREAS)
+    if maxAreas < 1 then maxAreas = 1 end
+    if maxAreas > 25 then maxAreas = 25 end
+    local budgetMs = math.floor(tonumber(data.maxScanMs) or SCAN_BUDGET_MS)
+    if budgetMs < 0 then budgetMs = 0 end
+    local gate = tonumber(data.maxAttackChance) or Trade.MAX_ATTACK_CHANCE
+
+    local offsets = scanOffsets(half, step)
+    local used = {}
+    for i = 1, #offsets do
+        if #used >= maxAreas then break end
+        used[#used + 1] = offsets[i]
+    end
+
+    -- 中心：默认船的星区 ✓；显式给了 x,y 就围绕它 —— 但**必须含船** ✓，
+    -- 含不住就退回船的位置 ✓✓（否则那些区域原版根本不收 ✓）
+    local baseX, baseY, usedShipCentre = shipX, shipY, false
+    if tonumber(data.x) ~= nil and tonumber(data.y) ~= nil then
+        baseX, baseY = math.floor(tonumber(data.x)), math.floor(tonumber(data.y))
+    end
+
+    local function collectAreas(bx, by)
+        local list, miss = {}, 0
+        for _, off in ipairs(used) do
+            local a = buildArea(bx + off.x, by + off.y, size)
+            if areaHasSector(a, shipX, shipY) then
+                list[#list + 1] = { area = a, offset = { x = off.x, y = off.y } }
+            else
+                miss = miss + 1
+            end
         end
+        return list, miss
+    end
+
+    local areaList, dropped = {}, 0
+    do
+        local list, miss = collectAreas(baseX, baseY)
+        areaList, dropped = list, dropped + miss
+        if #areaList == 0 then
+            baseX, baseY = shipX, shipY
+            usedShipCentre = true
+            list, miss = collectAreas(baseX, baseY)
+            areaList, dropped = list, dropped + miss
+        end
+    end
+    if #areaList == 0 then
+        return false, "NO_AREAS", "no candidate area contains the ship"
+    end
+
+    -- 货舱剩余空间（预付金要用 ✓ —— 与 copilotcard 用的是同一套已验证 API ✓）
+    local freeCargoSpace = nil
+    do
+        local okC, cs = pcall(function()
+            return ShipDatabaseEntry(player.index, ship):getFreeCargoSpace()
+        end)
+        if okC then freeCargoSpace = tonumber(cs) end
+    end
+
+    local opts = {
+        gate = gate,
+        Trade = Trade,
+        goodsLib = goodsLib,
+        escorts = {},
+        freeCargoSpace = freeCargoSpace,
+        budget = tonumber(data.budget),
+        maxDeposit = tonumber(data.maxDeposit),
+        depositProbe = tonumber(data.depositProbe),
+        fallbackDeposit = tonumber(data.depositProbe) or 1000000,
+    }
+    if type(data.escorts) == "table" then
+        for _, n2 in ipairs(data.escorts) do
+            if type(n2) == "string" and n2 ~= "" then opts.escorts[#opts.escorts + 1] = n2 end
+        end
+    end
+    local wantedEscorts = opts.escorts
+
+    local factsBase = {
+        shipSector = { x = shipX, y = shipY },     -- ★ 真的船所在星区 ✓（旧版错填 area.lower ✗）
+        actionShip = ship,
+        freeCargoSpace = freeCargoSpace,
+        escorts = wantedEscorts,
+        budget = tonumber(data.budget),
+        maxDeposit = tonumber(data.maxDeposit),
+    }
+
+    -- ★★★ 三维扫描：区域 × 商品 × 参数 ✓✓（目标见本段上方的「决策总目标」✓）
+    --   scanMs 用 os.clock（进程 CPU 时间 —— 本 mod 的 order 排队也用同一个时钟 ✓）；
+    --   预算是**软**的：只在两个区域之间检查 ✓，所以最多多跑一个区域 ✓。
+    local scanned = {}
+    local stoppedEarly = false
+    local scanMs = 0
+    for _, item in ipairs(areaList) do
+        scanMs = math.floor((os.clock() - t0) * 1000)
+        if #scanned > 0 and budgetMs > 0 and scanMs > budgetMs then
+            stoppedEarly = true
+            break
+        end
+        local rec = scanOneArea(command, player, ship, ctype, item.area, opts)
+        rec.offset = item.offset
+        rec.index = #scanned + 1
+        summariseArea(rec, Trade, factsBase, opts)
+        scanned[#scanned + 1] = rec
+    end
+    scanMs = math.floor((os.clock() - t0) * 1000)
+
+    rankAreasByNet(scanned)
+    local chosen = scanned[1]
+    local analysedArea = chosen.area
+    local results = chosen.results
+    local routes = chosen.routes
+    local candidates = chosen.candidates
+    local predictions = chosen.predictions
+
+    -- 所有区域都**没有路线** → 保持旧版的"空"形状 ✓（并补上新字段 ✓）
+    if #routes == 0 then
+        return true, {
+            ship = ship, area = analysedArea, routes = {},
+            routeCount = 0, candidates = {},
+            plan = nil,
+            planError = chosen.error,
+            note = "no trade routes in this area — a different area may have some",
+            escortsOffered = wantedEscorts,
+            planNeededEscorts = false,
+            -- ★ 旧版这个分支**也会**带上 analysis ✓ → 照旧保留（分析炸掉时才为 nil ✓）
+            analysis = results and {
+                sectors = results.sectors, reachable = results.reachable,
+                unreachable = results.unreachable,
+                biggestFactionInArea = results.biggestFactionInArea,
+            } or nil,
+            recommendation = nil,
+            riskWarning = string.format(
+                "扫了 %d 个区域，一条贸易路线都没有 ✗ —— 本鱼**不推荐**下单 ✓（换一片星区再来 ✓）",
+                #scanned),
+            areaRanking = buildRanking(scanned),
+            areasScanned = #scanned,
+            scanMs = scanMs,
+            scanNote = string.format("多区域扫描：%d 个区域 / 步长 %d / 共 %d ms / 无路线",
+                #scanned, step, scanMs),
+            orderHint = {
+                ship = ship, action = action, size = size,
+                x = baseX + chosen.offset.x, y = baseY + chosen.offset.y,
+                note = "no route found here — nothing to order",
+            },
+            scan = {
+                step = step, size = size, sizeRequested = reqSize, legalSizes = templates,
+                maxAreas = maxAreas, budgetMs = budgetMs, stoppedEarly = stoppedEarly,
+                usedShipCentre = usedShipCentre, droppedNoShip = dropped,
+                shipSector = { x = shipX, y = shipY }, maxAttackChance = gate,
+                freeCargoSpace = freeCargoSpace, escortsConsidered = wantedEscorts,
+                objective = "多区域 × 多商品 × 净收益 —— 在尽可能低的风险下取尽可能高的利润",
+            },
+        }
+    end
+
+    -- ★★★ 最终推荐：在**全部区域的全部路线**里取闸门内**净收益最高**的那条 ✓✓
+    --   这就是主人那句「从多区域、多商品、净收益去决策」的落点 ✓
+    local pool = {}
+    for _, rec in ipairs(scanned) do
+        for _, c in ipairs(rec.candidates) do
+            local ch = tonumber(c.attackChanceEffective)
+            if ch == nil or ch <= gate then
+                c.areaIndex = rec.index
+                c.areaOffset = { x = rec.offset.x, y = rec.offset.y }
+                pool[#pool + 1] = c
+            end
+        end
+    end
+    rankByNetProfit(pool, gate)
+
+    local recommendation, riskWarning = nil, nil
+    local top = pool[1]
+    if top ~= nil then
+        local recTop = scanned[top.areaIndex]
+        local aTop = recTop.area
+        local lo, hi, basis = netProfit(top)
+        recommendation = {
+            area = {
+                lower = { x = aTop.lower.x, y = aTop.lower.y },
+                upper = { x = aTop.upper.x, y = aTop.upper.y },
+                offset = { x = recTop.offset.x, y = recTop.offset.y },
+            },
+            x = baseX + recTop.offset.x,
+            y = baseY + recTop.offset.y,
+            size = size,
+            action = action,
+            goodName = top.name,
+            deposit = top.deposit,
+            escorts = top.escortsForGate or {},
+            attackChance = top.attackChanceEffective,
+            attackChanceBase = top.attackChance,
+            attackChanceWithEscorts = top.attackChanceWithEscorts,
+            maxAttackChance = gate,
+            netProfitLow = lo,
+            netProfitHigh = hi,
+            profitBasis = basis,
+            profitPerSize = top.profitPerSize,
+            flights = top.flights,
+            flightTime = top.flightTime,
+            maxAvailable = top.maxAvailable,
+            transportedPerFlight = top.transportedPerFlight,
+            from = top.from,
+            to = top.to,
+        }
+        recommendation.reason = string.format(
+            "净收益 C%d~%d（保守~乐观，口径 %s／航班 %s 次）；伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；商品「%s」；预付金 %d；护航 %s",
+            math.floor((lo or 0) + 0.5), math.floor((hi or 0) + 0.5), tostring(basis),
+            tostring(flightsOf(top)),
+            top.attackChanceEffective and string.format("%.1f%%", top.attackChanceEffective * 100) or "未知",
+            gate * 100, recTop.offset.x, recTop.offset.y, tostring(top.name),
+            math.floor(tonumber(top.deposit) or 0),
+            (#(top.escortsForGate or {}) > 0) and table.concat(top.escortsForGate, ",") or "无")
+    else
+        -- ★ 一条都没过闸门 → **明说**，绝不偷偷挑一条高风险的 ✓✓
+        local anyTop = nil
+        for _, rec in ipairs(scanned) do
+            if rec.best ~= nil
+                and (anyTop == nil or (tonumber(rec.bestNetLow) or -1) > (tonumber(anyTop.bestNetLow) or -1)) then
+                anyTop = rec
+            end
+        end
+        if anyTop ~= nil then
+            riskWarning = string.format(
+                "没有任何路线通过风险闸门（伏击概率 ≤ %.0f%%）✗ —— 本鱼**不推荐**下单 ✓。最好的候选是「%s」（区域偏移 %+d,%+d，伏击概率 %s）；可派护航重算 / 缩小区域范围 / 换一艘更快更安全的船 ✓",
+                gate * 100, tostring(anyTop.bestRouteName), anyTop.offset.x, anyTop.offset.y,
+                anyTop.bestChance and string.format("%.1f%%", anyTop.bestChance * 100) or "未知")
+        else
+            riskWarning = "扫过的区域里没有任何可用路线 ✗ —— 本鱼**不推荐**下单 ✓"
+        end
+    end
+
+    -- 下单坐标提示 ✓（有推荐 → 指向推荐的那个区域；没有 → 指向扫描的中心区域 ✓）
+    local orderHint = {
+        ship = ship, action = action, size = size,
+        x = baseX + chosen.offset.x, y = baseY + chosen.offset.y,
+        note = "order here — the ship is already inside this area",
+    }
+    if recommendation ~= nil then
+        orderHint.x, orderHint.y = recommendation.x, recommendation.y
+        orderHint.goodName = recommendation.goodName
+        orderHint.deposit = recommendation.deposit
+        orderHint.escorts = recommendation.escorts
     end
 
     -- ★ ④ 纯函数决策（lib/copilottrade.lua ✓ —— 有离线自检 ✓✓）
-    local Trade = include("copilottrade")
-    local facts = {
-        shipSector = { x = analysedArea.lower.x, y = analysedArea.lower.y },
-        actionShip = ship,
-        predictions = predictions,
-        escorts = data.escorts or {},
-        budget = data.budget,
-        maxDeposit = data.maxDeposit,
-    }
-    local plan, perr = Trade.plan(routes, facts, {
-        maxAttackChance = tonumber(data.maxAttackChance) or Trade.MAX_ATTACK_CHANCE,
-    })
+    --   每个区域在 summariseArea 里已经各算过一份 ✓ → 这里取**选中区域**那份 ✓
+    local facts = {}
+    for k, v in pairs(factsBase) do facts[k] = v end
+    facts.predictions = predictions
+    local plan, perr = chosen.plan, chosen.planError
 
     CopilotRpc.trace(string.format(
-        "tradePlan %s area=[%d,%d]-[%d,%d] routes=%d plan=%s",
+        "tradePlan %s area=[%d,%d]-[%d,%d] routes=%d plan=%s 扫描=%d区域/%dms",
         ship, analysedArea.lower.x, analysedArea.lower.y, analysedArea.upper.x, analysedArea.upper.y,
-        #routes, plan and plan.config.goodName or ("none(" .. tostring(perr) .. ")")))
+        #routes, plan and plan.config.goodName or ("none(" .. tostring(perr) .. ")"),
+        #scanned, scanMs))
 
-    -- ★★★ 护航重算 ✓✓（2026-10-16 加 —— 主人教的流程里，选完护航**伏击概率会实时变** ✓）
+    -- ★★★ 护航重算 ✓✓（2026-10-16 加；2026-10-17 改为**复用扫描阶段的结果** ✓✓）
     --
     -- 病因：原来 `escorts = {}` 永远为空 ✗ → 模型看到"加护航能降风险"这句话 ✓，
     --   却**无法验证加完能不能压到 10% 以下** ✗ → 它只能保守拒绝 ✓✓（实测连续答 None ✓）。
-    -- 修法：把 DSH 传来的**同星系护航候选**代入，对每条候选**再算一次**预测 ✓，
-    --   两个概率都给模型 ✓ → 它就能自己判断"加 Combat-00001 后 9% → 可以出海" ✓✓。
-    local wantedEscorts = {}
-    if type(data.escorts) == "table" then
-        for _, n2 in ipairs(data.escorts) do
-            if type(n2) == "string" and n2 ~= "" then wantedEscorts[#wantedEscorts + 1] = n2 end
-        end
-    end
-
-    local planWithEscorts, predsWith = nil, {}
+    -- 修法：把 DSH 传来的**同星系护航候选**代入 ✓：
+    --   ① 扫描阶段已经给"过不了闸门"的路线各算过一次带护航预测 ✓
+    --      （rec.predictionsWithEscorts ✓）→ 这里**不再重算**，省一整轮 calculatePrediction ✓✓
+    --   ② 基础预测全超标但加护航达标 → 用护航版**重算计划** ✓✓
+    local planWithEscorts = false
+    local predsWith = chosen.predictionsWithEscorts or {}
     if #wantedEscorts > 0 then
         for _, c in ipairs(candidates) do
-            if type(c.name) == "string" then
-                local ok2, p2 = pcall(function()
-                    return command:calculatePrediction(player.index, ship, analysedArea,
-                        { goodName = c.name, deposit = tonumber(data.depositProbe) or 1000000,
-                          escorts = wantedEscorts })
-                end)
-                if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
-                    c.attackChanceWithEscorts = p2.attackChance.value
-                    predsWith[c.name] = p2
-                end
+            local p2 = predsWith[c.name]
+            if type(p2) == "table" and p2.attackChance ~= nil then
+                c.attackChanceWithEscorts = c.attackChanceWithEscorts or tonumber(p2.attackChance.value)
             end
         end
 
@@ -515,9 +1101,7 @@ function CopilotLinkIn.tradePlan(player, data)
             for k, v in pairs(facts) do facts2[k] = v end
             facts2.predictions = predsWith
             facts2.escorts = wantedEscorts
-            local p2, e2 = Trade.plan(routes, facts2, {
-                maxAttackChance = tonumber(data.maxAttackChance) or Trade.MAX_ATTACK_CHANCE,
-            })
+            local p2, e2 = Trade.plan(routes, facts2, { maxAttackChance = gate })
             if p2 ~= nil then
                 plan, perr = p2, nil
                 p2.config.escorts = wantedEscorts
@@ -530,6 +1114,59 @@ function CopilotLinkIn.tradePlan(player, data)
         end
     end
 
+    -- ★★ 把 plan.config 对齐到**净收益最优**的那条路线 ✓✓（主人要的是净收益 ✓）
+    --   纯函数库 M.plan 用的是它自己的排法（毛利 × 航班），与主人钦定的"净收益"口径
+    --   可能不同 → 最终 config 一律以**净收益榜**为准 ✓✓。
+    --   顺带修一处旧病：M.plan 拿不到货舱/货价时预付金会退化成 1 ✗（= 几乎不装货 ✗），
+    --   这里用**该路线自己的"装满货舱"预付金**改回来 ✓✓。
+    if plan ~= nil and chosen.best ~= nil then
+        local b = chosen.best
+        local lo, hi, basis = netProfit(b)
+        plan.config.goodName = b.name
+        plan.config.deposit = b.deposit
+        plan.config.escorts = b.escortsForGate or {}
+        plan.netProfitLow, plan.netProfitHigh, plan.profitBasis = lo, hi, basis
+        plan.attackChance = tonumber(b.attackChanceEffective)
+        plan.reason = tostring(plan.reason) .. string.format(
+            "  ★ 按主人钦定的**净收益**口径重排：本区域最优是「%s」（净收益 C%d~%d，伏击概率 %s）",
+            tostring(b.name), math.floor(lo + 0.5), math.floor(hi + 0.5),
+            b.attackChanceEffective and string.format("%.1f%%", b.attackChanceEffective * 100) or "未知")
+        if #(b.escortsForGate or {}) > 0 then planWithEscorts = true end
+    end
+
+    -- 扫描说明（人看的 ✓；第一句**与旧版一字不差** ✓✓，后面追加扫描信息 ✓）
+    local scanNote = string.format("多区域扫描：%d 个区域 / 步长 %d / 共 %d ms", #scanned, step, scanMs)
+    local notes = { "plan only — nothing was issued (order is a separate call)", scanNote }
+    if sizeAdjusted then
+        notes[#notes + 1] = string.format("data.size=%s 不是 %s 的合法区域尺寸 → 改用 %dx%d",
+            tostring(data.size), tostring(action), size, size)
+    end
+    if #offsets > #used then
+        notes[#notes + 1] = string.format("候选区域共 %d 个，按 maxAreas=%d 只扫了最近的 %d 个",
+            #offsets, maxAreas, #used)
+    end
+    if dropped > 0 then
+        notes[#notes + 1] = string.format("其中 %d 个候选区域含不住船的星区（已跳过 ✓）", dropped)
+    end
+    if stoppedEarly then
+        notes[#notes + 1] = string.format("扫描提前结束：已用 %d ms > 预算 %d ms（调大 data.maxScanMs 可扫更多）",
+            scanMs, budgetMs)
+    end
+    if usedShipCentre then
+        notes[#notes + 1] = string.format("给的 x,y 周围没有能含住船的合法区域 → 改以船所在星区 (%d,%d) 为中心",
+            shipX, shipY)
+    end
+    if recommendation ~= nil then
+        notes[#notes + 1] = string.format("推荐「%s」净收益 C%d~%d，伏击概率 %s ≤ %.0f%%",
+            tostring(recommendation.goodName),
+            math.floor((recommendation.netProfitLow or 0) + 0.5),
+            math.floor((recommendation.netProfitHigh or 0) + 0.5),
+            recommendation.attackChance and string.format("%.1f%%", recommendation.attackChance * 100) or "未知",
+            gate * 100)
+    elseif riskWarning ~= nil then
+        notes[#notes + 1] = riskWarning        -- ★ 一条都没过闸门 → note 里也**明说** ✓✓
+    end
+
     -- ★★★ 只**组装**，不发起 ✓✓（主人 2026-10-16 指定 ✓）
     return true, {
         ship = ship,
@@ -538,13 +1175,33 @@ function CopilotLinkIn.tradePlan(player, data)
         candidates = candidates,
         plan = plan,                       -- 含 config + reason ✓；nil 表示本轮不建议下单 ✓
         planError = perr,
-        note = "plan only — nothing was issued (order is a separate call)",
+        note = table.concat(notes, "；"),
         escortsOffered = wantedEscorts,
         planNeededEscorts = planWithEscorts == true,
         analysis = {
             sectors = results.sectors, reachable = results.reachable,
             unreachable = results.unreachable,
             biggestFactionInArea = results.biggestFactionInArea,
+        },
+
+        -- ★★★ 2026-10-17 新增：多区域 × 多商品 × 净收益 ✓✓
+        --   recommendation = 三维搜索的最优解（闸门内**净收益最高** ✓）；
+        --   nil 表示**一条都没过闸门** ✗ → 看 riskWarning（明说不推荐 ✓，绝不偷偷挑 ✓）
+        recommendation = recommendation,
+        riskWarning = riskWarning,
+        areaRanking = buildRanking(scanned),   -- 区域榜：达标在前 ✓ 每区只回前 4 条候选 ✓
+        areasScanned = #scanned,
+        scanMs = scanMs,
+        scanNote = scanNote,
+        orderHint = orderHint,
+        scan = {
+            step = step, size = size, sizeRequested = reqSize, legalSizes = templates,
+            maxAreas = maxAreas, budgetMs = budgetMs, stoppedEarly = stoppedEarly,
+            usedShipCentre = usedShipCentre, droppedNoShip = dropped,
+            shipSector = { x = shipX, y = shipY }, maxAttackChance = gate,
+            depositProbe = opts.depositProbe, freeCargoSpace = freeCargoSpace,
+            escortsConsidered = wantedEscorts,
+            objective = "多区域 × 多商品 × 净收益 —— 在尽可能低的风险下取尽可能高的利润",
         },
     }
 end
