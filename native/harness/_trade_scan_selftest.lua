@@ -212,6 +212,24 @@ else
         rA.recommendation ~= nil and rA.recommendation.deposit == 752000,
         rA.recommendation and rA.recommendation.deposit)
 
+    -- ★★ 2026-10-17 补：推荐里的**区域框与坐标**必须真的属于那条路线所在的区域 ✓✓
+    --   病因（jobPlan 的 S1b 自检抓到、trade 同样中招 ✗）：区域榜是**原地重排**的，
+    --   而 rec.index 是**排序前**编的 ✗ → `scanned[top.areaIndex]` 会指到别的区域 ✗
+    --   → 推荐里报的区域框/坐标与 goodName 不一致 ✓（模型据此下单会下到错区域 ✓）
+    --   Oxygen 只长在偏移 (4,4) 的那个区域里（见 ROUTES_BY_OFFSET ✓）
+    check("A 推荐的区域偏移 = (4,4)（Oxygen 只在那里 ✓）",
+        rA.recommendation ~= nil and rA.recommendation.area.offset.x == 4
+        and rA.recommendation.area.offset.y == 4,
+        rA.recommendation and (tostring(rA.recommendation.area.offset.x) .. ","
+            .. tostring(rA.recommendation.area.offset.y)))
+    check("A 推荐的 x/y = 船星区 + 偏移（而不是别的区域 ✓）",
+        rA.recommendation ~= nil
+        and rA.recommendation.x == SHIP_X + rA.recommendation.area.offset.x
+        and rA.recommendation.y == SHIP_Y + rA.recommendation.area.offset.y,
+        rA.recommendation and (tostring(rA.recommendation.x) .. "," .. tostring(rA.recommendation.y)))
+    check("A 推荐的区域框确实含船 ✓",
+        rA.recommendation ~= nil and areaHasShip(rA.recommendation.area))
+
     -- ★ 风险闸门：Risky 净收益最高（15000）但伏击 50% → **绝不推荐** ✓
     check("A Risky 不在推荐里", rA.recommendation == nil or rA.recommendation.goodName ~= "Risky")
     local iRisky, eRisky = findArea(rA, "Risky")

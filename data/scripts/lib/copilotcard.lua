@@ -304,7 +304,17 @@ end
 -- ---------------------------------------------------------------------------
 -- 我提供哪些 query 功能（给 rpc.caps / hello 用 ✓）
 -- ---------------------------------------------------------------------------
-
-M.WHATS = { "fleet", "ship", "caps" }
+--
+-- ★ 与 net/link_in.lua 的 onQuery 分支**一一对应** ✓（2026-10-17 补齐 ✗→✓）：
+--   原来只列了 fleet/ship/caps ✗ → 但 onQuery 早就支持 goal / tradePlan 了 ✓，
+--   现在又多了 minePlan / salvagePlan / jobPlan（Mine/Salvage 的决策数据 ✓）。
+--   这是**给 DSH 看的自我声明** ✓ —— 列表必须跟实现同步，否则 DSH 只能靠猜 ✗✓
+M.WHATS = {
+    "fleet", "ship", "goal", "caps",
+    "tradePlan",        -- Trade：多区域 × 多商品 × 净收益 ✓
+    "minePlan",         -- Mine：多区域 × 参数 × 层级加权（采最高阶矿 ✓）
+    "salvagePlan",      -- Salvage：装备件数 × E[稀有度层级]（收最高科技战利品 ✓）
+    "jobPlan",          -- 上面两个的通用入口（data.action = Mine | Salvage ✓）
+}
 
 return M

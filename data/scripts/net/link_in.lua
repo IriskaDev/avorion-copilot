@@ -82,6 +82,19 @@ function CopilotLinkIn.onQuery(data)
 --   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
 return CopilotLinkIn.tradePlan(player, data)
 
+    elseif what == "minePlan" then
+        -- ★★★ 采矿决策的**数据获取 + 组装**（只算不下单 ✓）—— 见 jobPlan ✓
+        --   与 tradePlan 同构：多区域 × 参数 × 层级加权 + 同一道 0.10 风险闸门 ✓✓
+        return CopilotLinkIn.jobPlan(player, data, "Mine")
+
+    elseif what == "salvagePlan" then
+        -- ★★★ 打捞决策：装备件数 × E[稀有度层级]，次级键 = 残骸场材料层级均值 ✓
+        return CopilotLinkIn.jobPlan(player, data, "Salvage")
+
+    elseif what == "jobPlan" then
+        -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
+        return CopilotLinkIn.jobPlan(player, data, data.action)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -439,6 +452,38 @@ local function scanOffsets(half, step)
         return da < db
     end)
     return out
+end
+
+-- ★★★ 候选区域集合（**每个区域都必须含船** ✓✓）—— tradePlan 与 jobPlan 共用 ✓
+--
+-- 硬依据：原版 simulation.lua:546 `isShipRequiredInArea` → Mine/Salvage/Trade 都要求
+--   船**已经在目标区域内**，否则 startAreaAnalysis/startCommand 会被静默拒绝 ✗。
+-- 所以候选区域只能围绕船的星区生成 ✓；显式给的 x,y 含不住船时**退回船的位置** ✓✓。
+--
+-- 返回：list, dropped（含不住船被丢掉的个数）, usedShipCentre, baseX, baseY ✓
+local function collectAreaList(used, size, baseX, baseY, shipX, shipY)
+    local function collect(bx, by)
+        local list, miss = {}, 0
+        for _, off in ipairs(used) do
+            local a = buildArea(bx + off.x, by + off.y, size)
+            if areaHasSector(a, shipX, shipY) then
+                list[#list + 1] = { area = a, offset = { x = off.x, y = off.y } }
+            else
+                miss = miss + 1
+            end
+        end
+        return list, miss
+    end
+
+    local list, miss = collect(baseX, baseY)
+    local dropped, usedShipCentre = miss, false
+    if #list == 0 then
+        baseX, baseY = shipX, shipY
+        usedShipCentre = true
+        local l2, m2 = collect(baseX, baseY)
+        list, dropped = l2, dropped + m2
+    end
+    return list, dropped, usedShipCentre, baseX, baseY
 end
 
 local function flightsOf(c)
@@ -837,35 +882,15 @@ function CopilotLinkIn.tradePlan(player, data)
 
     -- 中心：默认船的星区 ✓；显式给了 x,y 就围绕它 —— 但**必须含船** ✓，
     -- 含不住就退回船的位置 ✓✓（否则那些区域原版根本不收 ✓）
-    local baseX, baseY, usedShipCentre = shipX, shipY, false
+    local baseX, baseY = shipX, shipY
     if tonumber(data.x) ~= nil and tonumber(data.y) ~= nil then
         baseX, baseY = math.floor(tonumber(data.x)), math.floor(tonumber(data.y))
     end
 
-    local function collectAreas(bx, by)
-        local list, miss = {}, 0
-        for _, off in ipairs(used) do
-            local a = buildArea(bx + off.x, by + off.y, size)
-            if areaHasSector(a, shipX, shipY) then
-                list[#list + 1] = { area = a, offset = { x = off.x, y = off.y } }
-            else
-                miss = miss + 1
-            end
-        end
-        return list, miss
-    end
-
-    local areaList, dropped = {}, 0
-    do
-        local list, miss = collectAreas(baseX, baseY)
-        areaList, dropped = list, dropped + miss
-        if #areaList == 0 then
-            baseX, baseY = shipX, shipY
-            usedShipCentre = true
-            list, miss = collectAreas(baseX, baseY)
-            areaList, dropped = list, dropped + miss
-        end
-    end
+    -- ★ 共用 helper（见文件上方 collectAreaList ✓）—— tradePlan / jobPlan 同一套含船约束 ✓✓
+    local areaList, dropped, usedShipCentre, areaBaseX, areaBaseY =
+        collectAreaList(used, size, baseX, baseY, shipX, shipY)
+    baseX, baseY = areaBaseX, areaBaseY
     if #areaList == 0 then
         return false, "NO_AREAS", "no candidate area contains the ship"
     end
@@ -927,6 +952,12 @@ function CopilotLinkIn.tradePlan(player, data)
     scanMs = math.floor((os.clock() - t0) * 1000)
 
     rankAreasByNet(scanned)
+    -- ★★ rec.index 必须在**重排之后**重编一遍 ✓✓
+    --   病因：index 原来是**扫描时**编的 ✗，而 `rankAreasByNet` 会把 scanned **原地重排** ✗ →
+    --   下面 `scanned[top.areaIndex]` 就会指到**另一个区域** ✓（推荐里的区域框/坐标全错 ✗）。
+    --   这是 jobPlan 的 S1b 自检**当场抓到**的同一个坑 ✓ —— trade 这里是同一个隐患，一并修 ✓✓
+    --   （另一个更彻底的做法：把区域的几何**直接挂到候选上**，见 jobPlan 的 pool 段 ✓）
+    for i, rec in ipairs(scanned) do rec.index = i end
     local chosen = scanned[1]
     local analysedArea = chosen.area
     local results = chosen.results
@@ -1202,6 +1233,863 @@ function CopilotLinkIn.tradePlan(player, data)
             depositProbe = opts.depositProbe, freeCargoSpace = freeCargoSpace,
             escortsConsidered = wantedEscorts,
             objective = "多区域 × 多商品 × 净收益 —— 在尽可能低的风险下取尽可能高的利润",
+        },
+    }
+end
+
+-- ===========================================================================
+-- ★★★ jobPlan：Mine / Salvage 的「多区域 × 参数（时长/安全模式/护航）× 层级加权」规划
+-- ===========================================================================
+--
+-- 主人的钦定目标（2026-10-17，**原文照抄** ✓✓）：
+--    「采矿应该尽可能采高级矿，而废弃物则应尽可能地收集高科技等级的舰船装备与插件，
+--      两者都需要在合理的风险下。」
+--
+-- 与 tradePlan **同构**（同一套多区域扫描 ✓ + 同一道风险闸门 ✓ + 同一套 orderHint ✓），
+-- 只有"价值"的定义不同：
+--   Mine    : Σ_i 期望产量_i × 层级权重_i          ← 产量取自原版 calculatePrediction 的
+--                                                   results.yields（★ 里面已经算过"这船挖得动哪些材料" ✓）
+--             ★ **不是吨位** ✗ —— 吨位大但低阶的区会被高阶区压过去 ✓✓
+--   Salvage : 装备件数 × E[稀有度层级]              ← results.items（★ 战利品是主角，废铁不是 ✓）
+--             次级键 = 残骸场材料层级均值 fieldTier（★ 只作次级键，明说 ✓）
+--   风险闸门：attackChance ≤ maxAttackChance（默认 0.10 ✓）**是硬线** ✗ ——
+--     一个档位都不达标 → recommendation = nil + riskWarning（**明说**不推荐 ✓），绝不偷偷挑 ✓✓
+--
+-- 参数维度（= 原版窗口里能调的那几样 ✓ —— 证据 minecommand.lua:510-529 / salvagecommand.lua:588-607）：
+--   duration —— 区间来自原版 `getConfigurableValues().duration.from/to` ✓（**绝不自己编 0.5/2** ✗）
+--   safeMode —— ★ 原版会拿它去改伏击概率（×0.1；<0.1 直接归 0 ✓）：
+--               证据 minecommand.lua:843-847 / salvagecommand.lua:967-971 →
+--                    simulationutility.lua:866-868 `attackProbability = attackChanceModification(...)` ✓
+--               → 这是**风险救援牌**（与 trade 的护航同位 ✓）；代价是只统计安全星区 → 产量下降 ✓
+--   escorts  —— 与 trade 一致：只给过不了闸门的档位补算一次带护航的预测 ✓
+--               （原版按护航强度降基础风险 ✓；★ 且 Mine/Salvage 的护航会**把自己那份产量加进来** ✓
+--                 —— minecommand.lua:1121-1134 / salvagecommand.lua:1294-1300 ✓）
+--
+-- ★ 只在「默认档 / 最长档**都过不了闸门**」时才补算救援档（shortest / safeMode / escorts）✓
+--   —— 与 trade 的"只给过不了闸门的路线补算护航"完全同一个取舍 ✓✓
+
+-- 参数档的中文说明（进返回值，人能看懂 ✓）
+local JOB_PARAM_TAG = {
+    default  = "默认档（duration 用原版默认 1 小时 / 非安全模式）",
+    longest  = "最长时长档（原版允许的 duration 上限 ✓：产量最高、风险也最高）",
+    shortest = "最短时长档（原版允许的 duration 下限 ✓：风险最低、产量也最低）",
+    safeMode = "安全模式档（★ 原版把伏击概率 ×0.1 ✓，代价是只统计安全星区 → 产量下降）",
+    escorts  = "护航档（★ 同星系护航：降风险，且护航自己也出产量 ✓）",
+}
+
+-- 材料表：★ 只用**已核实**的三样东西（NumMaterials / Material / goods ✓），绝不发明 API ✗
+--
+-- 证据（逐行可查 ✓）：
+--   * `NumMaterials()` / `Material(i-1).name` —— 原版自己就是这么列举材料的 ✓
+--     minecommand.lua:531-543（getPredictableValues 里 `for i = 1, NumMaterials() do Material(i - 1)` ✓）
+--   * `Material(i-1).costFactor` —— 原版**材料价值因子**（Documentation/Material.html 的
+--     costFactor 属性 ✓）；原版两处实锤用法：
+--         salvagecommand.lua:832  `credits = resourcesPerWreckage * Material(material - 1).costFactor * 0.1`
+--         insurance.lua:329       `sum = sum + Material(i - 1).costFactor * v * 10`
+--     → 它就是"1 单位这种材料值多少钱"的原版口径 ✓✓（绝对倍数无所谓，本鱼只用它排序 ✓）
+--   * 矿物商品基准价 `goods["<材料名> Ore"].price` —— 原版数据文件 goodsindex.lua ✓：
+--         Iron Ore=2 / Titanium Ore=3 / Naonite Ore=4 / Trinium Ore=5 /
+--         Xanion Ore=7 / Ogonite Ore=9 / Avorion Ore=12 ✓
+--
+-- ⚠️★★ 本鱼**没有找到**任何"矿石层级 / 每材料售价"的**索引型 API** ✗（没有 OreTier 之类别名）——
+--    所以下面只**读**上面那三样；三样都读不到时退回"材料层级 index"，并**在 scoreBasis 里明说** ✓✓
+--    （这是本文件里唯一"像权重"的东西，它的来源与口径都写在返回值里，能被审计 ✓）
+local function jobMaterialTable(goodsLib)
+    local n = 0
+    local okN = pcall(function() n = math.floor(tonumber(NumMaterials()) or 0) end)
+    if not okN or n <= 0 then n = 7 end        -- 兜底：Iron..Avorion 共 7 种 ✓（MaterialType 枚举 ✓）
+    local list = {}
+    for i = 1, n do
+        local rec = { index = i, materialType = i - 1, name = "Material " .. tostring(i - 1) }
+        pcall(function()
+            local m = Material(i - 1)
+            rec.name = tostring(m.name)
+            rec.costFactor = tonumber(m.costFactor)
+        end)
+        if type(goodsLib) == "table" then
+            local okG, g = pcall(function() return goodsLib[rec.name .. " Ore"] end)
+            if okG and type(g) == "table" then rec.orePrice = tonumber(g.price) end
+        end
+        list[i] = rec
+    end
+    return list, n
+end
+
+-- 层级权重：显式覆盖 > 原版 costFactor > 矿物商品价 > 材料层级 index ✓
+-- ★ 每一条都先查**单调不降**（主人的目标是"越高阶越好" ✓）—— 不单调的口径一律不用 ✗，
+--   免得悄悄给出反向排序 ✓✓
+-- 返回：weights, scoreBasis, source ✓
+local function jobTierWeights(Job, matList, n, requested)
+    if type(requested) == "table" then
+        local w, ok = {}, true
+        for i = 1, n do
+            local v = tonumber(requested[i])
+            if v == nil or v <= 0 then ok = false break end
+            w[i] = v
+        end
+        if ok and n > 0 and Job.isNonDecreasing(w, n) then
+            return w, "Σ 期望产量 × data.tierWeights（调用方显式给定的层级权重 ✓）", "explicit"
+        end
+    end
+
+    -- ① 原版材料价值因子 ✓
+    do
+        local w, ok = {}, true
+        for i = 1, n do
+            local v = matList[i] and matList[i].costFactor
+            if v == nil or v <= 0 then ok = false break end
+            w[i] = v
+        end
+        if ok and Job.isNonDecreasing(w, n) then
+            return w,
+                "Σ 期望产量 × Material(i-1).costFactor（原版材料价值因子；salvagecommand.lua:832 / insurance.lua:329 同源 ✓）",
+                "costFactor"
+        end
+    end
+
+    -- ② 原版矿物商品基准价 ✓（比 costFactor 平缓得多 —— 所以口径必须写明 ✓）
+    do
+        local w, ok = {}, true
+        for i = 1, n do
+            local v = matList[i] and matList[i].orePrice
+            if v == nil or v <= 0 then ok = false break end
+            w[i] = v
+        end
+        if ok and Job.isNonDecreasing(w, n) then
+            return w,
+                "Σ 期望产量 × 矿物商品基准价 goods[\"<材料> Ore\"].price（goodsindex.lua ✓；比 costFactor 平缓）",
+                "orePrice"
+        end
+    end
+
+    -- ③ ★ 兜底：材料**层级 index**（Iron=1 … Avorion=7 ✓）—— 口径**明说** ✓✓
+    local w = {}
+    for i = 1, n do w[i] = i end
+    return w,
+        "Σ 期望产量 × 材料层级 index（★ 原版**没有**公开的'每材料价格/层级'API ✗ → 退回 MaterialType 顺序 Iron=1…Avorion=7 ✓）",
+        "tierIndex"
+end
+
+-- 原版 duration 合法区间（★ 从命令自己问 ✓）＋ 参数网格 ✓
+local function jobParamGrid(command, player, ship, data, escorts)
+    local from, to = 0.5, 2          -- 拿不到 values 时的兜底 = 原版写死的默认区间 ✓
+    local okV = pcall(function()
+        local v = command:getConfigurableValues(player.index, ship)
+        if type(v) == "table" and type(v.duration) == "table" then
+            local a, b = tonumber(v.duration.from), tonumber(v.duration.to)
+            if a ~= nil and a > 0 then from = a end
+            if b ~= nil and b > 0 then to = b end
+        end
+    end)
+    if to < from then to = from end
+
+    local want = tonumber(data and data.duration)
+    local d0 = (want ~= nil and want > 0) and want or 1
+    if d0 < from then d0 = from end
+    if d0 > to then d0 = to end
+
+    local list = { { tag = "default", duration = d0, safeMode = false } }
+    if to > d0 + 1e-9 then
+        list[#list + 1] = { tag = "longest", duration = to, safeMode = false }
+    end
+    if from < d0 - 1e-9 then
+        list[#list + 1] = { tag = "shortest", duration = from, safeMode = false, rescue = true }
+    end
+    list[#list + 1] = { tag = "safeMode", duration = d0, safeMode = true, rescue = true }
+    if type(escorts) == "table" and #escorts > 0 then
+        list[#list + 1] = {
+            tag = "escorts", duration = d0, safeMode = false,
+            escorts = escorts, rescue = true,
+        }
+    end
+    return list, { from = from, to = to, default = d0, okValues = okV }
+end
+
+-- 扫**一个**区域：分析（pcall ✓）+ 逐个参数档算预测（pcall ✓）＋ 评分 ✓
+-- ★ 任何一步失败都只写进 rec.error / cand.predictionFailed，**绝不中断整轮扫描** ✓✓
+local function scanJobArea(command, Job, player, ship, ctype, area, params, opts)
+    local rec = { area = area, offset = { x = 0, y = 0 }, candidates = {}, acceptable = false }
+
+    local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+        return run(player.index, ship, ctype, area, player.index)
+    end)
+    if not okRun then
+        rec.error = "area analysis failed: " .. tostring(rShipName)
+        return rec
+    end
+    local results = rResults or rArea
+    if type(rArea) == "table" then rec.area = rArea end
+    if type(results) ~= "table" then
+        rec.error = "area analysis returned nothing"
+        return rec
+    end
+
+    rec.results = results
+    -- ★★ 必须把分析结果**挂回 area** 上 ✓（否则 calculatePrediction 一进去就
+    --    "attempt to index field 'analysis' (a nil value)" ✓✓ —— tradePlan 同款处理 ✓）
+    rec.area.analysis = results
+
+    rec.areaStats = {
+        sectors = results.sectors, reachable = results.reachable,
+        unreachable = results.unreachable,
+        biggestFactionInArea = results.biggestFactionInArea,
+        safeSectorCount = (type(results.safeSectors) == "table") and #results.safeSectors or nil,
+        asteroids = results.asteroids, wrecks = results.wrecks,
+        volume = results.volume,
+    }
+    rec.areaMaterials = {}
+    for i = 1, opts.nMaterials do
+        rec.areaMaterials[i] = {
+            index = i, name = opts.matNames[i], materialType = i - 1,
+            weight = opts.weights[i],
+            probability = tonumber(type(results.materials) == "table" and results.materials[i]) or 0,
+        }
+    end
+    rec.fieldTier = Job.fieldTier(results.materials, opts.nMaterials)
+
+    local function evaluate(p)
+        local cfg = {
+            duration = p.duration,
+            safeMode = p.safeMode == true,
+            collected = opts.collected,
+            escorts = p.escorts or {},
+        }
+        local cand = {
+            tag = p.tag, tagNote = JOB_PARAM_TAG[p.tag], label = p.tag,
+            duration = p.duration, safeMode = cfg.safeMode, escorts = cfg.escorts,
+            pValue = -1, sValue = -1, acceptable = false, scoreBasis = opts.scoreBasis,
+        }
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, rec.area, cfg)
+        end)
+        if not okP or type(pred) ~= "table" then
+            cand.predictionFailed = tostring(pred)
+            rec.candidates[#rec.candidates + 1] = cand
+            return cand
+        end
+
+        cand.attackChance = pred.attackChance and tonumber(pred.attackChance.value) or nil
+        cand.chance = cand.attackChance
+        if pred.error ~= nil then cand.error = tostring(pred.error) end
+
+        if opts.action == "Mine" then
+            local low, high, topTier, per = Job.mineValue(pred.yields, opts.weights)
+            for i = 1, #per do per[i].name = opts.matNames[per[i].index] end
+            cand.valueLow, cand.valueHigh = low, high
+            cand.topTier, cand.topMaterial = topTier, opts.matNames[topTier]
+            cand.materials = per
+            cand.pValue, cand.sValue = low, topTier          -- ★ 主键=层级加权价值；次键=最高矿层级 ✓
+        else
+            local low, high, itemsFrom, itemsTo, rarityTier = Job.salvageValue(pred.items, opts.rarityTier)
+            local sLow, sHigh, sTop, sPer = Job.mineValue(pred.yields, opts.weights)
+            for i = 1, #sPer do sPer[i].name = opts.matNames[sPer[i].index] end
+            cand.valueLow, cand.valueHigh = low, high
+            cand.items = { from = itemsFrom, to = itemsTo }
+            cand.rarityTier = rarityTier
+            cand.scrapLow, cand.scrapHigh = sLow, sHigh    -- 废铁价值（**只作审计/冷门参考** ✓，主人说战利品才是主角 ✓）
+            cand.scrapMaterials = sPer
+            cand.pValue, cand.sValue = low, (rec.fieldTier or -1)   -- ★ 次键=残骸场层级均值 ✓（明说它是代理 ✓）
+        end
+
+        -- ★★ 达标判定（两条，缺一不可 ✓✓）：
+        --   ① **要有产出** —— 产出为 0 的档位**不算可用候选** ✗
+        --      原版自己在没产出时也会给 error（"This mining operation won't yield any resources!"
+        --      / "There are no sectors to salvage in in this area!" ✓），
+        --      但那是 error 不是 "推荐" ✓ —— 不把"啥也采不到的区域"当成合法答案，
+        --      否则**空产出 + 0% 风险**会一路排到最前面 ✗✓（自检 M3 / S1b 当场抓到过 ✓）
+        --   ② 风险：**未知风险放行** ✓（与 lib/copilottrade 的 `chance == nil or <= max` 一致 ✓）
+        local hasOutput = (tonumber(cand.valueHigh) or 0) > 0
+        cand.hasOutput = hasOutput
+        if not hasOutput then cand.noOutput = true end
+        cand.acceptable = hasOutput and (cand.chance == nil or cand.chance <= opts.gate)
+        cand.label = p.tag
+        rec.candidates[#rec.candidates + 1] = cand
+        return cand
+    end
+
+    -- ① 正常档：default（+ longest）✓
+    for _, p in ipairs(params) do
+        if not p.rescue then evaluate(p) end
+    end
+    -- ② 救援档：**只有正常档一个都没达标**时才补算 ✓✓（safeMode / shortest / escorts ✓）
+    local anyOK = false
+    for _, c in ipairs(rec.candidates) do
+        if c.acceptable then anyOK = true break end
+    end
+    if not anyOK then
+        for _, p in ipairs(params) do
+            if p.rescue then evaluate(p) end
+        end
+    end
+
+    local pass, all = {}, {}
+    for _, c in ipairs(rec.candidates) do
+        all[#all + 1] = c
+        if c.acceptable then pass[#pass + 1] = c end
+    end
+    Job.rankCandidates(pass, nil, { band = opts.band })
+    Job.rankCandidates(all, nil, { band = opts.band })
+    rec.acceptable = (#pass > 0)
+    rec.best = pass[1] or all[1]
+    rec.candidatesRanked = all
+    if rec.best ~= nil then
+        rec.bestValue = rec.best.valueLow
+        rec.bestValueHigh = rec.best.valueHigh
+        rec.bestChance = rec.best.chance
+        rec.bestTag = rec.best.tag
+        rec.bestTopTier = rec.best.topTier
+        if rec.best.predictionFailed ~= nil then rec.error = "prediction failed: " .. tostring(rec.best.predictionFailed) end
+        if rec.best.error ~= nil then rec.error = "prediction says: " .. tostring(rec.best.error) end
+    end
+    return rec
+end
+
+-- 区域排序 ✓：达标的在前 ✓；按该区域最优档的**层级加权价值**降序 ✓；带宽内风险优先 ✓
+local function rankJobAreas(recs, band)
+    table.sort(recs, function(a, b)
+        if a.acceptable ~= b.acceptable then return a.acceptable end
+        local va, vb = tonumber(a.bestValue) or -1, tonumber(b.bestValue) or -1
+        if va ~= vb then return va > vb end
+        local ca, cb = tonumber(a.bestChance) or 9, tonumber(b.bestChance) or 9
+        if ca ~= cb then return ca < cb end
+        local fa, fb = tonumber(a.fieldTier) or -1, tonumber(b.fieldTier) or -1
+        if fa ~= fb then return fa > fb end
+        return tostring(a.bestTag) < tostring(b.bestTag)
+    end)
+    for i = 2, #recs do
+        local j = i
+        while j > 1 do
+            local cur, prev = recs[j], recs[j - 1]
+            if cur.acceptable ~= prev.acceptable then break end
+            local vp, vc = tonumber(prev.bestValue), tonumber(cur.bestValue)
+            if vp == nil or vc == nil or vp <= 0 then break end
+            if vc < vp * (1 - band) then break end
+            local cc, cp = tonumber(cur.bestChance) or 9, tonumber(prev.bestChance) or 9
+            local swap = false
+            if cc < cp - 1e-9 then
+                swap = true
+            elseif math.abs(cc - cp) <= 1e-9
+                and (tonumber(cur.fieldTier) or -1) > (tonumber(prev.fieldTier) or -1) + 1e-9 then
+                swap = true
+            end
+            if not swap then break end
+            recs[j], recs[j - 1] = prev, cur
+            j = j - 1
+        end
+    end
+    return recs
+end
+
+-- 回传给 DSH 的区域榜（**裁掉**重字段 ✓：只剩标量 + 最优档的逐材料明细 ✓）
+local function buildJobRanking(scanned, opts)
+    local out = {}
+    for _, rec in ipairs(scanned) do
+        local a = rec.area
+        local entry = {
+            area = {
+                lower = { x = a.lower.x, y = a.lower.y },
+                upper = { x = a.upper.x, y = a.upper.y },
+                offset = { x = rec.offset.x, y = rec.offset.y },
+            },
+            fieldTier = rec.fieldTier,
+            bestTag = rec.bestTag,
+            bestTagNote = rec.best and rec.best.tagNote or nil,
+            valueLow = rec.bestValue,
+            valueHigh = rec.bestValueHigh,
+            attackChance = rec.bestChance,
+            topTier = rec.bestTopTier,
+            topMaterial = rec.best and rec.best.topMaterial or nil,
+            acceptable = rec.acceptable,
+            parameterTags = {},
+            candidates = {},
+        }
+        if rec.best ~= nil then
+            entry.duration = rec.best.duration
+            entry.safeMode = rec.best.safeMode
+            entry.escorts = rec.best.escorts
+            entry.items = rec.best.items
+            entry.scrapHigh = rec.best.scrapHigh
+            entry.scoreBasis = rec.best.scoreBasis
+        end
+        for _, c in ipairs(rec.candidatesRanked or rec.candidates) do
+            entry.parameterTags[#entry.parameterTags + 1] = string.format(
+                "%s(duration=%s,safeMode=%s%s%s)",
+                tostring(c.tag), tostring(c.duration), tostring(c.safeMode),
+                (c.escorts and #c.escorts > 0) and (",escorts=" .. table.concat(c.escorts, ",")) or "",
+                c.acceptable and ",ok" or ",over-gate")
+        end
+        local list = rec.candidatesRanked or rec.candidates
+        local shown = {}
+        for i = 1, math.min(SCAN_DETAIL, #list) do
+            local c = list[i]
+            local copy = {}
+            for k, v in pairs(c) do
+                if k ~= "materials" and k ~= "scrapMaterials" then copy[k] = v end
+            end
+            if c == rec.best and type(c.materials) == "table" then copy.materials = c.materials end
+            shown[i] = copy
+        end
+        entry.candidates = shown
+        local bs = rec.best
+        if bs ~= nil and bs ~= list[1] and type(bs.materials) == "table" then
+            -- 最优档若被裁掉，单独附上它的逐材料明细 ✓（人要看数 ✓）
+            local copy = {}
+            for k, v in pairs(bs) do
+                if k ~= "scrapMaterials" then copy[k] = v end
+            end
+            entry.bestCandidate = copy
+        end
+        if rec.error ~= nil then entry.error = rec.error end
+        out[#out + 1] = entry
+    end
+    return out
+end
+
+function CopilotLinkIn.jobPlan(player, data, action)
+    local t0 = os.clock()
+    local ship = data and data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "jobPlan needs data.ship"
+    end
+    action = action or (data and data.action) or "Mine"
+    if action ~= "Mine" and action ~= "Salvage" then
+        return false, "BAD_ACTION",
+            "jobPlan supports Mine / Salvage (got " .. tostring(action) .. ")"
+    end
+    local ctype = COMMAND_TYPES[action]
+    if ctype == nil then return false, "BAD_ACTION", "no command type for " .. tostring(action) end
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local Job = include("copilotjob")
+    if type(Job) ~= "table" then return false, "NO_LIB", "copilotjob did not load" end
+
+    -- ★ ① 船在哪 —— 所有候选区域**必须含船** ✓✓（原版硬约束，见 collectAreaList ✓）
+    local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if not okPos or tonumber(px) == nil or tonumber(py) == nil then
+        return false, "NO_POSITION", "cannot read ship position for " .. ship .. "; pass x,y"
+    end
+    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+
+    -- ★ ② 自己跑区域分析（**同步** ✓ —— areaanalysis.lua 末尾直接 return ✓）
+    --   ⚠️ `include("areaanalysis")` 返回 **nil** ✗（它是引擎脚本，只定义**全局 run** ✓）；
+    --   ⚠️ `pcall` 会在最前面**多返回一个 true** ✗ → 解构必须整体后移一格 ✓✓
+    local okInc, incErr = pcall(function() return include("areaanalysis") end)
+    if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
+    if type(run) ~= "function" then
+        return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define a global run()"
+    end
+
+    -- ★ ③ 命令实例：问合法区域尺寸 / duration 区间 / 算预测 ✓
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF or type(factory) ~= "table" then
+        return false, "NO_COMMAND_FACTORY", tostring(factory)
+    end
+    local okCmd, command = pcall(function() return factory.makeCommand(ctype) end)
+    if not okCmd or command == nil then return false, "NO_COMMAND", tostring(command) end
+
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if not okGoods then goodsLib = nil end
+
+    -- ★ ④ 尺寸：合法尺寸**只从命令问** ✓（Mine/Salvage 原版都是 15x15 ✓，
+    --   证据 minecommand.lua:494-496 / salvagecommand.lua:572-574 ✓）—— 绝不自己编 ✗
+    local templates = legalAreaSizes(command, player, ship)
+    local reqSize = tonumber(data and data.size)
+    local fallback = DEFAULT_SIZE[action] or 15
+    local size
+    if reqSize ~= nil then
+        size = pickSquareSize(templates, reqSize)      -- 非法尺寸 → 原版第一个合法正方形 ✓
+    else
+        size = pickSquareSize(templates, fallback)     -- 默认 = 该命令的默认边长 ✓
+    end
+    local sizeAdjusted = (reqSize ~= nil and reqSize ~= size)
+    local half = math.floor((size - 1) / 2)
+
+    local step = math.floor(tonumber(data and data.step) or SCAN_STEP)
+    if step < 1 then step = 1 end
+    local maxAreas = math.floor(tonumber(data and data.maxAreas) or SCAN_MAX_AREAS)
+    if maxAreas < 1 then maxAreas = 1 end
+    if maxAreas > 25 then maxAreas = 25 end
+    local budgetMs = math.floor(tonumber(data and data.maxScanMs) or SCAN_BUDGET_MS)
+    if budgetMs < 0 then budgetMs = 0 end
+    local gate = tonumber(data and data.maxAttackChance) or Job.MAX_ATTACK_CHANCE
+
+    local offsets = scanOffsets(half, step)
+    local used = {}
+    for i = 1, #offsets do
+        if #used >= maxAreas then break end
+        used[#used + 1] = offsets[i]
+    end
+
+    local baseX, baseY = shipX, shipY
+    if tonumber(data and data.x) ~= nil and tonumber(data and data.y) ~= nil then
+        baseX, baseY = math.floor(tonumber(data.x)), math.floor(tonumber(data.y))
+    end
+    local areaList, dropped, usedShipCentre, areaBaseX, areaBaseY =
+        collectAreaList(used, size, baseX, baseY, shipX, shipY)
+    baseX, baseY = areaBaseX, areaBaseY
+    if #areaList == 0 then
+        return false, "NO_AREAS", "no candidate area contains the ship"
+    end
+
+    -- ★ ⑤ 层级权重（口径写进 scoreBasis ✓）+ 材料表 ✓
+    local matList, nMaterials = jobMaterialTable(goodsLib)
+    local matNames = {}
+    for i = 1, nMaterials do matNames[i] = matList[i].name end
+    local weights, scoreBasis, weightSource = jobTierWeights(Job, matList, nMaterials,
+        data and data.tierWeights)
+
+    -- ★ ⑥ 稀有度层级（Salvage 用 ✓）：先试原版 `Rarity(v).value`，读不到就用枚举序号 ✓
+    local rarityTierOf, rarityTierFrom = nil, "RarityType 枚举序号（Petty=0 … Exceptional=4 ✓）"
+    do
+        local okR, tierOf = pcall(function()
+            local t = {}
+            for _, r in ipairs(Job.RARITY_MIX) do
+                t[r.name] = tonumber(Rarity(r.type).value)
+            end
+            return t
+        end)
+        if okR and type(tierOf) == "table" then
+            rarityTierOf = tierOf
+            rarityTierFrom = "Rarity(v).value（原版稀有度对象 ✓）"
+        end
+    end
+    local rarityTier = Job.expectedRarityTier(rarityTierOf)
+
+    -- ★ scoreBasis：**排序真正用的口径**必须写在返回值里 ✓✓
+    --   Mine    → 就是材料层级加权价值 ✓
+    --   Salvage → **战利品口径**为主（装备件数 × E[稀有度层级]），材料加权只用于审计废铁 ✓
+    --             —— 主人的原话："废弃物则应尽可能地收集高科技等级的舰船装备与插件" ✓
+    local scoreBasisEff = scoreBasis
+    local lootBasis = nil
+    if action == "Salvage" then
+        lootBasis = string.format(
+            "主键 = 装备件数(prediction.items) × E[稀有度层级] = %.3f（混合表：%s；层级取自 %s ✓）；" ..
+            "次键 = 残骸场材料层级均值 fieldTier（★ 只是**代理指标**，见 copilotjob.lua 的说明 ✓）；" ..
+            "废铁价值口径 = %s（**只作审计** ✓ —— 主人说战利品才是主角 ✓）",
+            rarityTier, Job.RARITY_MIX_SOURCE, rarityTierFrom, scoreBasis)
+        scoreBasisEff = lootBasis
+    end
+
+    -- ★ ⑦ 参数网格（duration 区间来自原版 ✓）
+    local escorts = {}
+    if type(data) == "table" and type(data.escorts) == "table" then
+        for _, n2 in ipairs(data.escorts) do
+            if type(n2) == "string" and n2 ~= "" then escorts[#escorts + 1] = n2 end
+        end
+    end
+    local params, durs = jobParamGrid(command, player, ship, data, escorts)
+
+    -- ★ ⑧ 命令自己的"能不能挖得动"（getMiningProperties / getSalvagingProperties ✓）
+    --   —— 这是**权威的"这艘船到底能采什么"** ✓（原版预测内部也是用它 ✓）
+    local capability = nil
+    do
+        local okC, props = pcall(function()
+            if action == "Mine" then return command:getMiningProperties(player.index, ship) end
+            return command:getSalvagingProperties(player.index, ship)
+        end)
+        if okC and type(props) == "table" then
+            capability = { source = (action == "Mine") and "MineCommand:getMiningProperties" or "SalvageCommand:getSalvagingProperties", materials = {} }
+            for i = 1, nMaterials do
+                local mp = props.materials and props.materials[i]
+                capability.materials[i] = {
+                    index = i, name = matNames[i], materialType = i - 1,
+                    dps = mp and tonumber(mp.dps) or 0,
+                    canMine = (mp and tonumber(mp.dps) or 0) > 0,
+                }
+            end
+            capability.rawMining = props.rawMining or props.rawSalvaging or nil
+            capability.refinedMining = props.refinedMining or props.refinedSalvaging or nil
+            capability.cargoSpace = props.cargoSpace
+            capability.turretSlotsFulfilled = props.turretSlotsFulfilled
+        end
+    end
+
+    -- ★ ⑨ collected（★ 命令**必须**有它 ✗：minecommand.lua:964 / salvagecommand.lua:1116
+    --    会 `config.collected[material - 1]` —— 缺了直接报 nil 索引 ✓）—— 与 onOrder 一致：全收 ✓
+    local collected = {}
+    for i = 0, 15 do collected[i] = true end
+
+    local opts = {
+        action = action, gate = gate, band = NET_PROFIT_BAND,
+        nMaterials = nMaterials, matNames = matNames, weights = weights,
+        scoreBasis = scoreBasisEff, rarityTier = rarityTier, collected = collected,
+    }
+
+    -- ★★★ ⑩ 多区域扫描：区域 × 参数 × 层级 ✓✓
+    local scanned = {}
+    local stoppedEarly = false
+    local scanMs = 0
+    for _, item in ipairs(areaList) do
+        scanMs = math.floor((os.clock() - t0) * 1000)
+        if #scanned > 0 and budgetMs > 0 and scanMs > budgetMs then
+            stoppedEarly = true
+            break
+        end
+        local rec = scanJobArea(command, Job, player, ship, ctype, item.area, params, opts)
+        rec.offset = item.offset
+        rec.index = #scanned + 1
+        scanned[#scanned + 1] = rec
+    end
+    scanMs = math.floor((os.clock() - t0) * 1000)
+
+    rankJobAreas(scanned, NET_PROFIT_BAND)
+    local chosen = scanned[1]
+    local analysedArea = chosen.area
+    local results = chosen.results
+
+    -- ★★★ ⑪ 最终推荐：把**所有区域的所有参数档**放一起，取闸门内价值最高的那个 ✓✓
+    local pool = {}
+    for _, rec in ipairs(scanned) do
+        for _, c in ipairs(rec.candidates) do
+            if c.acceptable then
+                -- ★★ 把该区域的几何**直接挂到候选上** ✓✓ —— **绝不要**用 `scanned[rec.index]`
+                --    再回去找 ✗：区域榜已经**原地重排**过，而 rec.index 是**排序前**的序号
+                --    → 会指到**另一个区域** ✗✓（自检 S1b 当场抓到：推荐落在 (0,4) 而非 (4,4) ✓）
+                c.areaIndex = rec.index
+                c.areaLower = { x = rec.area.lower.x, y = rec.area.lower.y }
+                c.areaUpper = { x = rec.area.upper.x, y = rec.area.upper.y }
+                c.areaOffset = { x = rec.offset.x, y = rec.offset.y }
+                c.areaFieldTier = rec.fieldTier
+                c.label = tostring(rec.index) .. "/" .. tostring(c.tag)
+                pool[#pool + 1] = c
+            end
+        end
+    end
+    Job.rankCandidates(pool, gate, { band = NET_PROFIT_BAND })
+
+    local recommendation, riskWarning = nil, nil
+    local top = pool[1]
+    if top ~= nil then
+        local off = top.areaOffset or { x = 0, y = 0 }
+        recommendation = {
+            action = action,
+            area = {
+                lower = top.areaLower,
+                upper = top.areaUpper,
+                offset = { x = off.x, y = off.y },
+            },
+            x = baseX + off.x,
+            y = baseY + off.y,
+            size = size,
+            tag = top.tag,
+            duration = top.duration,
+            safeMode = top.safeMode,
+            escorts = top.escorts or {},
+            attackChance = top.chance,
+            maxAttackChance = gate,
+            valueLow = top.valueLow,
+            valueHigh = top.valueHigh,
+            scoreBasis = top.scoreBasis,
+            topTier = top.topTier,
+            topMaterial = top.topMaterial,
+            items = top.items,
+            scrapHigh = top.scrapHigh,
+            fieldTier = top.areaFieldTier,
+            materials = top.materials,
+            scrapMaterials = top.scrapMaterials,
+        }
+        local desc
+        if action == "Mine" then
+            desc = string.format(
+                "层级加权价值 %.0f~%.0f（口径：%s）；最高可采矿 = %s（层级 %s）；伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；时长 %s 小时；安全模式 %s；护航 %s",
+                math.floor((top.valueLow or 0) + 0.5), math.floor((top.valueHigh or 0) + 0.5),
+                tostring(top.scoreBasis),
+                tostring(top.topMaterial), tostring(top.topTier),
+                top.chance and string.format("%.1f%%", top.chance * 100) or "未知",
+                gate * 100, off.x, off.y,
+                tostring(top.duration), tostring(top.safeMode),
+                (#(top.escorts or {}) > 0) and table.concat(top.escorts, ",") or "无")
+        else
+            desc = string.format(
+                "装备期望 %d~%d 件 × E[稀有度层级] %.3f = 加权价值 %.1f~%.1f；残骸场材料层级均值 %s；伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；时长 %s 小时；安全模式 %s；护航 %s",
+                math.floor((top.items and top.items.from or 0) + 0.5),
+                math.floor((top.items and top.items.to or 0) + 0.5),
+                top.rarityTier or 0,
+                top.valueLow or 0, top.valueHigh or 0,
+                (top.areaFieldTier ~= nil) and string.format("%.2f", top.areaFieldTier) or "未知",
+                top.chance and string.format("%.1f%%", top.chance * 100) or "未知",
+                gate * 100, off.x, off.y,
+                tostring(top.duration), tostring(top.safeMode),
+                (#(top.escorts or {}) > 0) and table.concat(top.escorts, ",") or "无")
+        end
+        recommendation.reason = desc
+    else
+        -- ★ 一个档位都没过闸门 → **明说**，绝不偷偷挑高风险的 ✓✓
+        --   先把"为什么没有推荐"分清楚（★ 两种原因要分开告诉模型 ✓）：
+        --     ① 有产出的档位全被闸门挡下 → 该派护航 / 缩时长 / 开安全模式 ✓
+        --     ② 压根没有有产出的档位 → 该换区域 / 换船（采不动 / 区域里没目标 ✓）
+        local nOut, nOver, nPredFail = 0, 0, 0
+        local anyBest = nil
+        for _, rec in ipairs(scanned) do
+            for _, c in ipairs(rec.candidates) do
+                if c.hasOutput then
+                    nOut = nOut + 1
+                    if c.chance ~= nil and c.chance > gate then nOver = nOver + 1 end
+                end
+                if c.predictionFailed ~= nil or c.error ~= nil then nPredFail = nPredFail + 1 end
+            end
+            if rec.best ~= nil
+                and (anyBest == nil or (tonumber(rec.bestValue) or -1) > (tonumber(anyBest.bestValue) or -1)) then
+                anyBest = rec
+            end
+        end
+
+        if nOut == 0 then
+            riskWarning = string.format(
+                "扫过的 %d 个区域里，%s 一个**有产出**的参数档都没算出来 ✗ —— 本鱼**不推荐**下单 ✓。"
+                .. "常见原因：这艘船没有对应的采集设备（用 %s 看：参见返回里的 capability ✓）／"
+                .. "区域里没有可采目标（area.analysis.materials / wrecks / asteroids 全 0 ✓）／"
+                .. "或预测本身报错（%d 个档位报错 ✓）。→ 换一片星区、换一艘有采集设备的船 ✓",
+                #scanned, action,
+                (action == "Mine") and "原版 MineCommand:getMiningProperties"
+                    or "原版 SalvageCommand:getSalvagingProperties",
+                nPredFail)
+        elseif anyBest ~= nil and anyBest.best ~= nil then
+            riskWarning = string.format(
+                "没有任何参数档通过风险闸门（伏击概率 ≤ %.0f%%）✗ —— 本鱼**不推荐**%s ✓。"
+                .. "最有产出的候选是「%s / 区域偏移 %+d,%+d」（伏击概率 %s%s）；"
+                .. "可派护航重算 / 缩短时长 / 开安全模式（原版会把伏击概率 ×0.1 ✓）/ 缩小区域范围 / 换一艘更硬更快的船 ✓",
+                gate * 100, action, tostring(anyBest.bestTag),
+                anyBest.offset.x, anyBest.offset.y,
+                anyBest.bestChance and string.format("%.1f%%", anyBest.bestChance * 100) or "未知",
+                (nOver == nOut) and string.format("；全部 %d 个有产出的档位都超闸门 ✓", nOut) or "")
+        else
+            riskWarning = string.format(
+                "扫过的 %d 个区域里，%s 一个可用的参数档都没算出来 ✗ —— 本鱼**不推荐**下单 ✓"
+                .. "（区域分析本身失败／或所有档位的预测都报错，共 %d 个报错档 ✓）",
+                #scanned, action, nPredFail)
+        end
+    end
+
+    -- ★ ⑫ orderHint：**可以直接喂给 order** ✓（onOrder 读 ship/action/x/y/size/duration/safeMode/escorts ✓）
+    local orderHint = {
+        ship = ship, action = action, size = size,
+        x = baseX + chosen.offset.x, y = baseY + chosen.offset.y,
+        duration = (chosen.best and chosen.best.duration) or durs.default,
+        safeMode = (chosen.best and chosen.best.safeMode) or false,
+        escorts = (chosen.best and chosen.best.escorts) or {},
+        note = "order here — the ship is already inside this area",
+    }
+    if recommendation ~= nil then
+        orderHint.x, orderHint.y = recommendation.x, recommendation.y
+        orderHint.duration = recommendation.duration
+        orderHint.safeMode = recommendation.safeMode
+        orderHint.escorts = recommendation.escorts
+    end
+
+    -- ★ ⑬ 组装 plan（形状对齐 tradePlan ✓：{ config = {...}, reason = "..." } ✓）
+    local plan = nil
+    if recommendation ~= nil then
+        plan = {
+            config = {
+                duration = recommendation.duration,
+                safeMode = recommendation.safeMode,
+                escorts = recommendation.escorts,
+                collected = collected,
+            },
+            area = recommendation.area,
+            attackChance = recommendation.attackChance,
+            valueLow = recommendation.valueLow,
+            valueHigh = recommendation.valueHigh,
+            scoreBasis = recommendation.scoreBasis,
+            reason = recommendation.reason,
+        }
+    end
+
+    -- ★ ⑭ 说明（人看的 ✓）
+    local scanNote = string.format("多区域扫描：%d 个区域 / 步长 %d / 尺寸 %dx%d / 共 %d ms",
+        #scanned, step, size, size, scanMs)
+    local notes = { "plan only — nothing was issued (order is a separate call)", scanNote }
+    if sizeAdjusted then
+        notes[#notes + 1] = string.format("data.size=%s 不是 %s 的合法区域尺寸 → 改用 %dx%d",
+            tostring(data and data.size), tostring(action), size, size)
+    end
+    if #offsets > #used then
+        notes[#notes + 1] = string.format("候选区域共 %d 个，按 maxAreas=%d 只扫了最近的 %d 个",
+            #offsets, maxAreas, #used)
+    end
+    if dropped > 0 then
+        notes[#notes + 1] = string.format("其中 %d 个候选区域含不住船的星区（已跳过 ✓）", dropped)
+    end
+    if stoppedEarly then
+        notes[#notes + 1] = string.format("扫描提前结束：已用 %d ms > 预算 %d ms（调大 data.maxScanMs 可扫更多）",
+            scanMs, budgetMs)
+    end
+    if usedShipCentre then
+        notes[#notes + 1] = string.format("给的 x,y 周围没有能含住船的合法区域 → 改以船所在星区 (%d,%d) 为中心",
+            shipX, shipY)
+    end
+    if recommendation ~= nil then
+        notes[#notes + 1] = string.format("推荐 %s 档：%s", tostring(recommendation.tag), recommendation.reason)
+    elseif riskWarning ~= nil then
+        notes[#notes + 1] = riskWarning
+    end
+
+    CopilotRpc.trace(string.format(
+        "jobPlan %s %s area=[%d,%d]-[%d,%d] 参数档=%d 扫描=%d区域/%dms 推荐=%s",
+        action, ship, analysedArea.lower.x, analysedArea.lower.y,
+        analysedArea.upper.x, analysedArea.upper.y, #params, #scanned, scanMs,
+        recommendation and (recommendation.tag .. "/" .. tostring(recommendation.topMaterial)) or "none"))
+
+    -- ★★★ 只**组装**，不发起 ✓✓（与 tradePlan 同一约定 ✓）
+    local weightList = {}
+    for i = 1, nMaterials do
+        weightList[i] = {
+            index = i, name = matNames[i], materialType = i - 1,
+            weight = weights[i], costFactor = matList[i].costFactor, orePrice = matList[i].orePrice,
+        }
+    end
+
+    return true, {
+        ship = ship,
+        action = action,
+        area = analysedArea,
+        size = size,
+        materials = chosen.areaMaterials,      -- ★ 选中区域的逐材料：层级权重 × 区域概率 ✓
+        weights = weightList,                  -- ★ 层级权重表（含原版 costFactor / 矿价，能审计 ✓）
+        scoreBasis = scoreBasisEff,            -- ★ 排序**真正用的**口径（明说 ✓）
+        weightBasis = scoreBasis,              -- ★ 材料权重的来源与口径（Salvage 时只用于废铁审计 ✓）
+        lootBasis = lootBasis,
+        weightSource = weightSource,
+        rarity = (action == "Salvage") and {
+            source = Job.RARITY_MIX_SOURCE,
+            tierFrom = rarityTierFrom,
+            expectedTier = rarityTier,
+            mix = Job.rarityBreakdown(rarityTierOf),
+            note = "★ 原版这张稀有度混合表**与区域无关**（常数）✗ → 区域间排序实际由'装备件数'驱动 ✓；区域间的'高科技程度'用 fieldTier（残骸场材料层级均值）作**次级键** ✓",
+        } or nil,
+        capability = capability,                -- ★ 这艘船**到底采得动什么**（原版权威口径 ✓）
+        candidates = chosen.candidates,          -- 选中区域的全部参数档 ✓（含逐材料明细 ✓）
+        plan = plan,                             -- 可行 config + reason；nil = 不建议下单 ✓
+        recommendation = recommendation,         -- nil = 一个档位都没过闸门 ✗（看 riskWarning ✓）
+        riskWarning = riskWarning,
+        areaRanking = buildJobRanking(scanned, opts),
+        areasScanned = #scanned,
+        scanMs = scanMs,
+        scanNote = scanNote,
+        note = table.concat(notes, "；"),
+        durationChoices = durs,
+        orderHint = orderHint,
+        analysis = {
+            sectors = results.sectors, reachable = results.reachable,
+            unreachable = results.unreachable,
+            biggestFactionInArea = results.biggestFactionInArea,
+            materials = results.materials,
+            safeMaterials = results.safeMaterials,
+        },
+        scan = {
+            step = step, size = size, sizeRequested = reqSize, legalSizes = templates,
+            maxAreas = maxAreas, budgetMs = budgetMs, stoppedEarly = stoppedEarly,
+            usedShipCentre = usedShipCentre, droppedNoShip = dropped,
+            shipSector = { x = shipX, y = shipY }, maxAttackChance = gate,
+            escortsConsidered = escorts,
+            parameterTags = (function()
+                local t = {}
+                for _, p in ipairs(params) do t[#t + 1] = p.tag end
+                return t
+            end)(),
+            duration = durs,
+            objective = "多区域 × 参数（时长/安全模式/护航）× 层级加权 —— 采最高阶的矿 / 收最高科技的战利品，且在伏击概率 ≤ 10% 之下",
         },
     }
 end
