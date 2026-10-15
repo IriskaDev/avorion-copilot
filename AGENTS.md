@@ -373,3 +373,31 @@ copilot_enabled（总开关）         → 也可能回默认 ✗
 > 两次被强杀坑到的记录：
 > ① Steam P2P 会话残留 → 玩家进不去（见上一节 ✓）
 > ② player value 不落盘 → 名单与目标丢失（本节 ✓）
+## ★★★ 热重载的**VM 边界**（2026-10-16 实测，重要 ✗✓）
+
+`/copilot reload` 的实现是：
+
+```lua
+load(text, "@"..rel, "t", **_ENV**)      ← ★ 用的是**命令脚本那个 VM 的环境**
+pcall(chunk)
+```
+
+**所以它只能重载「和命令脚本同一个 VM」的文件** ✓：
+
+| 文件 | 能重载吗 | 为什么 |
+|---|---|---|
+| `commands/copilot.lua`、`player/ui/panel.lua`、`player/ai/*.lua` | ✅ | 同一个 VM ✓ |
+| **`net/*.lua`（整条 RPC 链）** | ❌ **不能** ✗✓ | 活在**另一个 VM**；重执行只会把表定义到错误的 VM 里 ✓ |
+
+**铁证**：在命令 VM 里 `CopilotRpc` 是 `nil` ✗ ——
+所以给 `net/link_in.lua` 加任何**顶层可执行语句**，reload 都会直接报
+`attempt to index global 'CopilotRpc' (a nil value)` ✓✓。
+
+**规矩**：
+* `net/` 下的文件**只放定义**（函数/表），**不许有顶层可执行语句** ✗✓
+* **改动 net 链 → 必须重启游戏** ✓（reload 无效 ✓）
+* `RELOADABLE` 列表里**已删掉** net 的两条（留着只会误导 + 报错 ✓）
+
+> 另一个同源教训（也在本文件里）：`CopilotRpc.handle(cmd, **CopilotLinkIn.onQuery**)` 是
+> **抓函数指针** ✗ —— 与「引擎按名字查表」相反，重载后会留下旧指针 ✓。
+> 现已改成 `bind(name)` 间接调用，**每次现场查表** ✓✓。

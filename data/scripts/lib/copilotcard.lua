@@ -121,8 +121,21 @@ function M.shipCard(player, name)
     if okC then
         card.hasCaptain = (captain ~= nil)
         if captain ~= nil then
-            local okCls, cls = probe(captain, "getClass")
-            if okCls and cls ~= nil then card.captainClass = tostring(cls) end
+            -- ★ 船长职业：**没有 `getClass()`** ✗✓（2026-10-16 实测：调用它会报错并写进服务端日志 ✗）。
+            --   原版的用法是 `captain:hasClass(CaptainUtility.ClassType.Merchant)` ✓
+            --   （见 tradecommand.lua:752 ✓）—— 所以逐个职业试一遍 ✓✓。
+            local okCU, CaptainUtility = pcall(function() return include("captainutility") end)
+            if okCU and type(CaptainUtility) == "table" and type(CaptainUtility.ClassType) == "table" then
+                for _, classType in pairs(CaptainUtility.ClassType) do
+                    local okH, has = pcall(function() return captain:hasClass(classType) end)
+                    if okH and has == true then
+                        card.captainClass = tostring(classType)
+                        break
+                    end
+                end
+            else
+                probeNotes.captainUtility = tostring(CaptainUtility)
+            end
         end
     else
         probeNotes.captain = tostring(captain)
