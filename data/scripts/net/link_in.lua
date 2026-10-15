@@ -208,11 +208,21 @@ function CopilotLinkIn.onOrder(data)
     self.orders = (self.orders or 0) + 1
 
     -- ② 排队第二阶段（等分析落地 ✓ —— 给 6 秒）
+    -- ★ tradecommand 只认这三个字段（源码核实 ✓）：
+    --     config.goodName  = 选哪条贸易路线（routes 里的 name ✓）
+    --     config.deposit   = 预付金（**必须 > 0**，否则 "Error starting command." ✓）
+    --     config.escorts   = 护航舰艇（★ 必须与行动船同星系 ✓）
     local config = {
         duration = tonumber(data.duration) or 1,
         safeMode = data.safeMode == true,
         immediateDelivery = data.immediateDelivery == true,
     }
+    if type(data.goodName) == "string" and data.goodName ~= "" then
+        config.goodName = data.goodName
+    end
+    local dep = tonumber(data.deposit)
+    if dep ~= nil and dep > 0 then config.deposit = math.floor(dep) end
+    if type(data.escorts) == "table" then config.escorts = data.escorts end
     table.insert(CopilotLinkIn.pendingOrders, {
         at = os.clock() + 6,
         ship = ship,
@@ -288,15 +298,18 @@ function CopilotLinkIn.tradePlan(player, data)
         return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define a global run()"
     end
 
-    local okRun, r1, r2, r3, results, r5 = pcall(function()
+    -- ⚠️ 坑：`pcall` 会在最前面**多返回一个 true** ✗✓ —— 漏算它就会整体错位一格 ✓，
+    --   实测表现：把 `type`（字符串）当成了 area ✗ → "attempt to index field 'lower' (a function value)"
+    --   （因为 "…".lower 取到的是 string.lower 这个函数 ✓✓）。
+    --   run 的真实返回值: shipName, type, area, results, callingPlayer ✓
+    local okRun, rShip, rType, rArea, rResults, rPlayer = pcall(function()
         return run(player.index, ship, ctype, area, player.index)
     end)
     if not okRun then
-        return false, "ANALYSIS_FAILED", tostring(r1)
+        return false, "ANALYSIS_FAILED", tostring(rShip)
     end
-    -- run 的返回值: shipName, type, area, results, callingPlayer ✓
-    results = results or r2                       -- 容错：万一签名不同 ✓
-    local analysedArea = r2 or area
+    local results = rResults or rArea
+    local analysedArea = rArea or area
     if type(results) ~= "table" then
         return false, "ANALYSIS_EMPTY", "area analysis returned nothing for " .. ship
     end
@@ -328,6 +341,10 @@ function CopilotLinkIn.tradePlan(player, data)
     end
 
     -- ★ ③ 造一个 TradeCommand 实例，用它算每条路线的**真实预测** ✓✓
+    -- ★ 原版是把分析结果**挂回 area 上**再算预测的 ✓（本鱼漏了这一步 ✗ →
+    --   报 "tradecommand.lua:743: attempt to index field 'analysis' (a nil value)" ✓）
+    analysedArea.analysis = results
+
     local okF, factoryOrErr = pcall(function() return include("commandfactory") end)
     if not okF then return false, "NO_COMMAND_FACTORY", tostring(factoryOrErr) end
     local okCmd, command = pcall(function() return factoryOrErr.makeCommand(ctype) end)
