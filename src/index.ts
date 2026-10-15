@@ -327,6 +327,8 @@ interface DecideFacts {
   goalText: string
   goalOptions: string[]
   card: unknown
+  /** ★ 贸易候选（只有 Trade 船才有）：游戏算出来的真实路线表 ✓ */
+  tradeRoutes?: unknown
 }
 
 /** 组一份给模型看的请求：目标 + 边界 + 事实 ✓ */
@@ -343,6 +345,17 @@ function buildPrompt(f: DecideFacts): string {
   lines.push('这艘船的现状（能力卡）：')
   lines.push(JSON.stringify(f.card ?? {}, null, 2))
   lines.push('')
+  if (f.tradeRoutes !== undefined) {
+    // ★★ 把游戏算出来的**真实贸易路线表**给模型 ✓✓（2026-10-16 补）
+    //   之前不给 ✗ → 模型只能猜"就地贸易"，完全不知道有更赚钱的货可选 ✗。
+    //   注意让模型按 **profitPerSize（每体积绝对利润 ✓）** 比较，而不是百分比 ✓。
+    lines.push('本区域的贸易候选（★ 按 profitPerSize = 每体积绝对利润 比较，越大越好；')
+    lines.push('  同时看 attackChance 伏击概率，必须低于 10%）：')
+    lines.push(JSON.stringify(f.tradeRoutes, null, 2))
+    lines.push('')
+    lines.push('若选 action=Trade，请在 reason 里写明选了哪个 goodName 及其 profitPerSize。')
+    lines.push('')
+  }
   lines.push('请按系统提示的格式回复。')
   return lines.join('\n')
 }
@@ -482,10 +495,33 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       goalOptions: Array.isArray(gd.options) ? (gd.options as string[]) : [],
       card: cardR.data ?? {},
     }
+    // ★★ 贸易船额外拉一份**真实路线表** ✓✓（这样模型才能选对货 ✓）
+    const nameList: string[] = Array.isArray((facts.card as Record<string, unknown>).actionNames)
+      ? ((facts.card as Record<string, unknown>).actionNames as string[])
+      : []
+    const wantsTrade = nameList.includes('Trade') &&
+      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Trade'))
+    if (wantsTrade) {
+      const planR = await ask(peer, 'query', { what: 'tradePlan', ship }, 120)
+      if (planR.ok) {
+        const pd = (planR.data ?? {}) as Record<string, unknown>
+        // 只给模型有用的部分：候选表 + 最优计划 ✓（area 里那 289 个坐标太占 token ✗）
+        facts.tradeRoutes = {
+          candidates: pd.candidates,
+          best: (pd.plan as Record<string, unknown> | undefined)?.route,
+          planReason: (pd.plan as Record<string, unknown> | undefined)?.reason,
+        }
+        logger.info(`avorion-copilot: ${ship} 已取到 ${String(pd.routeCount ?? 0)} 条贸易候选 ✓`)
+      } else {
+        logger.warn(`avorion-copilot: ${ship} 拉贸易候选失败 ${planR.why ?? ''}`)
+      }
+    }
+
     // ★ 记录②"输入"（主人要看的 ✓）
     rec.goalText = facts.goalText
     rec.goalOptions = facts.goalOptions
     rec.card = facts.card
+    rec.routes = facts.tradeRoutes
     logger.info(
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
     )
