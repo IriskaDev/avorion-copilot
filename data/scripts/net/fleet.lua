@@ -187,28 +187,18 @@ function CopilotFleet.onDecision(ship, data)
         return
     end
 
-    -- order 的 data：{ship, action, ...params}（扁平 ✓，协议 §10 第 5 条 ✓）
-    local req = { ship = ship, action = action }
-    if type(params) == "table" then
-        for k, v in pairs(params) do req[k] = v end
-    end
-    if data.reason ~= nil then req.reason = tostring(data.reason) end
-
-    local ok, err = CopilotRpc.call("order", req, function(ok2, res, why)
-        if ok2 then
-            self.stats.ordered = self.stats.ordered + 1
-            CopilotRpc.trace("fleet: order 成功 ship=" .. tostring(ship) .. " action=" .. tostring(action))
-        else
-            self.stats.failed = self.stats.failed + 1
-            CopilotRpc.trace("fleet: order 失败 ship=" .. tostring(ship) .. " why=" .. tostring(why))
-        end
-        -- 无论成败都放开 ✓ —— 船若真忙起来了，下轮扫描不会再发 ✓
-    end, self.ORDER_TIMEOUT)
-
-    if not ok then
-        self.inFlight[ship] = nil
-        CopilotNet.emit("error", "fleet: order send failed: " .. tostring(err))
-    end
+    -- ★★ 这里**不再**由游戏侧发 order ✗→✓（2026-10-16 改）
+    --
+    -- 旧设计：游戏发 decide → DSH 回 {action, params} → **游戏再调 DSH 的 order** ✗
+    -- 新设计：**DSH 收到 decide 后自己拉数据、自己决策、自己调游戏的 order** ✓✓
+    --   （主人的架构：「DSH 这侧接管 DECIDE」✓）
+    -- 所以这条回调用现在是**多余**的 ✓，而且每次都会报
+    --   "this side has no handler for 'order'" ✗（实测日志里刷了一堆 ✓）。
+    -- 这里只做一件事：**放开 inFlight** ✓ —— 船若真忙起来了，下轮扫描自然不会重发 ✓。
+    self.inFlight[ship] = nil
+    self.stats.ordered = self.stats.ordered + 1
+    CopilotRpc.trace("fleet: 决策已交给 DSH 执行（游戏侧不再发 order ✓）ship="
+        .. tostring(ship) .. " action=" .. tostring(action))
 end
 
 -- ---------------------------------------------------------------------------
