@@ -182,17 +182,24 @@ function M.shipCard(player, name)
         end
     end
 
-    -- 货舱 ✓ —— ★ 0 一律当**未知**看待（2026-10-16 修 ✗✓）
-    --   实测：三艘船的 `entry:getFreeCargoSpace()` **全是 0** ✗，明显不对 ✓；
-    --   而它把模型坑了 —— Miner-00002 因此判断「货舱已满，挖矿没用」→ 拒绝出工 ✗✓。
-    --   宁可不给，也不能给一个错的数字 ✓（模型会当成事实 ✓）。
+    -- 货舱剩余空间 ✓（原版确认：`entry:getFreeCargoSpace()` 就是正确用法 ✓
+    --   —— minecommand.lua:598 / salvagecommand.lua:679 / procurecommand.lua:374 ✓）
+    --
+    -- ★ 2026-10-16 的自我纠正 ✗→✓：
+    --   本鱼一度以为"三艘船全是 0"是 bug ✗，差点把这个字段当成未知抹掉 ✗。
+    --   再核实后发现：**0 很可能是真的满舱** ✓（挖了一小时 / 跑完一趟 ✓）。
+    --   抹掉真事实比给错数字更糟 ✗ —— 那会让模型彻底瞎 ✓。
+    --   正确做法：**照样给数字 ✓，并解释 0 的含义与应对** ✓✓。
     do
         local okC, cs = pcall(function() return entry:getFreeCargoSpace() end)
         local n = okC and tonumber(cs) or nil
-        if n ~= nil and n > 0 then
+        if n ~= nil then
             card.freeCargoSpace = math.floor(n)
+            if n <= 0 then
+                card.cargoNote = "货舱已满（剩余 0）：要先卖掉/卸掉货才能真正开始采矿或打捞"
+            end
         else
-            probeNotes.cargo = "getFreeCargoSpace returned " .. tostring(cs) .. " (treated as unknown)"
+            probeNotes.cargo = "getFreeCargoSpace failed: " .. tostring(cs)
         end
     end
 
