@@ -28,10 +28,14 @@ local self = CopilotFleet
 -- 扫描间隔（秒）与"决策中"的超时（秒）
 self.SCAN_INTERVAL = 10
 self.DECIDE_TIMEOUT = 90      -- 等模型，给足 ✓（协议 §11：绝不阻塞 ✓）
+self.REDECIDE_COOLDOWN = 300  -- ★ 同一轮空闲期内，最多每 5 分钟重新决策一次 ✓
+                              --   （决策失败或答 None 时船仍空闲；没有冷却就会每 10 秒烧一次模型 ✗）
 self.ORDER_TIMEOUT = 30
 
 self.lastScanAt = self.lastScanAt or 0
-self.inFlight = self.inFlight or {}     -- 船名 -> { at = os.clock() }（正在等决策/下单 ✓）
+self.inFlight = self.inFlight or {}     -- 船名 -> { at }（正在等决策/下单 ✓）
+self.decided = self.decided or {}       -- 船名 -> 时刻（**本轮空闲期**已决策过 ✓）
+self.idleSeen = self.idleSeen or {}     -- 船名 -> true（上一轮扫描时它是否空闲 ✓）
 self.stats = self.stats or { scanned = 0, decided = 0, ordered = 0, failed = 0 }
 
 -- ---------------------------------------------------------------------------
@@ -85,8 +89,31 @@ function CopilotFleet.scan()
             if goal.hasGoal then
                 local busy, avail = Card.isBusy(player, name)
                 if busy == false then
-                    self.inFlight[name] = { at = now }
-                    CopilotFleet.askDecide(name, goal)
+                    -- ★ 只在**本轮空闲期**发起一次决策 ✓✓
+                    --
+                    -- 起因（2026-10-15 实测）：原来每次扫描（每 10 秒）都对空闲船发 decide ✗，
+                    -- 于是模型被无限调用（trace 里看到 10 秒一次的连续请求 ✗）。
+                    -- 玩家的原意是「船空闲后自动重发」✓ —— 那指的是**每次变成空闲时** ✓，
+                    -- 而不是"只要闲着就一直重发" ✗。
+                    --
+                    -- 规则：
+                    --   * 上一轮是忙的、这一轮空闲了 → **是新的一轮空闲 → 发起** ✓✓
+                    --   * 上一轮就空闲、且已决策过 → 除非冷却到期，否则不发 ✓
+                    local wasIdle = self.idleSeen[name] == true
+                    local lastAt = self.decided[name]
+                    local cooldown = (lastAt == nil) or (now - lastAt > self.REDECIDE_COOLDOWN)
+
+                    if (not wasIdle) or cooldown then
+                        self.idleSeen[name] = true
+                        self.decided[name] = now
+                        self.inFlight[name] = { at = now }
+                        CopilotRpc.trace("fleet: 空闲 → 发起 decide ship=" .. tostring(name)
+                            .. (wasIdle and "（冷却到期重发 ✓）" or "（新的一轮空闲 ✓）"))
+                        CopilotFleet.askDecide(name, goal)
+                    end
+                elseif busy == true then
+                    -- 忙了 → 下一轮空闲就是"新的一轮" ✓
+                    self.idleSeen[name] = false
                 elseif busy == nil then
                     CopilotNet.emit("error", "fleet: cannot read availability of " .. name .. " (" .. tostring(avail) .. ")")
                 end
@@ -130,6 +157,7 @@ function CopilotFleet.askDecide(ship, goal)
 
     if not ok then
         self.inFlight[ship] = nil
+        self.decided[ship] = nil          -- 发都没发出去 → 不算决策过 ✓（下轮可重试 ✓）
         CopilotNet.emit("error", "fleet: decide send failed: " .. tostring(err))
     end
 end
