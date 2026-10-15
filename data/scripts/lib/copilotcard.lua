@@ -126,10 +126,15 @@ function M.shipCard(player, name)
             --   （见 tradecommand.lua:752 ✓）—— 所以逐个职业试一遍 ✓✓。
             local okCU, CaptainUtility = pcall(function() return include("captainutility") end)
             if okCU and type(CaptainUtility) == "table" and type(CaptainUtility.ClassType) == "table" then
-                for _, classType in pairs(CaptainUtility.ClassType) do
+                for className, classType in pairs(CaptainUtility.ClassType) do
                     local okH, has = pcall(function() return captain:hasClass(classType) end)
                     if okH and has == true then
-                        card.captainClass = tostring(classType)
+                        -- ★★ 写**职业名字**，不是枚举数字 ✓✓（2026-10-16 修）
+                        --   起因：卡片给的是 "3"/"0"，模型在思维链里反复纠结
+                        --   「captainClass is "3" — unclear」✓，为此浪费大量推理 ✓。
+                        --   ClassType 是 { 名字 = 数字 } ✓ → 循环时把**键**记下来即可 ✓。
+                        card.captainClass = tostring(className)
+                        card.captainClassId = tostring(classType)
                         break
                     end
                 end
@@ -177,10 +182,18 @@ function M.shipCard(player, name)
         end
     end
 
-    -- 货舱（贸易/采矿都要看容量 ✓）
+    -- 货舱 ✓ —— ★ 0 一律当**未知**看待（2026-10-16 修 ✗✓）
+    --   实测：三艘船的 `entry:getFreeCargoSpace()` **全是 0** ✗，明显不对 ✓；
+    --   而它把模型坑了 —— Miner-00002 因此判断「货舱已满，挖矿没用」→ 拒绝出工 ✗✓。
+    --   宁可不给，也不能给一个错的数字 ✓（模型会当成事实 ✓）。
     do
         local okC, cs = pcall(function() return entry:getFreeCargoSpace() end)
-        if okC and cs ~= nil then card.freeCargoSpace = math.floor(tonumber(cs) or 0) end
+        local n = okC and tonumber(cs) or nil
+        if n ~= nil and n > 0 then
+            card.freeCargoSpace = math.floor(n)
+        else
+            probeNotes.cargo = "getFreeCargoSpace returned " .. tostring(cs) .. " (treated as unknown)"
+        end
     end
 
     -- ① 船当前所在星区 ✓（决策的第一步：先知道它在哪 ✓）
