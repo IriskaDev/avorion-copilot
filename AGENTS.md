@@ -409,3 +409,13 @@ TypeScript 报 `TS1005: ',' expected` ✓。
 
 **规矩**：在 SYSTEM_PROMPT / buildPrompt 的模板串里，**一律不要用反引号** ✓。
 （同理：`${` 也要避免出现在正文里 ✓。）
+## ⚠️ 编译中间物一律放 `native/build/`（2026-10-16 整理）
+
+本 agent 早期直接在**仓库根目录**编译 native，结果根目录堆了 **39 个 `*.obj` + `.exp`/`.lib`**
+（都被 `.gitignore` 排掉了 ✓，但仍然碍眼 ✓）。现已全部收进 **`native/build/`** ✓。
+
+**规矩**：
+* 编译 `copilot.dll` 时用 `native/build/` 做输出目录 ✗→✓
+* ★ **别误删 `D:\<游戏>\bin\copilot.dll`** ✓✓ —— 那才是**游戏运行时真正加载**的那一份 ✓
+  （仓库根/native 下出现的 `copilot.dll` 都只是**编译残留** ✗，可清 ✓）
+* 仓库根只留文档与 `modinfo.lua`、`data/`、`native/` ✓
