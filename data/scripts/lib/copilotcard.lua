@@ -192,6 +192,43 @@ function M.shipCard(player, name)
     --   正确做法：**照样给数字 ✓，并解释 0 的含义与应对** ✓✓。
     do
         local okC, cs = pcall(function() return entry:getFreeCargoSpace() end)
+
+        -- ★★★ 货舱**占用**状态（2026-10-17 加，Issue B ✓✓）
+        --   病因：只给 freeCargoSpace 时，模型**分不清**「满载的矿船」和「没货的小商船」✗
+        --         （两者都可能是 0 ✗ 或都很小 ✗），于是不知道该不该先卖货 ✓。
+        --   原版依据（实读 ✓）：`entry:getCargo()` **返回两个值** ✓ ——
+        --     data/scripts/player/background/simulation/minecommand.lua:137
+        --         `local cargo, cargoBaySize = entry:getCargo()` ✓
+        --     expeditioncommand.lua:393 `local cargos, cargoHold = entry:getCargo()` ✓
+        --   即：第一个是货物表（good → amount ✓），第二个是**货舱总容量** ✓✓。
+        do
+            local okG, cargo, baySize = pcall(function() return entry:getCargo() end)
+            if okG and type(cargo) == "table" then
+                local used, kinds = 0, 0
+                for g, amount in pairs(cargo) do
+                    local a = tonumber(amount) or 0
+                    if a > 0 then
+                        used = used + a
+                        kinds = kinds + 1
+                    end
+                end
+                card.cargoUsed = used
+                card.cargoKinds = kinds
+                -- ★ 用得上的一句话：**船上有货 → 先卖再贸易** ✓
+                card.holdHasGoods = (used > 0)
+                local cap = tonumber(baySize)
+                if cap ~= nil and cap > 0 then
+                    card.cargoCapacity = math.floor(cap)
+                    card.cargoUsedPercent = math.floor((used / cap) * 100 + 0.5)
+                end
+                card.cargoState = (used > 0)
+                    and string.format("船上有货：%d 单位 / %d 种 ✓ —— **先 Sell 变现**，否则贸易装不进货 ✗",
+                        used, kinds)
+                    or "货舱是空的 ✓（可以装货 ✓）"
+            else
+                probeNotes.cargoHold = "entry:getCargo() failed: " .. tostring(cargo)
+            end
+        end
         local n = okC and tonumber(cs) or nil
         if n ~= nil then
             card.freeCargoSpace = math.floor(n)
@@ -315,6 +352,7 @@ M.WHATS = {
     "minePlan",         -- Mine：多区域 × 参数 × 层级加权（采最高阶矿 ✓）
     "salvagePlan",      -- Salvage：装备件数 × E[稀有度层级]（收最高科技战利品 ✓）
     "jobPlan",          -- 上面两个的通用入口（data.action = Mine | Salvage ✓）
+    "sellPlan",         -- ★ Sell：把船上的货在 ≤10% 风险下变现（风险调整期望 ✓）Issue B ✓✓
 }
 
 return M

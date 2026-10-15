@@ -95,6 +95,13 @@ return CopilotLinkIn.tradePlan(player, data)
         -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
         return CopilotLinkIn.jobPlan(player, data, data.action)
 
+    elseif what == "sellPlan" then
+        -- ★★★ 卖货决策（2026-10-17 加，Issue B ✓✓）：把**船上的货**变现 ✓
+        --   为什么需要：Trader 被伏击召回时**只退押金、不发利润**，货还留在船上 ✓
+        --   （原版 tradecommand.lua:456-490 ✓），此时再下 Trade 会**装不进新货** ✗
+        --   → 必须先 Sell ✓✓（主人的场景 ✓）
+        return CopilotLinkIn.sellPlan(player, data)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -140,10 +147,13 @@ local COMMAND_TYPES = {
     Salvage = "1cbc94e6-aea3-4d1f-8159-d9e27d6b5d92",
     Trade   = "0c21be5b-d6a9-47ca-a1b3-200b11d2af4b",
     Travel  = "bbcf8ba1-a1e0-4a34-8174-15caebd11fed",
+    -- ★★ Sell（2026-10-17 加，Issue B ✓✓）：UUID **实读**自原版
+    --   data/scripts/commandtype.lua（`Sell = "6bf2d9af-…"` ✓），不是猜的 ✓
+    Sell    = "6bf2d9af-255b-4108-a1e1-dc83ace49819",
 }
 
 -- 各命令的默认区域边长（与 LLM-OPS.md 的调研一致 ✓）
-local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1 }   -- ★ Trade 与 tradePlan 保持一致（29 会换一张商品表 ✗）
+local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15 }   -- ★ Trade 与 tradePlan 保持一致（29 会换一张商品表 ✗）；Sell 原版 getAreaSize 就是 15x15 ✓
 
 -- 排队中的第二阶段：{ {at=时刻, ...}, ... }
 CopilotLinkIn.pendingOrders = CopilotLinkIn.pendingOrders or {}
@@ -165,6 +175,62 @@ local function invokeSimulation(fn, ...)
     if not ok then return false, tostring(err) end
     return true
 end
+
+-- ★ 这三个 helper **上移**到这里（2026-10-17 ✓）：因为 `onOrder`（下文，早于 sellPlan）
+--   也要读货舱 ✓，而 Lua 的 local 是**词法作用域** ✗ —— 放在 sellPlan 旁边 onOrder 看不到 ✓✓。-- 读船上的货（返回 goodsToSell, used ✓）；读不到就 nil, err ✓
+local function readHoldGoods(player, ship)
+    local okE, entry = pcall(function() return ShipDatabaseEntry(player.index, ship) end)
+    if not okE or entry == nil then return nil, "no ShipDatabaseEntry for " .. tostring(ship) end
+    local okG, cargo = pcall(function() return entry:getCargo() end)
+    if not okG or type(cargo) ~= "table" then
+        return nil, "cannot read hold: " .. tostring(cargo)
+    end
+    local list, used = {}, 0
+    for g, amount in pairs(cargo) do
+        local a = tonumber(amount) or 0
+        if a > 0 then
+            local name = nil
+            local okN, nm = pcall(function() return g.name end)
+            if okN and type(nm) == "string" and nm ~= "" then name = nm end
+            if name == nil then
+                local okS, s = pcall(function() return tostring(g) end)
+                if okS and type(s) == "string" and s ~= "" then name = s end
+            end
+            if name ~= nil then
+                local stolen = false
+                local okSt, st = pcall(function() return g.stolen == true end)
+                if okSt then stolen = st end
+                list[#list + 1] = { goodName = name, amount = math.floor(a), stolen = stolen }
+                used = used + a
+            end
+        end
+    end
+    return list, nil, used
+end
+
+-- 取一个"数值"（原版 yield 可能是 number，也可能是 {from,to} 或 {value} ✓ —— 三种都兜 ✓）
+local function numericRange(v)
+    if type(v) == "number" then return v, v end
+    if type(v) == "table" then
+        local lo = tonumber(v.from)
+        local hi = tonumber(v.to)
+        if lo == nil then lo = tonumber(v.value) end
+        if hi == nil then hi = lo end
+        if lo ~= nil then return lo, hi or lo end
+    end
+    return nil, nil
+end
+
+-- 被伏击时**卖掉的比例**（证据见文件头 ✓）：返回 keepFraction ✓
+local function attackKeepFraction(duration)
+    local d = tonumber(duration)
+    if d == nil or d <= 0 then return 0 end                -- 读不到时长 → 最保守：一点都卖不掉 ✓
+    local attackAt = 0.425 * d                             -- random(0.1,0.75) 的期望 ✓
+    local sells = (attackAt >= 11 * 60) or (attackAt > d * 0.8)
+    if not sells then return 0 end                          -- 还没到 11 分钟就被打断 → 一点不卖 ✓
+    return 0.425
+end
+
 
 function CopilotLinkIn.onOrder(data)
     data = data or {}
@@ -288,6 +354,58 @@ function CopilotLinkIn.onOrder(data)
         return false, "NO_ROUTE", "this area has no trade routes at all — try another area"
     end
     end   -- ★ 结束"仅 Trade"的范围 ✓
+
+    -- ★★★ Sell：把 config.goodsToSell 装上（Issue B ✓✓ 2026-10-17）
+    --   形状由原版决定 ✓：`{ {goodName=…, amount=…, stolen=…} }`（sellcommand.lua:243/:326-343 ✓）
+    --   默认**卖掉船上的全部货** ✓；若 DSH 显式给了 goodsToSell 就按它来（并按船上实际数量夹紧 ✓）。
+    if ctype == COMMAND_TYPES.Sell then
+        local hold, herr, used = readHoldGoods(player, ship)
+        if hold == nil then
+            return false, "HOLD_UNREADABLE", tostring(herr)
+        end
+        if #hold == 0 then
+            return false, "HOLD_EMPTY", "the hold is empty — there is nothing to sell"
+        end
+        local wanted = nil
+        if type(data.goodsToSell) == "table" and #data.goodsToSell > 0 then
+            -- 只认船上真有的货 ✓，数量夹到船上实际值 ✓（原版 getErrors :349-360 会在超量时报错 ✗）
+            wanted = {}
+            for _, want in ipairs(data.goodsToSell) do
+                local wn = type(want) == "table" and want.goodName or nil
+                if type(wn) == "string" then
+                    for _, have in ipairs(hold) do
+                        if have.goodName == wn then
+                            local amt = tonumber(want.amount) or have.amount
+                            if amt > have.amount then amt = have.amount end
+                            if amt > 0 then
+                                wanted[#wanted + 1] = { goodName = wn, amount = math.floor(amt), stolen = have.stolen }
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+            if #wanted > 0 then hold = wanted end
+        end
+        config.goodsToSell = hold
+        CopilotRpc.trace(string.format("onOrder Sell：goodsToSell = %d 种 / %d 单位 ✓（船上共 %d 单位 ✓）",
+            #hold, (function() local n = 0 for _, g in ipairs(hold) do n = n + g.amount end return n end)(),
+            math.floor(used or 0)))
+    end
+
+    -- ★★★ Trade 的**货舱感知**（Issue B ✓✓）：船上有货 → 先卖 ✗→✓
+    --   原因（原版 tradecommand.lua ✓）：被伏击召回时货**留在船上**（:460-464 ✓），
+    --   而 Trade 只能装**剩余空间** ✗（:773-797 transportedPerFlight 受 freeCargoSpace 限制 ✓）
+    --   → 有货还去贸易 = 装得少、赚得少、钱被压在货里 ✓（主人明确点出的场景 ✓✓）
+    if ctype == COMMAND_TYPES.Trade then
+        local hold, _herr, used = readHoldGoods(player, ship)
+        if hold ~= nil and #hold > 0 then
+            return false, "HOLD_HAS_GOODS", string.format(
+                "the hold still holds %d units (%d kinds) — run action=Sell first, "
+                .. "then trade with an empty hold (otherwise the trade carries almost nothing)",
+                math.floor(used or 0), #hold)
+        end
+    end
     local dep = tonumber(data.deposit)
     if dep ~= nil and dep > 0 then
         config.deposit = math.floor(dep)
@@ -1709,6 +1827,304 @@ local function buildJobRanking(scanned, opts)
     return out
 end
 
+-- ===========================================================================
+-- ★★★ sellPlan：把船上的货**变现**（Issue B ✓✓ 2026-10-17）
+-- ===========================================================================
+--
+-- 为什么必须要有它 ✗→✓（主人的场景 ✓）：
+--   原版 tradecommand.lua:450-506（`onRecall`）—— 被伏击强制召回时**只退押金** ✓
+--   （:488 remainingDeposit = deposit − 货钱、:490 addYield），而被中断那一班的货
+--   **留在船上** ✗（:460-464 entry:setCargo ✓），**利润是 0** ✓。
+--   于是：船上有货时再下 Trade，货舱装不进新货 ✗ → **必须先 Sell 变现** ✓✓。
+--
+-- 原版 Sell 的关键事实（全部**实读**，不是猜 ✗）：
+--   · CommandType.Sell = "6bf2d9af-255b-4108-a1e1-dc83ace49819"（commandtype.lua ✓）
+--   · 区域：getAreaSize → {15,15}（sellcommand.lua:414-416 ✓）；isShipRequiredInArea → true（:430-432 ✓）
+--   · config：`goodsToSell = { {goodName=…, amount=…, stolen=…} }`（:243、:326-343 ✓）
+--   · 预测：calculatePrediction（:456 ✓）→ duration / **yield** / attackChance / pricesPerGood ✓
+--   · 被伏击的结算（:152-159 onRecall ✓）：
+--         只在 `runTime ≥ 11 分钟` **或** `runTime > duration × 0.8` 时才**部分卖** ✓
+--         percentage = runTime / duration（:156 ✓）
+--         而攻击时刻 = random(0.1, 0.75) × duration（:144 ✓）
+--       → 期望 percentage ≈ (0.1+0.75)/2 = **0.425** ✓；若那一刻还没到 11 分钟 → **一点都不卖**（keep = 0 ✓✓）
+--   · 货名：cargo 表的键是 good 对象，它的 `.name` 就是 goods 索引名 ✓
+--       （transfercrewgoods.lua:881 `playerCargoName[i] = good.name` ✓、factory.lua:109 ✓）
+--   · 空货舱 → 没有可卖的（getErrors :345 `No good to sell selected!` ✓）
+
+function CopilotLinkIn.sellPlan(player, data)
+    data = data or {}
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "sellPlan needs data.ship"
+    end
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local startMs = os.clock()
+    local gate = tonumber(data.maxAttackChance) or 0.10
+    local _, Ship = nil, nil
+    local Card = include("copilotcard")
+    local card = Card.shipCard(player, ship)
+
+    -- ① 船上有货吗？（没有 → **明说**"不用卖"，而不是编一个计划 ✗✓）
+    local hold, herr, used = readHoldGoods(player, ship)
+    if hold == nil then
+        return false, "HOLD_UNREADABLE", tostring(herr)
+    end
+    if #hold == 0 then
+        CopilotRpc.trace("sellPlan " .. ship .. "：货舱是空的 → 不需要卖 ✓")
+        return true, {
+            ship = ship, action = "Sell", routeCount = 0,
+            goodsToSell = {}, holdUsed = 0,
+            recommendation = nil,
+            riskWarning = nil,
+            note = "hold is empty — nothing to sell (sell is only needed when the hold has goods)",
+            holdEmpty = true,
+            orderHint = nil,
+            areasScanned = 0, scanMs = 0,
+        }
+    end
+
+    -- ② 区域：15x15、必须含船（与 Mine/Salvage/Trade 同一条硬约束 ✓）
+    local ctype = COMMAND_TYPES.Sell
+    local command = nil
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if okF then
+        local okC, c = pcall(function() return factory.makeCommand(ctype) end)
+        if okC then command = c end
+    end
+    if command == nil then
+        return false, "NO_COMMAND", "cannot make a Sell command instance"
+    end
+
+    local templates = legalAreaSizes(command, player, ship)
+    local size = pickSquareSize(templates, data.size)
+    if size == nil or size <= 0 then size = DEFAULT_SIZE.Sell end
+
+    local shipX, shipY = tonumber(data.x), tonumber(data.y)
+    if shipX == nil or shipY == nil then
+        local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+        if not okPos or px == nil then return false, "NO_POSITION", "cannot read ship position" end
+        shipX, shipY = px, py
+    end
+
+    local half = math.floor((size - 1) / 2)
+    local step = tonumber(data.step) or 4
+    local offsets = scanOffsets(half, step)
+    local maxAreas = tonumber(data.maxAreas) or 9
+    local used_ = {}
+    for i = 1, math.min(#offsets, maxAreas) do used_[#used_ + 1] = offsets[i] end
+    if #used_ == 0 then used_[1] = { x = 0, y = 0 } end
+
+    local areaList, dropped, usedShipCentre, baseX, baseY =
+        collectAreaList(used_, size, shipX, shipY, shipX, shipY)
+
+    -- ③ 逐区域：分析（pcall ✓）→ 预测（pcall ✓）
+    local okInc = pcall(function() return include("areaanalysis") end)
+    if not okInc or type(run) ~= "function" then
+        return false, "NO_ANALYSIS_SCRIPT", "areaanalysis.lua did not define run()"
+    end
+
+    local config = { goodsToSell = hold }
+    local scanned = {}
+    local budgetMs = tonumber(data.maxScanMs) or 20000
+    local stoppedEarly = false
+
+    for _, item in ipairs(areaList) do
+        local rec = { area = item.area, offset = item.offset, candidates = {}, acceptable = false }
+        local okRun, _s, _ty, rArea, results = pcall(function()
+            return run(player.index, ship, ctype, item.area, player.index)
+        end)
+        if not okRun or type(results) ~= "table" then
+            rec.error = "analysis failed: " .. tostring(rArea)
+        else
+            rArea.analysis = results
+            rec.analysis = results
+            local okP, pred = pcall(function()
+                return command:calculatePrediction(player.index, ship, rArea, config)
+            end)
+            if okP and type(pred) == "table" then
+                local yLo, yHi = numericRange(pred.yield)
+                local p = pred.attackChance and tonumber(pred.attackChance.value) or nil
+                local dur = tonumber(pred.duration)
+                local keep = attackKeepFraction(dur)
+                local cand = {
+                    name = "Sell",
+                    goodsToSell = hold,
+                    yieldLow = yLo, yieldHigh = yHi,
+                    duration = dur,
+                    attackChance = p,
+                    keepFractionOnAttack = keep,
+                    pricesPerGood = pred.pricesPerGood,
+                    predictionError = pred.error,
+                }
+                if yLo ~= nil and p ~= nil then
+                    -- ★ 风险调整期望（主人口径 ✓）：被伏击只能卖掉 keep 那部分 ✓
+                    cand.netProfitLow = (1 - p) * yLo + p * (yLo * keep)
+                    cand.netProfitHigh = (1 - p) * (yHi or yLo) + p * ((yHi or yLo) * keep)
+                    cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
+                    cand.profitBasis = "sellYield(riskAdjusted)"
+                elseif yLo ~= nil then
+                    cand.netProfitLow, cand.netProfitHigh = yLo, (yHi or yLo)
+                    cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
+                    cand.profitBasis = "sellYield(chance unknown -> unadjusted)"
+                else
+                    rec.error = "prediction gave no yield: " .. tostring(pred.error)
+                end
+                rec.candidates = { cand }
+                rec.best = cand
+                rec.acceptable = (cand.netProfitLow ~= nil) and (cand.attackChance == nil or cand.attackChance <= gate)
+                rec.bestChance = cand.attackChance
+                rec.bestDur = cand.duration
+            else
+                rec.error = "prediction failed: " .. tostring(pred)
+            end
+        end
+        scanned[#scanned + 1] = rec
+        if ((os.clock() - startMs) * 1000) > budgetMs then
+            stoppedEarly = true
+            break
+        end
+    end
+
+    -- ④ 排序：达标的在前 ✓；按风险调整期望降序 ✓；风险低者优先 ✓
+    table.sort(scanned, function(a, b)
+        if a.acceptable ~= b.acceptable then return a.acceptable end
+        local na = (a.best and a.best.netProfitLow) or -1
+        local nb = (b.best and b.best.netProfitLow) or -1
+        if na ~= nb then return na > nb end
+        local ca = a.bestChance or 9
+        local cb = b.bestChance or 9
+        if ca ~= cb then return ca < cb end
+        return tostring(a.offset.x) .. "," .. tostring(a.offset.y) < tostring(b.offset.x) .. "," .. tostring(b.offset.y)
+    end)
+
+    local recTop = nil
+    for _, r in ipairs(scanned) do if r.acceptable then recTop = r break end end
+
+    local areaRanking = {}
+    for _, r in ipairs(scanned) do
+        local b = r.best
+        areaRanking[#areaRanking + 1] = {
+            area = { lower = { x = r.area.lower.x, y = r.area.lower.y },
+                     upper = { x = r.area.upper.x, y = r.area.upper.y },
+                     offset = { x = r.offset.x, y = r.offset.y } },
+            routeCount = r.best and 1 or 0,
+            bestRouteName = r.best and "Sell" or nil,
+            netProfitLow = b and b.netProfitLow or nil,
+            netProfitHigh = b and b.netProfitHigh or nil,
+            netProfitBasis = b and b.profitBasis or nil,
+            bestCaseLow = b and b.bestCaseLow or nil,
+            bestCaseHigh = b and b.bestCaseHigh or nil,
+            attackChance = b and b.attackChance or nil,
+            duration = b and b.duration or nil,
+            keepFractionOnAttack = b and b.keepFractionOnAttack or nil,
+            acceptable = r.acceptable,
+            error = r.error,
+        }
+    end
+
+    local recommendation, riskWarning = nil, nil
+    if recTop ~= nil then
+        local b = recTop.best
+        recommendation = {
+            area = { lower = { x = recTop.area.lower.x, y = recTop.area.lower.y },
+                     upper = { x = recTop.area.upper.x, y = recTop.area.upper.y },
+                     offset = { x = recTop.offset.x, y = recTop.offset.y } },
+            x = baseX + recTop.offset.x, y = baseY + recTop.offset.y, size = size,
+            action = "Sell",
+            goodsToSell = hold,
+            holdUsed = used,
+            duration = b.duration,
+            attackChance = b.attackChance,
+            maxAttackChance = gate,
+            netProfitLow = b.netProfitLow, netProfitHigh = b.netProfitHigh,
+            bestCaseLow = b.bestCaseLow, bestCaseHigh = b.bestCaseHigh,
+            profitBasis = b.profitBasis,
+            keepFractionOnAttack = b.keepFractionOnAttack,
+            attackNote = "被伏击 = 强制召回：**没卖完的货还在船上** ✓，而且只有"
+                .. "跑够 11 分钟（或超过时长的 80%）才开始卖 ✓ —— 未到就**一点也卖不掉** ✓"
+                .. "（原版 sellcommand.lua:152-159 / :235-291 ✓）。所以 netProfit* 是风险调整期望 ✓，"
+                .. "bestCase* 才是最好情况 ✓。",
+        }
+        recommendation.reason = string.format(
+            "卖货：本金期望 C%d~%d（风险调整 ✓，口径 %s；最好情况 C%d~%d）／时长 %s 秒；"
+                .. "伏击概率 %s ≤ %.0f%%；区域偏移 (%+d,%+d)；卖 %d 单位 / %d 种货 ✓",
+            math.floor((b.netProfitLow or 0) + 0.5), math.floor((b.netProfitHigh or 0) + 0.5),
+            tostring(b.profitBasis),
+            math.floor((b.bestCaseLow or 0) + 0.5), math.floor((b.bestCaseHigh or 0) + 0.5),
+            tostring(b.duration),
+            b.attackChance and string.format("%.1f%%", b.attackChance * 100) or "未知",
+            gate * 100, recTop.offset.x, recTop.offset.y, math.floor(used), #hold)
+    else
+        local bestAny = scanned[1]
+        riskWarning = string.format(
+            "本鱼**不推荐**现在卖货 ✗：扫了 %d 个区域，没有一档满足伏击概率 ≤ %.0f%% ✓",
+            #scanned, gate * 100)
+        if bestAny ~= nil and bestAny.best ~= nil then
+            riskWarning = riskWarning .. string.format("（最好的那档伏击概率 %s）",
+                bestAny.best.attackChance and string.format("%.1f%%", bestAny.best.attackChance * 100) or "未知")
+        end
+    end
+
+    local scanMs = math.floor(((os.clock() - startMs) * 1000) + 0.5)
+    local notes = {
+        "plan only — nothing was issued (order is a separate call)",
+        string.format("多区域扫描：%d 个区域 / 步长 %d / 共 %d ms", #scanned, step, scanMs),
+        string.format("船上有货：%d 单位 / %d 种 ✓（卖完货舱才空 ✓）", math.floor(used), #hold),
+    }
+    if dropped > 0 then
+        notes[#notes + 1] = string.format("其中 %d 个候选区域含不住船的星区（已跳过 ✓）", dropped)
+    end
+    if usedShipCentre then
+        notes[#notes + 1] = string.format("给的 x,y 周围没有能含住船的合法区域 → 改以船所在星区 (%d,%d) 为中心", shipX, shipY)
+    end
+    if stoppedEarly then
+        notes[#notes + 1] = string.format("扫描提前结束：已用 %d ms > 预算 %d ms", scanMs, budgetMs)
+    end
+    if recommendation ~= nil then
+        notes[#notes + 1] = string.format("推荐卖货：期望 C%d~%d（风险调整 ✓），伏击概率 %s",
+            math.floor((recommendation.netProfitLow or 0) + 0.5),
+            math.floor((recommendation.netProfitHigh or 0) + 0.5),
+            recommendation.attackChance and string.format("%.1f%%", recommendation.attackChance * 100) or "未知")
+    elseif riskWarning ~= nil then
+        notes[#notes + 1] = riskWarning
+    end
+
+    CopilotRpc.trace(string.format("sellPlan %s 货物=%d 单位/%d 种 扫描=%d区域/%dms 推荐=%s",
+        ship, math.floor(used), #hold, #scanned, scanMs,
+        recommendation and "有" or "无"))
+
+    local orderHint = nil
+    if recommendation ~= nil then
+        orderHint = {
+            ship = ship, action = "Sell",
+            x = recommendation.x, y = recommendation.y, size = size,
+            goodsToSell = hold,
+            duration = recommendation.duration,
+            note = "把船上的货卖掉 ✓；x/y 是绝对星区坐标、区域 15x15 且已保证包含船 ✓",
+        }
+    end
+
+    return true, {
+        ship = ship, action = "Sell",
+        area = recTop and recTop.area or (areaList[1] and areaList[1].area),
+        size = size,
+        goodsToSell = hold, holdUsed = used, holdKinds = #hold,
+        routeCount = #hold,
+        candidates = recTop and recTop.candidates or {},
+        recommendation = recommendation,
+        riskWarning = riskWarning,
+        orderHint = orderHint,
+        areaRanking = areaRanking,
+        areasScanned = #scanned,
+        scanMs = scanMs,
+        scanNote = notes[2],
+        note = table.concat(notes, "；"),
+        cap = card and card.cargoCapacity or nil,
+        scan = { size = size, step = step, maxAreas = maxAreas, gate = gate,
+                 duration = nil, objective = "把船上的货在 ≤10% 伏击风险下变现（风险调整 ✓）" },
+    }
+end
 function CopilotLinkIn.jobPlan(player, data, action)
     local t0 = os.clock()
     local ship = data and data.ship
