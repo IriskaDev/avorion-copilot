@@ -64,6 +64,19 @@ function CopilotLinkIn.onQuery(data)
         end
         return true, Card.shipCard(player, name)
 
+    elseif what == "tradePlan" then
+        -- ★★★ 贸易决策的**数据获取 + 组装**（只算不下单 ✓ —— 主人 2026-10-16 指定 ✓）
+        --
+        -- 走的路线（全部由本 mod 自己完成 ✓，不需要原版开洞 ✗✓）：
+        --   ① include("areaanalysis") → run(…) **同步**返回 results（含 results.routes ✓✓）
+        --   ② include("commandfactory") → makeCommand(Trade) → calculatePrediction(…, config) ✓
+        --   ③ lib/copilottrade.lua 的纯函数 → 挑路线 + 定预付金 + 挑护卫 ✓
+        --
+        -- 为什么可行 ✗✓：areaanalysis.run 的末尾是
+        --     return shipName, type, area, results, callingPlayer
+        --   —— 它把结果交出来了 ✓✓（见该文件 line 138 ✓）
+        return CopilotLinkIn.tradePlan(player, data)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -216,6 +229,157 @@ function CopilotLinkIn.onOrder(data)
         config = config,
         note = "area analysis started; startCommand is queued ~6s later",
         count = self.orders,
+    }
+end
+
+-- ===========================================================================
+-- tradePlan：把"贸易该怎么做"完整算出来（**不发起** ✓）
+-- ===========================================================================
+--
+-- 返回给 DSH 的结构 ✓：
+--   { plan = { config = {...}, reason = "..." }, candidates = {...}, analysis = {...} }
+-- 失败则 ok=false + 明确原因 ✓。
+
+local function makeTradeArea(ship, data)
+    local size = tonumber(data.size) or 17          -- 原版 Trade 的合法边长 17 / 29 / 11 ✓
+    local cx, cy = tonumber(data.x), tonumber(data.y)
+    if cx == nil or cy == nil then
+        local okPos, px, py = pcall(function() return Player():getShipPosition(ship) end)
+        if not okPos or px == nil then return nil, "cannot read ship position; pass x,y" end
+        cx, cy = px, py
+    end
+    local half = math.floor((size - 1) / 2)
+    return {
+        lower = { x = cx - half, y = cy - half },
+        upper = { x = cx - half + size - 1, y = cy - half + size - 1 },
+    }
+end
+
+function CopilotLinkIn.tradePlan(player, data)
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "tradePlan needs data.ship"
+    end
+    local action = data.action or "Trade"
+    local ctype = COMMAND_TYPES[action]
+    if ctype == nil then
+        return false, "BAD_ACTION", "tradePlan only supports trade actions (got " .. tostring(action) .. ")"
+    end
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local area, aerr = makeTradeArea(ship, data)
+    if area == nil then return false, "BAD_AREA", aerr end
+
+    -- ★ ① 自己跑区域分析（**同步** ✓ —— run 直接返回 results ✓）
+    local okA, AreaAnalysisOrErr = pcall(function() return include("areaanalysis") end)
+    if not okA then return false, "NO_ANALYSIS_MODULE", tostring(AreaAnalysisOrErr) end
+    local AreaAnalysis = AreaAnalysisOrErr
+
+    local okRun, r1, r2, r3, results, r5 = pcall(function()
+        return AreaAnalysis.run(player.index, ship, ctype, area, player.index)
+    end)
+    if not okRun then
+        return false, "ANALYSIS_FAILED", tostring(r1)
+    end
+    -- run 的返回值: shipName, type, area, results, callingPlayer ✓
+    results = results or r2                       -- 容错：万一签名不同 ✓
+    local analysedArea = r2 or area
+    if type(results) ~= "table" then
+        return false, "ANALYSIS_EMPTY", "area analysis returned nothing for " .. ship
+    end
+
+    local routes = results.routes or {}
+    if #routes == 0 then
+        return true, {
+            ship = ship, area = analysedArea, routes = {},
+            plan = nil,
+            note = "no trade routes in this area — a different area may have some",
+            analysis = {
+                sectors = results.sectors, reachable = results.reachable,
+                unreachable = results.unreachable,
+                biggestFactionInArea = results.biggestFactionInArea,
+            },
+        }
+    end
+
+    -- ★ ② 给每条候选补**基准价**（原版按 profitPerSize 排 ✓，本鱼要算绝对 C/u ✓）
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if okGoods and type(goodsLib) == "table" then
+        for _, r in ipairs(routes) do
+            local okG, g = pcall(function() return goodsLib[r.name]:good() end)
+            if okG and type(g) == "table" and tonumber(g.price) then
+                r.basePrice = tonumber(g.price)
+                if tonumber(g.size) then r.unitSize = tonumber(g.size) end
+            end
+        end
+    end
+
+    -- ★ ③ 造一个 TradeCommand 实例，用它算每条路线的**真实预测** ✓✓
+    local okF, factoryOrErr = pcall(function() return include("commandfactory") end)
+    if not okF then return false, "NO_COMMAND_FACTORY", tostring(factoryOrErr) end
+    local okCmd, command = pcall(function() return factoryOrErr.makeCommand(ctype) end)
+    if not okCmd or command == nil then
+        return false, "NO_COMMAND", tostring(command)
+    end
+
+    local predictions = {}
+    local candidates = {}
+    for _, r in ipairs(routes) do
+        local cfg = { goodName = r.name, deposit = tonumber(data.depositProbe) or 1000000, escorts = {} }
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, analysedArea, cfg)
+        end)
+        if okP and type(pred) == "table" then
+            predictions[r.name] = pred
+            candidates[#candidates + 1] = {
+                name = r.name,
+                lowest = r.lowest, highest = r.highest, basePrice = r.basePrice,
+                unitProfit = (r.basePrice and r.basePrice * ((r.highest or 0) - (r.lowest or 0))) or nil,
+                attackChance = pred.attackChance and pred.attackChance.value or nil,
+                profitPerFlight = pred.profitPerFlight,
+                flights = pred.flights,
+                flightTime = pred.flightTime and pred.flightTime.value or nil,
+                maxAvailable = pred.maxAvailable and pred.maxAvailable.value or nil,
+                error = pred.error,
+            }
+        else
+            candidates[#candidates + 1] = { name = r.name, predictionFailed = tostring(pred) }
+        end
+    end
+
+    -- ★ ④ 纯函数决策（lib/copilottrade.lua ✓ —— 有离线自检 ✓✓）
+    local Trade = include("copilottrade")
+    local facts = {
+        shipSector = { x = analysedArea.lower.x, y = analysedArea.lower.y },
+        actionShip = ship,
+        predictions = predictions,
+        escorts = data.escorts or {},
+        budget = data.budget,
+        maxDeposit = data.maxDeposit,
+    }
+    local plan, perr = Trade.plan(routes, facts, {
+        maxAttackChance = tonumber(data.maxAttackChance) or Trade.MAX_ATTACK_CHANCE,
+    })
+
+    CopilotRpc.trace(string.format(
+        "tradePlan %s area=[%d,%d]-[%d,%d] routes=%d plan=%s",
+        ship, analysedArea.lower.x, analysedArea.lower.y, analysedArea.upper.x, analysedArea.upper.y,
+        #routes, plan and plan.config.goodName or ("none(" .. tostring(perr) .. ")")))
+
+    -- ★★★ 只**组装**，不发起 ✓✓（主人 2026-10-16 指定 ✓）
+    return true, {
+        ship = ship,
+        area = analysedArea,
+        routeCount = #routes,
+        candidates = candidates,
+        plan = plan,                       -- 含 config + reason ✓；nil 表示本轮不建议下单 ✓
+        planError = perr,
+        note = "plan only — nothing was issued (order is a separate call)",
+        analysis = {
+            sectors = results.sectors, reachable = results.reachable,
+            unreachable = results.unreachable,
+            biggestFactionInArea = results.biggestFactionInArea,
+        },
     }
 end
 
