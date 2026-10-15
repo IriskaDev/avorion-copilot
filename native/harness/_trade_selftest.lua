@@ -21,7 +21,7 @@ if ok then
       { name = "Miner-00001",  sector = { x = -400, y = 60 } },
     },
   })
-  print("config = " .. T.serialize and "" or "")
+
   print("  goodName = " .. tostring(plan.config.goodName))
   print("  deposit  = " .. tostring(plan.config.deposit))
   print("  escorts  = " .. table.concat(plan.config.escorts, ", "))

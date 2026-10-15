@@ -261,6 +261,43 @@ function M.plan(routes, facts, opts)
 end
 
 -- ===========================================================================
+-- ★★ 多区域比较（主人 2026-10-16 点明的关键 ✓✓）
+-- ===========================================================================
+--
+-- 主人的原话：
+--   「框选的位置不同，商品也不同，获利也不同。」
+--
+-- 含义 ✗✓：**候选路线表本身就是区域决定的** ✓ —— 换一个方框，商品表就换一批 ✓。
+-- 所以决策是**两层搜索** ✓：
+--     第一层: 挑区域（几个候选方块 → 各分析一次 → 比最优路线）
+--     第二层: 在最优区域里挑路线 + 定预付金 + 挑护卫
+--
+-- 原版玩家正是这么干的 ✓：窗口左边那三个按钮里就有「重新选择」✓
+--   —— 反复框、反复看商品表，直到 C/u 够高、伏击概率够低 ✓。
+--
+-- results 的形状（每个区域一份 ✓）：
+--   { { area = {lower={x,y}, upper={x,y}}, routes = {...}, predictions = {...} }, ... }
+-- 返回：按"该区域里最优路线的绝对收益"降序排好的列表 ✓
+function M.rankAreas(results, facts, opts)
+    local scored = {}
+    for _, res in ipairs(results or {}) do
+        local f = {}
+        for k, v in pairs(facts or {}) do f[k] = v end
+        f.predictions = res.predictions        -- ★ 每个区域有自己的预测 ✓
+        local plan, err = M.plan(res.routes, f, opts)
+        scored[#scored + 1] = {
+            area = res.area,
+            plan = plan,
+            error = err,
+            score = plan and M.scoreRoute(plan.route) or -1,
+            unitProfit = plan and M.unitProfit(plan.route) or -1,
+        }
+    end
+    table.sort(scored, function(a, b) return a.score > b.score end)
+    return scored
+end
+
+-- ===========================================================================
 -- 自检（可在 harness 的 lua.exe 里跑 ✓ —— 纯函数所以不需要游戏 ✓✓）
 -- ===========================================================================
 
@@ -318,6 +355,16 @@ function M.selfTest()
     if #plan.config.escorts ~= 1 or plan.config.escorts[1] ~= "Combat-00001" then
         return nil, "护卫期望 [Combat-00001]（同星系 + 非玩家船），实际 "
             .. table.concat(plan.config.escorts, ",")
+    end
+
+    -- ★ 多区域比较：区域 B 的商品表更好 → 应当选 B ✓✓
+    local areas = {
+        { area = { name = "A" }, routes = { { name = "钻头", lowest = -0.09, highest = 0.15, basePrice = 20.443 } } },
+        { area = { name = "B" }, routes = { { name = "氧气", lowest = -0.06, highest = 0.16, basePrice = 80 } } },
+    }
+    local rankedAreas = M.rankAreas(areas, facts)
+    if rankedAreas[1].area.name ~= "B" then
+        return nil, "rankAreas 期望选区域 B（氧气 C/u 更高），实际 " .. tostring(rankedAreas[1].area.name)
     end
 
     -- 伏击概率过滤：全部超标时应当拒绝 ✓
