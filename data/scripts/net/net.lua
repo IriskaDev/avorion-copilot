@@ -137,6 +137,11 @@ function CopilotNet.updateServer()
         CopilotRpc.tick()
     end
 
+    -- ★ 下单第二阶段：到点的 startCommand 发出去 ✓（两段式异步 ✓）
+    if CopilotLinkIn ~= nil then
+        CopilotLinkIn.tickOrders()
+    end
+
     -- ★ 空闲扫描：名单里有目标的船一空闲就发起 decide ✓（自己控节奏 ✓）
     if CopilotFleet ~= nil then
         CopilotFleet.maybeScan()
