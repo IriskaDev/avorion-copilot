@@ -196,7 +196,11 @@ function M.shipCard(player, name)
         if n ~= nil then
             card.freeCargoSpace = math.floor(n)
             if n <= 0 then
-                card.cargoNote = "货舱已满（剩余 0）：要先卖掉/卸掉货才能真正开始采矿或打捞"
+                -- ★★ 主人的游戏机制纠正（2026-10-16 ✓✓，权威 ✓）：
+                --   "这种形式的采矿其实没有满舱一说，这种**精采矿**会直接算进**全局资源**。"
+                --   → 所以货舱剩余多少，**对后台的采矿/打捞毫无影响** ✓✓
+                --   → 它只对**贸易**有意义（贸易要装货 ✓）
+                card.cargoNote = "0 = 货舱已满；但这**不影响采矿/打捞**（后台精采矿的产出直接进全局资源 ✓），只影响贸易"
             end
         else
             probeNotes.cargo = "getFreeCargoSpace failed: " .. tostring(cs)
@@ -229,12 +233,17 @@ function M.shipCard(player, name)
             shipMustBeInside = true,
             needsCaptain = true,
             note = "mining in a 15x15 sector area; the ship must already be inside it",
+            -- ★★ 权威机制（主人 2026-10-16 ✓）：后台采矿是**精采矿**，
+            --    产出**直接进全局资源** ✓ —— 不看货舱、没有满舱一说 ✓✓
+            yield = "refined output goes straight into the faction's global resources (cargo space is NOT a constraint)",
         },
         Salvage = {
             areaSize = { 15, 15 },
             shipMustBeInside = true,
             needsCaptain = true,
             note = "salvaging wrecks in a 15x15 sector area; ship must already be inside it",
+            -- ★ 同上（主人机制 ✓）：产出直接进全局资源，货舱不是限制 ✓
+            yield = "recycled output goes straight into the faction's global resources (cargo space is NOT a constraint)",
         },
         Trade = {
             areaSize = { 29, 29 },
@@ -242,6 +251,7 @@ function M.shipCard(player, name)
             needsCaptain = true,
             captainClass = "Merchant",
             note = "trade route within a 29x29 area; ship must be inside it and the captain must be a Merchant",
+            yield = "goods are CARRIED, so cargo space DOES matter here; profit is per flight over several flights",
         },
         Travel = {
             areaSize = { 1, 1 },
