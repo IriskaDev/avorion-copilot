@@ -267,7 +267,7 @@ action=<Mine | Salvage | Trade | Travel | None，只写这一个词>
 x=<目标星区 x 坐标，整数；action=None 时省略>
 y=<目标星区 y 坐标，整数；action=None 时省略>
 escorts=<护航舰船名，逗号分隔，可选；**只能从上面给出的同星系候选里选**>
-duration=<小时，可选>
+duration=<小时，可选；**若 orderHint 里给了，就照抄** ✓>
 safeMode=<true | false，可选；Mine/Salvage 专用：按 jobPlans 的 orderHint 照抄>
 reason=<一句话理由，用中文>`
 
@@ -557,7 +557,8 @@ function buildPrompt(f: DecideFacts): string {
     lines.push('★ 候选里的 `attackChanceWithEscorts` = **带上上面那些护航之后**的伏击概率 ✓；')
     lines.push('  `attackChance` = 不带护航的概率 ✓。请据此判断：加护航能否压到 10% 以下 ✓。')
     lines.push('')
-    lines.push('若选 action=Trade：goodName 必须**原样**取自上面的 name；')
+    lines.push('若选 action=Trade：**goodName 是必填** ✓ —— 必须**原样**取自 recommendation/候选表里的 name；')
+    lines.push('  ★ 漏了它游戏的商品选择就失控了 ✗（实测模型漏过一次 ✓），所以这是格式里唯一"不能省"的字段 ✓。')
     lines.push('x/y 照抄 orderHint / recommendation 里的值 ✓（它们都已保证区域包含船 ✓）。')
     lines.push('')
   }
