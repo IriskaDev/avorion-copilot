@@ -398,7 +398,31 @@ function execute(sender, commandName, arg, ...)
             "Copilot net chain: unmounted. Now run /copilot netstart.")
 
     elseif a == "netstart" then
+        -- ★★★ 必须先清 `include` 缓存 ✗→✓（2026-10-16 实测 ✓✓）
+        --
+        -- 起因：重挂后 `tradePlan` 依然不存在 ✓，而且 trace 里**没有** initialize 行 ✗。
+        -- 根因有两层：
+        --   ① `CopilotNet = CopilotNet or {}`（热重载友好 ✓）在同一个 VM 里保留旧表 ✗
+        --      → `handlersReady` 还是 true → `initialize()` 早退 ✗
+        --   ② `include` 会**缓存** ✗ → 即使 initialize 跑了，拿到的也是旧版的 lib ✗
+        -- 所以：先清缓存 ✓，再把 `handlersReady` 清掉（下一次 initialize 才会真跑 ✓）。
+        local cleared = 0
+        for k in pairs(package.loaded) do
+            if type(k) == "string" then
+                local lk = string.lower(k)
+                if string.find(lk, "copilot", 1, true) or string.find(lk, "net/", 1, true)
+                   or lk == "net" or string.find(lk, "commandtype", 1, true)
+                   or string.find(lk, "commandfactory", 1, true) or string.find(lk, "areaanalysis", 1, true) then
+                    package.loaded[k] = nil
+                    cleared = cleared + 1
+                end
+            end
+        end
+        if CopilotNet ~= nil then CopilotNet.handlersReady = nil end
+
         player:addScriptOnce("data/scripts/net/net.lua")
+        player:sendChatMessage("Server", ChatMessageType.Information,
+            "Copilot net chain: remounted (cleared " .. tostring(cleared) .. " cached modules).")
         player:sendChatMessage("Server", ChatMessageType.Information,
             "Copilot net chain: remounted (fresh VM, all libs reloaded).")
 
