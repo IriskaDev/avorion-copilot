@@ -75,7 +75,11 @@ function CopilotLinkIn.onQuery(data)
         -- 为什么可行 ✗✓：areaanalysis.run 的末尾是
         --     return shipName, type, area, results, callingPlayer
         --   —— 它把结果交出来了 ✓✓（见该文件 line 138 ✓）
-        return CopilotLinkIn.tradePlan(player, data)
+        -- ★ 文件被 /copilot reload 重执行时，这一行会立刻把派发表换成新的间接绑定 ✓✓
+--   （首次加载时 net.lua 也会调一次 install ✓ —— 重复注册是覆盖语义，无害 ✓）
+CopilotLinkIn.install()
+
+return CopilotLinkIn.tradePlan(player, data)
 
     elseif what == "goal" then
         local name = data.ship
@@ -474,8 +478,11 @@ local function bind(name)
     end
 end
 
+-- ★★ 不带"只跑一次"的守卫 ✗→✓：
+--   旧版有 `if self.installed then return end` ✗ —— 那让**重载后新的 bind 注册永远跑不到** ✗✓，
+--   派发表里就一直留着最初那批指针 ✗（实测：改完 bind 后重载一次仍报 unknown what ✓）。
+--   而 `handle(cmd, fn)` 是**覆盖**语义 ✓，重复注册无害 ✓ → 所以每次重载都重新注册 ✓✓。
 function CopilotLinkIn.install()
-    if self.installed then return end
     self.installed = true
 
     CopilotRpc.handle("hello",   bind("onHello"))
@@ -491,5 +498,9 @@ function CopilotLinkIn.status()
     return "in: peer=" .. tostring(self.peerSide)
         .. " peerCaps=[" .. table.concat(self.peerCaps or {}, ",") .. "]"
 end
+
+-- ★ 文件被 /copilot reload 重执行时，这一行会立刻把派发表换成新的间接绑定 ✓✓
+--   （首次加载时 net.lua 也会调一次 install ✓ —— 重复注册是覆盖语义，无害 ✓）
+CopilotLinkIn.install()
 
 return CopilotLinkIn
