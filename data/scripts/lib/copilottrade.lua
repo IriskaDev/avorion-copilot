@@ -35,12 +35,28 @@ M.MAX_ATTACK_CHANCE = 0.10
 -- 单条路线的期望收益（不依赖游戏 API ✓ —— 用窗口里那几列就够了 ✓）
 -- ===========================================================================
 
--- 从"进价偏移/售价偏移"估一个每单位毛利 ✓
--- r.lowest / r.highest 是**相对基准价的偏移**（窗口里的"最小 / 最大"两列 ✓）
-function M.unitMargin(r)
+-- ★★ 每单位的**绝对**毛利（= 窗口里最后一列 `C/u` ✓✓）
+--
+-- 源码核实（tradecommand.lua:775 ✓）：
+--     buyPrice  = good.price * (1 + route.lowest)      ← 进价 ✓
+--     salePrice = good.price * (1 + route.highest)     ← 售价 ✓
+-- 所以每单位毛利 = good.price * (highest - lowest) ✓ —— **乘上基准价** ✓✓
+--
+-- ★ 为什么必须用绝对而不是相对 ✗✓：
+--     货舱是按**单位数**限制的 ✓。实测那四条路线：
+--       氧气  : 80     × 0.22 = **C18**    ← 绝对最高 ✓
+--       钻头  : 20.443 × 0.24 = C4.906    ← 相对最高，但绝对低 ✗
+--     按相对排会选错 ✗（本鱼的第一次实现就栽在这里，被 selfTest 抓到 ✓✓）。
+--
+-- `basePrice` 由调用方填 ✓（游戏侧从 `goods[name].price` 取 ✓；
+--  拿不到就退化成相对毛利，并在 reason 里标注 ✓）。
+function M.unitProfit(r)
     local lo = tonumber(r.lowest) or 0
     local hi = tonumber(r.highest) or 0
-    return hi - lo
+    local rel = hi - lo
+    local base = tonumber(r.basePrice)
+    if base == nil or base <= 0 then return rel, false end     -- 第二返回值：是否缺基准价 ✓
+    return base * rel, true
 end
 
 -- 单条路线的**评分** ✓
@@ -48,11 +64,11 @@ end
 -- 而"预付金能买到的量"受货舱限制 → 在 plan 阶段才算得准 ✓；
 -- 这里先用**毛利 × 航班上限**做粗排，够选出候选了 ✓。
 function M.scoreRoute(r)
-    local margin = M.unitMargin(r)
+    local unit = M.unitProfit(r)
     local flights = tonumber(r.flightsTo) or tonumber(r.flights) or 0
     if type(flights) == "table" then flights = tonumber(flights.to) or 0 end
     if flights <= 0 then flights = 1 end          -- 没有航班信息时按 1 算，别把候选排掉 ✓
-    return margin * flights
+    return unit * flights
 end
 
 -- 排序：收益高的在前 ✓；并列时取"最大"列更大的（售价更高 ✓）
@@ -222,12 +238,14 @@ function M.plan(routes, facts, opts)
     local config, err = M.buildConfig(r, deposit, escorts)
     if config == nil then return nil, err end
 
+    local unit, hasBase = M.unitProfit(r)
     local reason = string.format(
-        "选「%s」: 毛利 %+d%%–%+d%%, 综合分 %.1f；伏击概率 %s；预付金 %d；护卫 %s",
+        "选「%s」: 每单位毛利 %s%s（进价偏移 %+d%% / 售价偏移 %+d%%）；伏击概率 %s；预付金 %d；护卫 %s",
         tostring(r.name),
+        hasBase and string.format("C%.3f", unit) or string.format("%+.3f(相对)", unit),
+        hasBase and "" or " ⚠️缺基准价",
         math.floor((tonumber(r.lowest) or 0) * 100),
         math.floor((tonumber(r.highest) or 0) * 100),
-        M.scoreRoute(r),
         best.chance and string.format("%.0f%%", best.chance * 100) or "(未知)",
         config.deposit,
         #escorts > 0 and table.concat(escorts, ", ") or "无")
@@ -248,12 +266,27 @@ end
 
 -- 返回 true 或 nil, err ✓
 function M.selfTest()
+    -- basePrice 用**主人截图里那列 c** ✓✓（C20.443 / C25.391 / C65.714 / C80 ✓）
     local routes = {
-        { name = "钻头",       lowest = -0.09, highest =  0.15 },
-        { name = "反重力单元", lowest = -0.20, highest = -0.06 },   -- 负毛利 ✗
-        { name = "人造卫星",   lowest = -0.14, highest = -0.13 },   -- 负毛利 ✗
-        { name = "氧气",       lowest = -0.06, highest =  0.16 },   -- 毛利最高 ✓
+        { name = "钻头",       lowest = -0.09, highest =  0.15, basePrice = 20.443 },
+        { name = "反重力单元", lowest = -0.20, highest = -0.06, basePrice = 25.391 },
+        { name = "人造卫星",   lowest = -0.14, highest = -0.13, basePrice = 65.714 },
+        { name = "氧气",       lowest = -0.06, highest =  0.16, basePrice = 80 },
     }
+
+    -- ★ 断言"每单位毛利"和主人截图里的 C/u 列一致 ✓✓
+    --   ⚠️ 窗口那一列是**取整显示** ✓（氧气真实 17.6 → 显示 C18 ✗），
+    --      所以按"四舍五入到整数"比对，而不是比小数 ✓。
+    local expect = { ["钻头"] = 5, ["反重力单元"] = 4, ["人造卫星"] = 1, ["氧气"] = 18 }
+    for _, r in ipairs(routes) do
+        local up = M.unitProfit(r)
+        local shown = math.floor(up + 0.5)              -- 窗口的显示口径 ✓
+        local want = expect[r.name]
+        if shown ~= want then
+            return nil, string.format("「%s」C/u 期望显示 %.0f（窗口），实际显示 %.0f（%s）",
+                r.name, want, shown, tostring(up))
+        end
+    end
 
     local ranked = M.rankRoutes(routes)
     if ranked[1].name ~= "氧气" then
