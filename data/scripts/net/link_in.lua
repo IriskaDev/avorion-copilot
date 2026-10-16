@@ -955,18 +955,27 @@ local function runTwoPhaseScan(ctx, offsets)
         end
 
         local win = fineWindowOffsets(SCAN_FINE_WINDOW)
-        local fineBudget = budgetMs > 0 and SCAN_FINE_BUDGET_MS or 0
+        -- ★★ 预算要**分给每个父框** ✗→✓（2026-10-17 修）：只用一个总片时，
+        --   第一个父框就会把它吃光 ✓ → 后两个父框一个都不细扫 ✗（"多位置"就落空了 ✓）。
+        --   → 每个父框一份 `SCAN_FINE_BUDGET_MS / 父框数` 的子预算 ✓（软预算，只在框之间检查 ✓）。
+        local nParents = #picked
+        if nParents < 1 then nParents = 1 end
+        local budgetMsTotal = budgetMs
         for _, parent in ipairs(picked) do
             if fineStopped then break end
             fineParents = fineParents + 1
+            local tParentStart = os.clock()
+            local fineBudget = (budgetMsTotal > 0)
+                and math.max(1, math.floor(SCAN_FINE_BUDGET_MS / nParents)) or 0
             for _, d in ipairs(win) do
                 local ox = parent.offset.x + d.x
                 local oy = parent.offset.y + d.y
                 local key = ox .. "," .. oy
                 if not used[key] then
                     -- 细扫的时间闸门（**软** ✓：只在框之间检查 ✓，所以最多多跑一个框 ✓）
-                    if fineBudget > 0 and phaseMs(tFine) > fineBudget then
-                        fineStopped = true
+                    -- ★ 用**该父框自己的子预算** ✓（`tParentStart` ✓）——
+                    --   这样前一个父框吃满了也不会把后一个饿死 ✓✓。
+                    if fineBudget > 0 and phaseMs(tParentStart) > fineBudget then
                         break
                     end
                     if budgetMs > 0 and phaseMs(t0) > budgetMs then

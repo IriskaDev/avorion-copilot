@@ -1,4 +1,14 @@
 # NEXT-WORK —— 待办交接单（2026-10-17 夜）
+#
+# ⚠️ 2026-10-17 深夜更新：本单里的 **1（框选自由）/ 4（逐货数字）/ 5（货舱不可误读）**
+#    以及主人后来追加的 **Scout 未知区决策** 与 **"单次无工具调用 → 数字都先算好"**
+#    已经**做完并入库** ✓（4 个提交：abe9940 / 260f407 / 42882f4 / d1c0d84）。
+#    验收清单里的**断言数已变**：luaparse 35 文件 0 失败；trade **92** / sell **50** /
+#    job **78** / scout **62** 项断言全绿；_linkin_check OK；插件 build 0 error TS、
+#    check-mechanics exit 0、order-payload **55** 项断言、其余 mjs 全 exit 0 ✓。
+#    ★ **改到 net/*.lua 必须重启游戏**（热重载覆盖不到 net 链 ✓）；改到插件要重启 DSH ✓。
+#    仍然欠着：§四 的其它欠账（六个未实现的后台命令等）✗。
+
 
 **这份是给"下一轮接手的 agent"看的。** 上一轮会话把活定到了这里，但它自己
 **已经没有上下文预算、且处在子代理层（无法再派子代理）** ✗，所以**原样写下来**，
@@ -90,11 +100,11 @@
 
 ```
 # 在 mod 仓库根跑（这些自检按相对路径读文件，换目录会失败 ✗）
-node native/../..\..\..\  # luaparse 校验器: C:\Users\IriskaDev\AppData\Local\Temp\luacheck-copilot\check.js
+node C:\Users\IriskaDev\AppData\Local\Temp\luacheck-copilot\check.js .
    → 期望 35 file(s), 0 failure(s)
-native/harness/_scout_scan_selftest.lua   → 41 项断言 / 失败 0
-native/harness/_sell_scan_selftest.lua    → 35 项断言 / 失败 0
-native/harness/_trade_scan_selftest.lua   → 68 项断言 / 失败 0
+native/harness/_scout_scan_selftest.lua   → 62 项断言 / 失败 0   ← ★ 2026-10-17 由 41 增到 62
+native/harness/_sell_scan_selftest.lua    → 50 项断言 / 失败 0   ← ★ 由 35 增到 50
+native/harness/_trade_scan_selftest.lua   → 92 项断言 / 失败 0   ← ★ 由 68 增到 92
 native/harness/_job_scan_selftest.lua     → 78 项断言 / 失败 0
 native/harness/_trade_selftest.lua        → selfTest: OK
 native/harness/_linkin_check.lua          → COMPILE OK + RUN: OK（net/ 只放定义 ✓）
@@ -102,7 +112,8 @@ native/harness/_linkin_check.lua          → COMPILE OK + RUN: OK（net/ 只放
 # 插件仓库（mods/copilot/plugin）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1   → 无 error TS
 node scripts/check-mechanics.mjs                                        → exit 0（守卫全绿，逐行引用）
-node test/order-payload.mjs / actions-consistency.mjs / prompt-file.mjs /
+node test/order-payload.mjs → 55 项断言 / 失败 0   ← ★ 由 27 增到 55
+node test/actions-consistency.mjs / prompt-file.mjs /
      rendezvous.mjs / rendezvous-flow.mjs / memory-demo.mjs             → 全 exit 0
 ```
 
