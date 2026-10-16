@@ -1156,7 +1156,11 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     live(`  ├ 事实  目标=[${facts.goalText}] 允许=[${facts.goalOptions.join(',') || '不限'}]`)
     if (facts.tradeRoutes !== undefined) {
       const cand = (facts.tradeRoutes as Record<string, unknown>).candidates
-      live(`  ├ 贸易候选 ${Array.isArray(cand) ? cand.length : '?'} 条已喂给模型`)
+      // ⚠️ 原写法会往流水里印一个光秃秃的 `?` ✗（字段名对不上 → undefined ✓ —— 主人截图里那个 ✓）
+      //   → 必须说人话 ✓：没取到就明说"没取到" ✓，并**明说这不代表没有候选** ✓✓
+      live(Array.isArray(cand)
+        ? `  ├ 贸易候选 ${cand.length} 条已喂给模型`
+        : '  ├ 贸易候选：本次没取到候选数组 ✗（**不代表没有路线** ✓ —— 见 facts.planMissing ✓）')
     }
     logger.info(
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
@@ -1192,7 +1196,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         } else if (target.x === undefined || target.y === undefined) {
           live('  └ 读不到行动船的星区坐标 → 不敢乱派（照常交给模型判断 ✓）')
         } else {
-          live(`  ├ 选中护航 ${pick.name}（在 ${pick.sector.x},${pick.sector.y}；${pick.basis}）`)
+          // ⚠️ 同类脆弱点（同一晚一起排掉 ✓）: `pick.sector` 可能缺失/为 null ✗ → 不许直接点 `.x` ✓
+          const pkSec = ((pick as unknown as { sector?: { x?: unknown; y?: unknown } }).sector ?? {})
+          live(`  ├ 选中护航 ${pick.name}（在 ${toNum(pkSec.x) ?? '?'},${toNum(pkSec.y) ?? '?'}；${pick.basis}）`)
           live(`  ├ 下单 Travel：${pick.name} → (${target.x},${target.y})（目的地必须 ≥2 跳，太近游戏会拒 ✓）`)
           const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 30)
           const why = ord.ok ? '' : (ord.why ?? 'unknown')
@@ -1218,9 +1224,20 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     // ★★ 增量 2：结算**上一次**任务（busy→idle 转换 ✓）
     //   游戏侧没有把产出回灌给 Lua 的干净通道 ✗（见提交说明），所以这里记录的是
     //   **可得到的弱信号**：它忙了多久 / 是否远早于申请时长结束（远早 ≈ 被伏击或召回 ✓）。
-    const cardSec = (facts.card as Record<string, unknown>).sector as { x?: number; y?: number } | undefined
+    // ★★ 实测崩溃点（2026-10-17，真机 Scout-00001 逐字复现 ✓）:
+    //   `sector` 可能是 **null** ✗ —— 此时 `cardSec !== undefined` **仍然成立** ✓
+    //   → `cardSec.x` 抛 `Cannot read properties of null (reading 'x')` ✓✓
+    //   ★ 读不到坐标 = "**取数缺失**"这个事实 ✓ —— 绝不当成 (0,0) 用 ✗（那会**伪造**一个星区 ✓）。
+    const cardSecRaw = (facts.card as Record<string, unknown>).sector
+    const cardSecObj = (typeof cardSecRaw === 'object' && cardSecRaw !== null)
+      ? (cardSecRaw as Record<string, unknown>)
+      : undefined
+    const cardSecX = toNum(cardSecObj?.x)
+    const cardSecY = toNum(cardSecObj?.y)
     const memSectors: string[] = []
-    if (cardSec !== undefined) memSectors.push(String(cardSec.x) + "," + String(cardSec.y))
+    if (cardSecX !== undefined && cardSecY !== undefined) {
+      memSectors.push(String(cardSecX) + "," + String(cardSecY))
+    }
     const hint = (facts.tradeRoutes as Record<string, unknown> | undefined)?.orderHint as
       { x?: number; y?: number } | undefined
     if (hint !== undefined && hint.x !== undefined && hint.y !== undefined) {
