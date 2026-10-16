@@ -315,6 +315,25 @@ check("⑧ order 回执只带最小参数（area/config，不含 routeNames/推�
     rO5 and rO5.recommendation == nil and rO5.routeNames == nil, "")
 
 -- ---------------------------------------------------------------------------
+-- ⑨ 体积量级（替身环境下的 JSON 字节数 —— 与真实响应同形状 ✓）
+-- ---------------------------------------------------------------------------
+print("== ⑨ 体积量级（JSON 字节）==")
+do
+    local JSON = dofile("data/scripts/lib/copilot/json.lua")
+    local function bytesOf(t)
+        local ok, txt = pcall(JSON.encode, t)
+        return (ok and #txt) or -1
+    end
+    local _, rList = LinkIn.onQuery({ what = "list" })
+    local _, rShip = LinkIn.onQuery({ what = "ship", ship = SHIP })
+    local _, rPredict = LinkIn.predict(player, { what = "predict", ship = SHIP, action = "Trade",
+        x = SHIP_X, y = SHIP_Y, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 752000 })
+    local _, rRoutes = LinkIn.tradeRoutes(player, { ship = SHIP, x = SHIP_X, y = SHIP_Y, sizeX = 17, sizeY = 17 })
+    print(string.format("  [体积] list = %d B；ship(完整卡) = %d B；predict 单框 = %d B；tradeRoutes = %d B",
+        bytesOf(rList), bytesOf(rShip), bytesOf(rPredict), bytesOf(rRoutes)))
+end
+
+-- ---------------------------------------------------------------------------
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
 if failures == 0 then
     print("atomicSelfTest: OK")
