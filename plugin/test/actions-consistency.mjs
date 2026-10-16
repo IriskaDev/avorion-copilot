@@ -32,23 +32,25 @@ check('src/index.ts 定义了 ALL_ACTIONS', m !== null)
 const allActions = m ? m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : []
 check('ALL_ACTIONS 非空', allActions.length > 0, allActions.join(','))
 
-// ── ② 提示词广告的动作集合 == ALL_ACTIONS ✓✓（缺陷 #9/#10 的核心）
+// ── ② 提示词广告的动作集合 == ALL_ACTIONS + None ✓✓（缺陷 #9/#10 的核心）
+//   ★ 提示词瘦身后动作清单不再是独立行，而是 action=（Mine / … / None 之一）✓
 const promptPath = join(plg, 'prompt', 'system.md')
 const prompt = existsSync(promptPath) ? readFileSync(promptPath, 'utf8') : ''
-const pm = /^action=<([^>]+)>/m.exec(prompt)
-check('prompt/system.md 有 action=<...> 行', pm !== null)
+const pm = /action=（([^）]+)）/u.exec(prompt)
+check('prompt/system.md 有 action=（...）动作清单', pm !== null)
 const advertised = pm
   ? pm[1]
-      .replace(/[，,。].*$/, '')       // 去掉"只写这一个词"这类说明 ✓
-      .split('|')
+      .replace(/之一.*$/, '')       // 去掉"之一"这类说明 ✓
+      .split('/')
       .map((s) => s.trim())
-      .filter((s) => s !== '' && s !== 'None')
+      .filter(Boolean)
   : []
 const setEq = (a, b) => a.length === b.length && [...a].sort().join(',') === [...b].sort().join(',')
+const allWithNone = [...allActions, 'None']
 check(
-  '提示词广告的动作 == ALL_ACTIONS',
-  setEq(advertised, allActions),
-  `prompt=[${advertised.join(',')}] ALL_ACTIONS=[${allActions.join(',')}]`,
+  '提示词广告的动作 == ALL_ACTIONS + None',
+  setEq(advertised, allWithNone),
+  `prompt=[${advertised.join(',')}] ALL_ACTIONS+None=[${allWithNone.join(',')}]`,
 )
 
 // ── ③ 解析器与白名单都从 ALL_ACTIONS 派生（不许再出现写死的字面量 ✗）✓
@@ -79,7 +81,15 @@ for (const a of allActions) {
 check('Decision 有 deposit 字段', /deposit\?: number/.test(idx))
 check('解析器读 deposit', /const deposit = field\(text, 'deposit'\)/.test(idx))
 check('toAnswer 转发 deposit', /params\.deposit = decision\.deposit/.test(idx))
-check('提示词广告 deposit= 行', /^deposit=/m.test(prompt))
+// ★ 提示词瘦身后字段不再是逐行 deposit=，而是一行列出全部字段名 ✓ → 断言"清单完整"
+const fieldLine = /写字段：([^；]*)/.exec(prompt)?.[1] ?? ''
+const fieldNames = fieldLine.split('/').map((s) => s.trim().replace(/=$/, '')).filter(Boolean)
+const WANT_FIELDS = ['x', 'y', 'sizeX', 'sizeY', 'duration', 'goodName', 'deposit', 'safeMode', 'escorts', 'goodsToSell', 'reason']
+check(
+  '提示词广告的字段名清单完整（含 deposit/escorts/goodsToSell）',
+  setEq(fieldNames, WANT_FIELDS),
+  `prompt=[${fieldNames.join(',')}] want=[${WANT_FIELDS.join(',')}]`,
+)
 
 // ── ⑥ 风险判定必须活到模型眼前（缺陷 #6 ✓）
 check(
