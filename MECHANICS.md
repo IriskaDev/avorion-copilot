@@ -196,6 +196,10 @@
   返回各候选的：伏击概率、期望产出/收益（含风险折算）、时长、可达性、`scoreBasis`（口径）✓。
 - ★ **风险闸门是玩家的规则** ✓（默认 `attackChance ≤ 0.10`）：
   超过闸门的候选**照样列出来**并标 `exceedsRiskLimit=true` ✓ —— **不静默丢弃** ✓。
+- ★★ **safeMode 也是玩家的规则** ✓（2026-10-17 主人原话）：
+  「安全模式收益十分低，**如果遭遇伏击概率在 10% 以下，不要开**。」
+  —— 与上面那条闸门同级 ✓（都是玩家下发的约束 ✓，不是我们发明的策略 ✓）；
+  机制原因见 §10 的 safeMode 条（它会躲开富庶的危险区、并把选择权重挪离肥地 ✓）。
 - ★ **`recommendation` / `orderHint` 只是"其中一个选项"** ✓（方便人审计），
   **不是**"必须照抄的答案" ✗ —— 选择是模型的 ✓✓。
 - ★ **未验证的两个缺口**（明确写出，别当成事实 ✗）：
@@ -222,6 +226,12 @@
 
 风险(所有命令共用)：attackChance 是整段任务期间的被伏击概率。被伏击 = 强制召回 + 只按已完成进度部分结算。
 - safeMode(Mine/Salvage) 会把概率改成：<0.1 则 0，否则 ×0.1，但只走友方星区、产量下降。
+  · ★ **为什么收益低**（原版证据 ✓）：原版提示「The captain avoids dangerous sectors, such as those with
+    pirate activity. **However, these contain more resources.**」(minecommand.lua:1260)；
+    且 safeMode 会**主动把选择权重从更肥的派系星区挪开**（outerFactionSectorWeight/3、
+    centralFactionSectorWeight/1.5，minecommand.lua:1180 附近）—— 字面上把船长赶去更贫瘠的地面。
+  · ★★ **主人的规矩（玩家约束）**：safeMode **收益十分低** ——
+    **伏击概率在 10% 以下时不要开**；只有伏击概率 **> 10%** 时它才值得考虑。
 - 时长与风险：伏击概率随任务时长上升 —— **超过 1 小时后，每多 1 小时在基准概率上再 +40%**
   （原版 'attackProbability = attackProbability + attackProbability * (hours - 1) * 0.4'，
   'simulationutility.lua:818-821' ✓）；短于 1 小时则低于基准 ✓；最后还会取 'max(baseProbability, …)' ✓。
