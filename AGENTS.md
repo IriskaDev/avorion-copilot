@@ -183,9 +183,14 @@ SetCursorPos/mouse_event 点击 → keybd_event（**带扫描码**）按键 → 
   - 决策来源可以是 DSH 侧（见下），也可以先做规则版
   - 待办：先跑 `/copilot ops` 把 `ShipDatabaseEntry` 上**真正可用**的成员问出来
     （它的文档文件是 0 字节，且部分方法挂在实体上，混用会崩）
-- **DSH 桥接插件**：`D:\workbench\projects\dsh\dsh-avorion-copilot`（TypeScript，已编译、
-  离线自测 8/8），**尚未装入 DSH**——安装方式待定（本会话没有 `dev_inject_plugin` 工具，
-  正式装配需重启 DSH）。
+- **DSH 桥接插件**：就住在本仓库的 `plugin/` ✓（见文件末尾「布局」一节 ✓）。
+  ★ 2026-10-17 起它的角色是**游戏 RPC 接口提供者** ✓：把游戏暴露成工具 ✓ + 把空闲船的决策任务
+  投进**主人自己那个会话** ✓ + 把结论交回游戏下单 ✓（范围与理由见 `plugin/AGENT-DESIGN.md`
+  顶部的「2026-10-17 修订」✓；用法见 `plugin/README.md` ✓）。
+  ⚠️ **部署坑（实测）**：profile 的 `package.json` 写的是新家 `.../mods/copilot/plugin` ✓，
+  但 `node_modules` 里那个 junction **仍指向旧备份** `D:\workbench\projects\dsh\dsh-avorion-copilot`
+  ✗✓ —— 于是**新代码根本没被加载**（运行日志里能看到旧行为 ✓）。
+  修法：把该 junction 删掉重建到新家，然后**重启 DSH** ✓（改装配必重启 ✓）。
 - **面板体验**：底部提示文字还没说清「主开关只管玩家自己那条船、名单只管非玩家船」；
   每船的「目标」是点击行循环切换（`ListBoxEx` 放不下下拉框）。
 - **收尾**：临时诊断 `/copilot probe` 与 DLL 里的 `numprobe`/逐步日志待清理；
