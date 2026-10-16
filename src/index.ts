@@ -904,6 +904,13 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       rec.ok = false
       rec.code = 'EXCEPTION'
       rec.message = message
+      // ★★ 2026-10-17 实机血案：只报 "Cannot read properties of null (reading 'x')" ✗
+//    —— 这种字面信息**定位全靠猜** ✗✓（一晚猜了三次 ✓）。★ 有栈就能一眼指到行 ✓✓。
+      const where = error instanceof Error && error.stack
+        ? error.stack.split('\n').slice(0, 4).map((s) => s.trim()).join(' | ')
+        : ''
+      logger.warn(`avorion-copilot: EXCEPTION in decide(${ship}): ${message} @ ${where}`)
+      live(`  ⚠ 异常位置(栈): ${where}`)
       return [false, 'EXCEPTION', message] as [boolean, any, string]
     } finally {
       recordDecision(rec)
