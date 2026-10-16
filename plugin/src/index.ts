@@ -1665,19 +1665,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     // ★★ 船上有货 → 拉一份 Sell 计划 ✓✓（Issue B：被伏击召回后必须先变现才能再贸易 ✓）
     const cardObj = (facts.card ?? {}) as Record<string, unknown>
     const holdHasGoods = cardObj.holdHasGoods === true
-    const canSell = nameList.includes('Sell') || true          // 所有商业船卡都有 Sell ✓
+    const canSell = nameList.includes('Sell')
     if (holdHasGoods && canSell) {
-  // 勘察计划：能勘察的船都拉一份
-  if (nameList.includes('Scout') || true) {
-    const cr = await ask(peer, 'query', { what: 'scoutPlan', ship }, 120)
-    if (cr.ok) {
-      facts.scoutPlan = cr.data as Record<string, unknown>
-      const sd = cr.data as Record<string, unknown>
-      const cov = (sd.coverage ?? {}) as Record<string, unknown>
-      const cen = (sd.centre ?? {}) as Record<string, unknown>
-      live('  ├ Scout 事实：未探索 ' + String(cov.unknown ?? '?') + '/' + String(cov.total ?? '?') + '，离中心 ' + String(cen.distance ?? '?') + '，扫 ' + String(sd.areasScanned ?? '?') + ' 区 / ' + String(sd.scanMs ?? '?') + 'ms（推荐 ' + (sd.recommendation ? '有' : '无') + '）')
-    }
-  }
       const sr = await ask(peer, 'query', { what: 'sellPlan', ship }, 120)
       if (sr.ok) {
         facts.sellPlan = sr.data as Record<string, unknown>
@@ -1691,6 +1680,20 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         logger.warn(`avorion-copilot: ${ship} 拉卖货计划失败 ${sr.why ?? ''}`)
       }
     }
+    }
+
+    // ★★ 勘察计划：能 Scout 的船**无论舱里有没有货**都拉一份 ✓✓（缺陷①修复）
+    //   之前被包在 `holdHasGoods && canSell` 里 → 侦察船通常空舱 → 永远拿不到 ✗
+    //   → 模型只能猜框 ✗；现在按 `nameList.includes('Scout')` 单独门控 ✓。
+    if (nameList.includes('Scout')) {
+      const cr = await ask(peer, 'query', { what: 'scoutPlan', ship }, 120)
+      if (cr.ok) {
+        facts.scoutPlan = cr.data as Record<string, unknown>
+        const sd = cr.data as Record<string, unknown>
+        const cov = (sd.coverage ?? {}) as Record<string, unknown>
+        const cen = (sd.centre ?? {}) as Record<string, unknown>
+        live('  ├ Scout 事实：未探索 ' + String(cov.unknown ?? '?') + '/' + String(cov.total ?? '?') + '，离中心 ' + String(cen.distance ?? '?') + '，扫 ' + String(sd.areasScanned ?? '?') + ' 区 / ' + String(sd.scanMs ?? '?') + 'ms（推荐 ' + (sd.recommendation ? '有' : '无') + '）')
+      }
     }
 
     if (wantsTrade) {

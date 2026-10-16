@@ -597,6 +597,19 @@ try {
     check('h. 候选表: ★ 没有"照抄第一行"之类的指令 ✗',
       !/照抄第一行|直接照抄/.test(seen), '')
   }
+
+  // ---- i. ★★ 缺陷①：空舱且能 Scout 时也必须拉 scoutPlan ✓✓ ----
+  //   之前 scoutPlan 被包在 holdHasGoods && canSell 里 → 侦察船通常空舱 → 永远拿不到 ✗
+  {
+    game.shipCard.holdHasGoods = false        // ★ 侦察船通常空舱 —— 正是缺陷①的场景 ✗
+    const qBefore = game.queries.length
+    const { rpc } = await decideOnce(`action=None\nreason=先看看\n`, ['Scout'])
+    const qDuring = game.queries.slice(qBefore)
+    console.log(`\n[i] 空舱 + 能 Scout（goal=Scout）时 decide 拉取的 query: ${qDuring.join(', ')}`)
+    check('i. scoutPlan: ★ 空舱且能 Scout 时也必须拉 scoutPlan（不再被 holdHasGoods 挡住 ✓✓）',
+      qDuring.includes('scoutPlan'), qDuring.join(','))
+    check('i. scoutPlan: decide 成功', rpc.ok === true, rpc)
+  }
 } catch (err) {
   console.log(`\n✗ 测试抛异常: ${err?.stack ?? err}`)
   process.exit(1)
