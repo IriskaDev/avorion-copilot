@@ -6,36 +6,44 @@
  *    在会话上方做个开关，打开就切到对应会话，不再投递到之前会话。"
  *
  * WHY THIS FILE IS HAND-WRITTEN (and not a tsdown/tsc bundle)
- *   Every installed DSH client plugin ships as a plain `window.__ModuleLoader__.load({...})`
- *   factory -- see `C:\Users\IriskaDev\.dsh\plugins\dsh-super-injector\lib\client.js:1`
- *   and any stock client module, e.g.
- *   `...\@deepseek-ai\dsh-api-remotes\lib\client.js:1`. The stock build pipeline needs a DSH
- *   SOURCE checkout (`DSH_CHECKOUT/packages`, see dsh-super-injector/scripts/build.sh), and
- *   this machine has none (only `app.asar`). So this wrapper is written by hand in exactly the
- *   documented shape. It is plain ES2020 + React.createElement -- nothing to compile.
+ *   Every DSH client plugin ships as a plain `window.__ModuleLoader__.load({...})`
+ *   factory. The stock build pipeline needs a DSH SOURCE checkout, and the desktop
+ *   app here installs only `app.asar`. So this wrapper is written by hand in exactly
+ *   the shipped shape. It is plain ES2020 + React.createElement -- nothing to compile.
  *
- * WHERE IT ATTACHES (verified, with evidence)
- *   `conversation.session.header.actions` is a REAL slot:
- *     * declared `kind: 'list'`, `scope: 'session'` in
- *       `...\@deepseek-ai\dsh-client-ui-conversation\lib\types\client\contract\slots.d.ts:134`
- *     * actually injected by stock plugins, e.g.
- *       `...\@deepseek-ai\dsh-client-ui-jobs\lib\client.js:266-271`
- *       `...\@deepseek-ai\dsh-client-ui-schedule\lib\client.js:293-298`
- *   A session-scoped occupant receives `sessionId`: the jobs plugin destructures it directly at
- *   `...\@deepseek-ai\dsh-client-ui-jobs\lib\client.js:117` -> `function JobListAction({ sessionId, useSessions, t })`.
+ * HOW IT IS PICKED UP (verified on the running desktop app, DSH 0.2.0-rc.2)
+ *   `dsh-client-modules` scans the host Loader's entries for packages declaring
+ *   `dsh.client` (`platform: 'web'`) and serving `exports["./client"]`
+ *   (docs: reference/subsystems/client-modules). A `link:`-installed external plugin
+ *   IS a Loader entry (its host half loads), so its bundle is composed into
+ *   `window.__DSH_BOOT__` and served under `/plugins/??<pkg>/client.js&rev=<rev>`.
+ *   Observed on this machine -- the desktop host's own index really carries the row:
+ *     {"id":"@dsh-external/dsh-avorion-copilot","url":"plugins/??@dsh-external/dsh-avorion-copilot/client.js&rev=8262b5fb7e75", ...}
+ *   and that URL answers 200 with this very file. No `pnpm run dev:web` and no
+ *   build step is involved: the host reads `lib/client.js` from disk at boot.
  *
- * HOW IT TALKS TO THE PLUGIN (verified)
- *   The host plugin registers an HTTP route with `ctx.webServer.register({kind:'prefix', path, handler})`
- *   and the client just `fetch`es it -- exactly the pattern in
- *   `C:\Users\IriskaDev\.dsh\plugins\dsh-super-injector\lib\index.js` (route `/super-injector/api`)
- *   and its client (`lib/client.js`, `API = "/super-injector/api"`).
- *   Our route is registered in `src/index.ts` (`/avorion-copilot/api/...`).
+ * WHERE IT ATTACHES (verified)
+ *   `conversation.session.header.actions` is a REAL slot of the shipped hierarchy
+ *   (docs: reference/subsystems/slots -> Current hierarchy -> main.conversation ->
+ *   conversation.header -> conversation.session.header -> .actions).
+ *   It is a `list` slot: cells are addressed by `id` and ordered by `order`.
+ *   A session-scoped occupant receives `sessionId` -- the stock jobs plugin
+ *   destructures it directly (`dsh-client-ui-jobs/lib/client.js`, `JobListAction`).
+ *   Registration pattern copied verbatim from the docs and from that stock plugin:
+ *     ctx.slots.inject(NAME, () => ctx.slots.register({ name, id, order }, Component))
  *
- * SEMANTICS
- *   * ON  = THIS session is the one and only fleet commander (the previous one is displaced
- *           immediately: only one id is ever stored, so nothing is delivered to the old one).
- *   * OFF = no commander -> the plugin falls back to its own single-shot decision path.
- *   * The plugin is the GAME RPC INTERFACE PROVIDER; this switch only routes decision tasks.
+ * HOW IT TALKS TO THE PLUGIN
+ *   The host half registers `prefix /avorion-copilot/api` on `ctx.webServer`
+ *   (see `src/index.ts` -> `mountCommanderApi`) and this file just `fetch`es it.
+ *
+ * ★ WHY IT USED TO BE INVISIBLE (fixed 2026-10-17, second pass)
+ *   Nothing was wrong with the bundle: it loaded and registered fine. The host had
+ *   registered NO route, because `apply()` asked for `ctx.get('webServer')` BEFORE
+ *   that service existed and then silently gave up (proved by the plugin's own
+ *   `decisions.live.log` line "拿不到 webServer -> 没有 UI 开关"). A 404 made
+ *   `read()` resolve to null, and this component renders nothing until it knows the
+ *   state -- so the switch was a correct-but-invisible null. The host now waits for
+ *   the service, and any transport failure is logged (never silently swallowed).
  */
 window.__ModuleLoader__.load({
   id: '@dsh-external/dsh-avorion-copilot',
@@ -46,7 +54,10 @@ window.__ModuleLoader__.load({
 
     const react = require('react')
     const API = '/avorion-copilot/api'
+    const SLOT = 'conversation.session.header.actions'
+    const PLUGIN = '@dsh-external/dsh-avorion-copilot'
 
+    /** Required service: the UI slot registry. */
     const inject = ['slots']
 
     const css = `
@@ -65,16 +76,37 @@ window.__ModuleLoader__.load({
       if (cssTagged || typeof document === 'undefined') return
       cssTagged = true
       const tag = document.createElement('style')
-      tag.dataset.plugin = '@dsh-external/dsh-avorion-copilot'
+      tag.dataset.plugin = PLUGIN
       tag.textContent = css
       document.head.appendChild(tag)
     }
 
-    /** Read the current commander state. `mine` = the session asking. */
+    /**
+     * Read the current commander state. `mine` = the session asking.
+     * A failure is reported (once) instead of vanishing: a missing host route used
+     * to look exactly like "this feature does not exist".
+     */
+    let complained = false
+    function fail(what, error) {
+      if (complained) return
+      complained = true
+      // eslint-disable-next-line no-console
+      console.error(
+        `[avorion-copilot] ${what}: ${API} is unreachable (${String(error)}). ` +
+        'The fleet-commander switch needs the host HTTP route; use the fleet_commander tool meanwhile.',
+      )
+    }
+
     function read(mine) {
       return fetch(`${API}/commander?session=${encodeURIComponent(mine ?? '')}`)
-        .then((r) => r.json())
-        .catch(() => null)
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
+        .catch((error) => {
+          fail('read', error)
+          return null
+        })
     }
 
     /** Toggle: make THIS session the commander, or turn it off if it already is. */
@@ -83,13 +115,21 @@ window.__ModuleLoader__.load({
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ session: mine }),
-      }).then((r) => r.json()).catch(() => null)
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`)
+          return r.json()
+        })
+        .catch((error) => {
+          fail('toggle', error)
+          return null
+        })
     }
 
     /**
-     * The switch itself. `sessionId` is supplied by the harness for this session-scoped slot.
-     * It renders NOTHING until we know the state, so a transient failure never puts a bogus
-     * "off" in front of the owner.
+     * The switch itself. `sessionId` is supplied by the harness for this
+     * session-scoped slot. It renders NOTHING until we know the state, so a
+     * transient failure never puts a bogus "off" in front of the owner.
      */
     function FleetCommanderSwitch({ sessionId }) {
       ensureCss()
@@ -137,12 +177,13 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** Client plugin body: contribute the header action (docs' exact pattern). */
     function apply(ctx) {
-      ctx.effect(() => ctx.slots.inject('conversation.session.header.actions', () => ctx.slots.register({
-        name: 'conversation.session.header.actions',
+      ctx.slots.inject(SLOT, () => ctx.slots.register({
+        name: SLOT,
         id: 'avorion-fleet-commander',
         order: 30,
-      }, FleetCommanderSwitch)))
+      }, FleetCommanderSwitch))
     }
 
     exports.apply = apply

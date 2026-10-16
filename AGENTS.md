@@ -495,3 +495,32 @@ mods/copilot/
 * 插件的提交历史已**并入本仓库** ✓（不再有自己的 .git ✓）；
   旧目录 `D:\workbench\projects\dsh\dsh-avorion-copilot` **留作备份** ✓，确认新家能加载后再删 ✓
 * `plugin/lib/` 是**编译产物但必须入库** ✓（DSH 直接读它 ✓）；`node_modules/` 是构建期临时物 ✓ 已忽略 ✓
+
+## ★★ DSH 客户端插件（UI）的**真相**（2026-10-17 实测，别再猜 ✗✓）
+
+主人用的是 **DSH 桌面版**（`DeepSeek Harness.exe`，DSH **0.2.0-rc.2** ✓）——
+**它不是"把客户端资源烤进 App"的壳** ✗✓，别拿这个当借口 ✗：
+
+| 事实 | 证据 |
+|---|---|
+| 桌面版跑的是**真 web 服务器**（`127.0.0.1:19387` ✓），宿主半由 `@deepseek-ai/dsh-desktop-host` 起 ✓ | 进程命令行 `--port 19387`；`dsh-client-connection` 的 401 文案 |
+| 外部 `link:` 插件的 `lib/client.js` **启动时直接从磁盘读** ✓，不用重建、不用 `pnpm run dev:web` ✗✓ | 运行中的页面里 `window.__DSH_BOOT__` 真有我们那行，且 `/plugins/??<pkg>/client.js&rev=…` 返回 200 + 本文件字节 ✓✓ |
+| `rev` 由**文件 mtime/ctime/size** 推 ✓，每次启动都重新组图 ✓ | 官方文档 `reference/subsystems/client-modules` ✓ |
+| 桌面版 Electron 窗口**没有绑刷新快捷键** ✗ → 改完客户端要**完全退出 App 再开** ✓ | 主人实测 Ctrl+F5 无反应 ✓ |
+
+**读安装版 DSH 本体的办法**（本机没有 DSH 源码 checkout ✗，只有 `app.asar` ✓）：
+`plugin/tools/asar_read.py`（纯 stdlib ✓）：
+`python asar_read.py list|cat|grep "<...>\resources\app.asar" …` ✓ ——
+官方文档在 `https://deepseek-harness.github.io/deepseek-harness/`（**开源 ✓，先查它再猜** ✓✓）。
+
+### ★ 两条给未来的硬规矩
+
+1. **可选服务一律 `ctx.inject(['服务名'], cb)` 等它** ✓，**不要**当场 `ctx.get()` 就下判断 ✗。
+   `apply()` 跑的时刻，兄弟 bundle 提供的服务（如 `webServer`）**可能还没就绪** ✗✓ ——
+   当场判断 + 静默兜底 = **功能悄悄少一半**（本次的"开关看不见"就是这么来的 ✗）。
+   反例/正例都在官方 `dsh-client-modules/lib/index.js` 里 ✓。
+   ★ 也**不要**把可选服务写进 `export const inject` ✗ —— 那样没有它的 profile（headless）
+   里**整个插件都不会启动** ✗✓。
+2. **UI 从不许"静默什么都不画"** ✗：客户端组件在拿不到宿主状态时返回 `null` ✓，
+   而宿主那条 HTTP 路由 404 时**界面和"功能不存在"长得一模一样** ✗✓。
+   至少 `console.error` 一次 ✓（本次已补 ✓），别让下次排查又要去翻 asar ✓。

@@ -177,23 +177,51 @@ DSH 宿主**自己解析** `@deepseek-ai/*` 与 `schemastery`。插件自带 `no
 （本机只有 App.asar ✗）—— 所以它按**原样形态手写**（纯 ES2020 + React.createElement ✓，无需构建 ✓），
 `package.json` 里用 `dsh.client` 声明它是 web 平台客户端入口 ✓。
 
+★ `dsh.client.inject` 里写的是**声明了你要占的那个槽位的包**（不是随便的依赖 ✓）——
+官方 `dsh-client-ui-jobs` 占同一个槽位，它写的是
+`["@deepseek-ai/dsh-api-job-controller", "@deepseek-ai/dsh-client-locale",
+"@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-primitives"]` ✓；
+我们只需要 `["@deepseek-ai/dsh-client-ui-conversation"]` ✓。
+★ 以前这里写的是 `dsh-client-runtime` / `dsh-client-ui-slots` ✗ —— 两个**都不是客户端模块**
+（前者在 0.2.0-rc.2 里**根本不存在** ✗，后者是**宿主侧**包、没有 `./client` 导出 ✗）。
+运行时对认不出的名字是**静默跳过** ✓（所以它没把插件弄崩 ✓），但那是**错的声明** ✗✓，已改正 ✓。
+
 ## ★ 会话页顶部那个开关（客户端 UI）
 
 - **挂在哪**：`conversation.session.header.actions` ✓（`kind: 'list'`、`scope: 'session'` ✓）。
-  它**不是本鱼发明的** ✓ —— 契约声明在
-  `@deepseek-ai/dsh-client-ui-conversation/lib/types/client/contract/slots.d.ts:134` ✓；
-  官方插件就在用同一处（`dsh-client-ui-jobs/lib/client.js:266`、
-  `dsh-client-ui-schedule/lib/client.js:293` ✓）。会话作用域的组件能拿到 `sessionId` ✓
-  （官方用法逐字：`dsh-client-ui-jobs/lib/client.js:117` ✓）。
+  契约**不是本鱼发明的** ✓ —— 本机 DSH 0.2.0-rc.2 的官方层级里就有它 ✓
+  （文档 `reference/subsystems/slots` 的 “Current hierarchy”：
+  `main.conversation → conversation.header → conversation.session.header → .actions` ✓）；
+  官方插件就在用同一处（`dsh-client-ui-jobs/lib/client.js` ✓）。
+  会话作用域的组件能拿到 `sessionId` ✓（官方 `JobListAction({ sessionId, useSessions, t })` 逐字 ✓）。
+  ★ 注册姿势也照抄官方文档 + 官方插件 ✓：
+  `ctx.slots.inject(SLOT, () => ctx.slots.register({ name, id, order }, Component))` ✓
+  —— **不要**再套一层 `ctx.effect(...)` ✗（能跑，但不是文档形状 ✓）。
 - **怎么和插件说话**：插件用 `ctx.webServer.register({kind:'prefix', path:'/avorion-copilot/api', …})`
   挂了一条 HTTP 路由 ✓，客户端 `fetch` 它 ✓（同一个模式见 `dsh-super-injector`：
   路由 `/super-injector/api` ✓）。
   `GET /avorion-copilot/api/commander` 读状态 ✓；
   `POST …/commander/toggle` 原子切换 ✓；`POST …/commander/clear` 清除 ✓。
-- **生效方式（诚实说明）**：
-  - 客户端资源是**构建期**打包进 web 壳的 ✗ —— 所以**改客户端代码后要重建 Web 产物 + 刷新页面** ✓。
-    只有在 **DSH 源码 checkout 里跑着 `pnpm run dev:web`** 时，客户端插件才会**热重载** ✓；
-    本机没有那个 checkout ✗ → **对本插件来说=需要重建/重启** ✓。
-  - 服务端那一半（HTTP 路由、投递阶梯）是宿主插件 ✓ —— 也要**重启 DSH** 才会带上新代码 ✓。
-  - ★ 拿不到 `webServer`（或没有客户端壳）时**没有 UI 开关** ✗ —— 但功能本体**不依赖它** ✓，
-    用 `fleet_commander` 工具/配置照样能用 ✓（启动时会往流水里写清是哪一种情况 ✓）。
+- **★ 2026-10-17 二次修正：开关"看不见"的真因（已修 ✓）**
+  - 客户端那一半**本来就是好的** ✓：`lib/client.js` 被宿主**启动时直接从磁盘读** ✓
+    （`dsh-client-modules` 扫 Loader 条目里声明 `dsh.client` 的包 ✓）——
+    **不需要**重建 Web 产物、**不需要** `pnpm run dev:web` ✗✓（桌面版也一样 ✓）。
+    实测（本机运行中的桌面版）：`window.__DSH_BOOT__` 里真有我们那一行 ✓
+    `{"id":"@dsh-external/dsh-avorion-copilot","url":"plugins/??@dsh-external/dsh-avorion-copilot/client.js&rev=…"}`
+    而且那个 URL 返回 200 + 本文件的字节 ✓✓。
+  - 坏的是**宿主那一半** ✗：`apply()` 里当场 `ctx.get('webServer')` ✓，
+    而 `apply()` 跑的时刻 `webServer` **还没就绪** ✗ → 静默走了"没有 UI 开关"分支 →
+    **路由根本没挂** ✗✓ → 客户端每次 GET 都 404 → 组件**永远渲染 null** ✗✗
+    （所以重启多少次都一样 ✗）。铁证在流水里：`moddata/copilot/decisions.live.log` 那行
+    “会话开关：拿不到 webServer → **没有 UI 开关** ✗” ✓。
+  - 现在照**官方 `dsh-client-modules` 处理可选服务**的写法 ✓：有服务立刻挂 ✓，
+    没有就 `ctx.inject(['webServer'], …)` **等它就绪再挂** ✓✓。
+    ★ 'webServer' **不写进** `export const inject` ✗ —— 那样在没有 web 服务的 profile
+      （headless 等）里**整个插件都不会启动** ✗✓。
+- **怎么让它生效**：客户端资源与宿主代码**都只在启动时读一次** ✓ ⇒ **改完必须重启 DSH** ✓。
+  桌面版里 **Ctrl+F5 / F5 没用** ✗（Electron 窗口没绑刷新快捷键 ✓）——
+  **完全退出 App 再打开** ✓ 就会带上新代码 ✓
+  （每次启动的 combo URL 都带新 `rev` ✓，不吃浏览器缓存 ✓；也不用清缓存 ✓）。
+- **拿不到 `webServer` / 没有客户端壳** 时**没有 UI 开关** ✗ —— 但功能本体**不依赖它** ✓：
+  用上面「怎么指定指挥官」里的**工具**或**配置文件**两种入口照样用 ✓
+  （启动时会往流水里写清是哪一种情况 ✓）。

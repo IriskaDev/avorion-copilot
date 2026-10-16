@@ -80,6 +80,16 @@ interface CopilotCtx {
    */
   on?: (event: string, listener: (...args: any[]) => void) => unknown
   get?(name: string): unknown
+  /**
+   * ★ **等一个可选服务**（cordis 自带 ✓）。
+   *
+   * `ctx.get(name)` 是**当场**查 ✗ —— 服务还没就绪就是 undefined ✓；
+   * `ctx.inject([name], cb)` 则是**等它就绪再回调** ✓✓，回调收到的是能直接
+   * `.name` 取到该服务的子 ctx ✓（原版 `dsh-client-modules` 就是这么拿 webServer 的 ✓）。
+   * 注意：用它 ★ 不等于 ★ 把服务写进 `export const inject` ✗ ——
+   * 后者是"没有它插件就别启动" ✓，而我们要的是"没有它照样跑，只是少个开关" ✓。
+   */
+  inject?(names: string[], fn: (ctx: any) => void): unknown
 }
 
 /**
@@ -1266,87 +1276,118 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
    *   所以换成 X 的那一刻，旧会话就已经不在投递路径上了 ✓✓（不是"两个都投"✗）。
    *   与 TAKEOVER.md 的"同一时刻只有一个决策者"完全一致 ✓。
    *
-   * ★ 拿不到 webserver（比如 headless / 没有该服务）→ **静默跳过** ✓：
+   * ★ webserver **没就绪**（比如 headless / 根本没有该服务）→ 不当场放弃 ✗：
+   *   没就绪就**等它**（`ctx.inject` ✓）；**永远拿不到**才退化成"没有 UI 开关" ✓：
    *   开关是**便利**，不是功能本体 ✗ —— 没有它也照样能用 `fleet_commander` 工具指定 ✓✓。
    */
-  try {
-    const webServer = ctx.get?.('webServer') as {
-      register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: any, res: any) => void | Promise<void> }): unknown
-    } | undefined
-    if (webServer !== undefined && typeof webServer.register === 'function') {
-      const COMMANDER_API = '/avorion-copilot/api'
-      const snapshot = (mine: string | null): Record<string, unknown> => {
-        const st = getCommanderState()
-        return {
-          commander: st.session,
-          isMine: st.session !== null && st.session === mine,
-          leasedUntil: st.leasedUntil,
-          leaseFresh: isLeaseFresh(),
-          mode: decideMode,
-          sessionLive: st.session === null ? false : agents?.get(st.session) !== undefined,
-        }
-      }
-      const json = (res: any, code: number, body: unknown): void => {
-        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify(body))
-      }
-      const readBody = async (req: any): Promise<any> => {
-        try {
-          const chunks: Buffer[] = []
-          for await (const c of req) chunks.push(Buffer.from(c))
-          const raw = Buffer.concat(chunks).toString('utf8')
-          return raw.trim() === '' ? {} : JSON.parse(raw)
-        } catch { return {} }
-      }
-      ctx.effect(() => {
-        // ★ 保留 register 的返回值不等于把它交给 effect ✓（effect 要 void | cleanup ✓）；
-        //   真要清理就自己 return 一个 ✓（拿不到就不 return ✓）。
-        const handle = webServer.register({
-        kind: 'prefix',
-        path: COMMANDER_API,
-        handler: async (req, res) => {
-          try {
-            const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
-              .replace(/^\/avorion-copilot\/api/, '') || '/'
-            const method = String(req.method ?? 'GET').toUpperCase()
-            const body = method === 'POST' ? await readBody(req) : {}
-            const mine = typeof body.session === 'string' && body.session.trim() !== '' ? body.session.trim() : null
-
-            if (method === 'GET' && (pathname === '/commander' || pathname === '/')) {
-              return json(res, 200, { ok: true, ...snapshot(mine) })
-            }
-            if (method === 'POST' && pathname === '/commander/toggle') {
-              if (mine === null) return json(res, 400, { ok: false, error: 'toggle needs the session id' })
-              const was = getCommanderState().session
-              // ★ 点开一个已经是目标的会话 = 关掉它（开关的语义 ✓）；否则 = 切换到这个会话 ✓
-              const now = was === mine ? null : mine
-              setCommanderSession(now)
-              live(`  ├ [开关] 会话 ${mine} 把投递目标${now === null ? '**关掉**了' : `切到了自己`}` +
-                `${was !== null && was !== now ? `（原目标 ${was} 立刻不再收到任务 ✓）` : ''}`)
-              return json(res, 200, { ok: true, ...snapshot(mine), previous: was })
-            }
-            if (method === 'POST' && pathname === '/commander/clear') {
-              const was = getCommanderState().session
-              setCommanderSession(null)
-              live(`  ├ [开关] 投递目标已清除${was !== null ? `（原目标 ${was}）` : ''} ✓ → 决策回到单发 ✓`)
-              return json(res, 200, { ok: true, ...snapshot(mine), previous: was })
-            }
-            return json(res, 404, { ok: false, error: `no such route: ${method} ${pathname}` })
-          } catch (error) {
-            return json(res, 500, { ok: false, error: String(error) })
+  /**
+   * ★★ 挂路由：**必须等 `webServer` 就绪**（2026-10-17 二次修正 ✗✓
+   *    —— 这就是“会话开关在界面上看不见”的**真因** ✗✗）
+   *
+   * 第一版写的是 `const webServer = ctx.get?.('webServer')` 当场判断 ✗ ——
+   * 而 `apply()` 跑的时刻，`webServer`（由 `dsh-web-app` bundle 提供 ✓）
+   * **还没就绪** ✗，于是静默走了 else 分支：
+   * **路由根本没挂** ✗✓ → 客户端开关每次 GET 都 404 →
+   * 状态拿不到 → **永远渲染 null** ✗✗（所以重启再多次也没用 ✗）。
+   * 铁证：`moddata/copilot/decisions.live.log` 里那行
+   *   “会话开关：拿不到 webServer → **没有 UI 开关** ✗” ✓✓。
+   *
+   * ✓ 正确姿势：照抄原版 `dsh-client-modules/lib/index.js`
+   *   处理**可选服务**的写法 ✓✓：
+   *     `ctx.get('webServer')` 有 → 立刻挂 ✓；
+   *     没有 → `ctx.inject(['webServer'], …)` **等它出现再挂** ✓✓。
+   * ★ 千万不要把 'webServer' 写进 `export const inject` ✗ —— 那样在
+   *   headless 等**没有 web 服务**的 profile 里**整个插件都不会启动** ✗✓
+   *   （我们要的是“没开关也照跑” ✓）。
+   */
+  const mountCommanderApi = (svcCtx: any): void => {
+    try {
+        const webServer = (svcCtx?.get?.('webServer') ?? svcCtx?.webServer ?? ctx.get?.('webServer')) as {
+        register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: any, res: any) => void | Promise<void> }): unknown
+      } | undefined
+      if (webServer !== undefined && typeof webServer.register === 'function') {
+        const COMMANDER_API = '/avorion-copilot/api'
+        const snapshot = (mine: string | null): Record<string, unknown> => {
+          const st = getCommanderState()
+          return {
+            commander: st.session,
+            isMine: st.session !== null && st.session === mine,
+            leasedUntil: st.leasedUntil,
+            leaseFresh: isLeaseFresh(),
+            mode: decideMode,
+            sessionLive: st.session === null ? false : agents?.get(st.session) !== undefined,
           }
-        },
-        })
-        void handle
-        live(`  ├ 会话开关：HTTP 路由已挂（${COMMANDER_API}/commander ✓ —— 客户端开关靠它 ✓）`)
-        return undefined
-      }, 'avorion-copilot:commander-api')
-    } else {
-      live('  ├ 会话开关：拿不到 webServer → **没有 UI 开关** ✗；' +
-        '请改用 fleet_commander 工具显式指定（功能本体不依赖开关 ✓）')
+        }
+        const json = (res: any, code: number, body: unknown): void => {
+          res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(body))
+        }
+        const readBody = async (req: any): Promise<any> => {
+          try {
+            const chunks: Buffer[] = []
+            for await (const c of req) chunks.push(Buffer.from(c))
+            const raw = Buffer.concat(chunks).toString('utf8')
+            return raw.trim() === '' ? {} : JSON.parse(raw)
+          } catch { return {} }
+        }
+        ctx.effect(() => {
+          // ★ 保留 register 的返回值不等于把它交给 effect ✓（effect 要 void | cleanup ✓）；
+          //   真要清理就自己 return 一个 ✓（拿不到就不 return ✓）。
+          const handle = webServer.register({
+          kind: 'prefix',
+          path: COMMANDER_API,
+          handler: async (req, res) => {
+            try {
+              const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+                .replace(/^\/avorion-copilot\/api/, '') || '/'
+              const method = String(req.method ?? 'GET').toUpperCase()
+              const body = method === 'POST' ? await readBody(req) : {}
+              const mine = typeof body.session === 'string' && body.session.trim() !== '' ? body.session.trim() : null
+
+              if (method === 'GET' && (pathname === '/commander' || pathname === '/')) {
+                return json(res, 200, { ok: true, ...snapshot(mine) })
+              }
+              if (method === 'POST' && pathname === '/commander/toggle') {
+                if (mine === null) return json(res, 400, { ok: false, error: 'toggle needs the session id' })
+                const was = getCommanderState().session
+                // ★ 点开一个已经是目标的会话 = 关掉它（开关的语义 ✓）；否则 = 切换到这个会话 ✓
+                const now = was === mine ? null : mine
+                setCommanderSession(now)
+                live(`  ├ [开关] 会话 ${mine} 把投递目标${now === null ? '**关掉**了' : `切到了自己`}` +
+                  `${was !== null && was !== now ? `（原目标 ${was} 立刻不再收到任务 ✓）` : ''}`)
+                return json(res, 200, { ok: true, ...snapshot(mine), previous: was })
+              }
+              if (method === 'POST' && pathname === '/commander/clear') {
+                const was = getCommanderState().session
+                setCommanderSession(null)
+                live(`  ├ [开关] 投递目标已清除${was !== null ? `（原目标 ${was}）` : ''} ✓ → 决策回到单发 ✓`)
+                return json(res, 200, { ok: true, ...snapshot(mine), previous: was })
+              }
+              return json(res, 404, { ok: false, error: `no such route: ${method} ${pathname}` })
+            } catch (error) {
+              return json(res, 500, { ok: false, error: String(error) })
+            }
+          },
+          })
+          void handle
+          live(`  ├ 会话开关：HTTP 路由已挂（${COMMANDER_API}/commander ✓ —— 客户端开关靠它 ✓）`)
+          return undefined
+        }, 'avorion-copilot:commander-api')
+      } else {
+        live('  ├ 会话开关：拿不到 webServer → **没有 UI 开关** ✗；' +
+          '请改用 fleet_commander 工具显式指定（功能本体不依赖开关 ✓）')
+      }
+    } catch (error) {
+      live(`  ⚠ 会话开关：挂路由失败（${String(error)}）—— 功能本体不受影响 ✓（用 fleet_commander 工具 ✓）`)
     }
-  } catch (error) {
-    live(`  ⚠ 会话开关：挂路由失败（${String(error)}）—— 功能本体不受影响 ✓（用 fleet_commander 工具 ✓）`)
+  }
+
+  // ★ 服务可能还没就绪 → **等它** ✓（旧版在这里静默放弃 ✗，就是“开关看不见”的真因 ✗）
+  if (ctx.get?.('webServer') !== undefined || typeof ctx.inject !== 'function') {
+    mountCommanderApi(ctx)
+  } else {
+    live('  ├ 会话开关：webServer 尚未就绪 → **等它出现再挂路由** ✓')
+    ctx.inject(['webServer'], (webCtx: any) => mountCommanderApi(webCtx))
   }
 
   // ---- 我提供的功能（游戏可以调我）------------------------------------------

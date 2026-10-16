@@ -50,6 +50,16 @@ interface CopilotCtx {
      */
     on?: (event: string, listener: (...args: any[]) => void) => unknown;
     get?(name: string): unknown;
+    /**
+     * ★ **等一个可选服务**（cordis 自带 ✓）。
+     *
+     * `ctx.get(name)` 是**当场**查 ✗ —— 服务还没就绪就是 undefined ✓；
+     * `ctx.inject([name], cb)` 则是**等它就绪再回调** ✓✓，回调收到的是能直接
+     * `.name` 取到该服务的子 ctx ✓（原版 `dsh-client-modules` 就是这么拿 webServer 的 ✓）。
+     * 注意：用它 ★ 不等于 ★ 把服务写进 `export const inject` ✗ ——
+     * 后者是"没有它插件就别启动" ✓，而我们要的是"没有它照样跑，只是少个开关" ✓。
+     */
+    inject?(names: string[], fn: (ctx: any) => void): unknown;
 }
 interface CopilotConfig {
     /** 监听端口；默认 8765（与游戏侧一致） */
