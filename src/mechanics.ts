@@ -1,5 +1,5 @@
 // ★ 本文件由 MECHANICS.md 的「浓缩版」段落生成 —— 不要手改 ✗
-//   单一来源: D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\MECHANICS.md
+//   单一来源: D:/SteamLibrary/steamapps/common/Avorion/mods/copilot/MECHANICS.md
 //   重新生成: node scripts/render-mechanics.mjs ｜ 校验: node scripts/check-mechanics.mjs
 export const MECHANICS_BRIEF = `可用命令（都是后台命令：船长带队离开你的星区，期间联系不上；产出/结算见下）：
 - Mine    精采矿：区域 15x15，船须在区内。产出进全局资源，不占货舱。配置 duration(0.5~2+,Miner 船长加长)/safeMode/collected。
@@ -7,7 +7,7 @@ export const MECHANICS_BRIEF = `可用命令（都是后台命令：船长带队
 - Trade   贸易：合法区域只有 17x17 / 29x11 / 11x29，船须在区内，且船长必须是 Merchant。需要 goodName(路线名，必填) 与 deposit(>0)。收益 = 每航班利润 × 航班数；预付款结束时退还(不是成本)。被伏击时被中断的那一班不给利润；已完成的班次照算；中止后货可能留在船上。
 - Sell    卖货：区域 15x15，船须在区内。卖的是船上那些"该星区有需求"的货。被伏击时只有 runTime>=11 分钟或 >duration*0.8 才按 runTime/duration 部分卖出，否则一点也卖不掉；未卖完的货留在船上。
 - Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；原版不允许"一跳就能到"的目的地(该检查在客户端，经 RPC 可能不生效)。到达后可在那儿接新命令。
-- Scout   侦察/开图：区域 21x21，船须在区内；配置只有 addCaptainsNote；时长由原版按 reachable/25 自算。产出 revealsOffgrid = 新揭开的隐藏质量星区数(即新地图)。
+- Scout   侦察/开图：区域 21x21，船须在区内；配置只有 addCaptainsNote；时长由原版按 reachable/25 自算。产出 revealsOffgrid = 隐藏质量星区的**枚举档位**(0=none / 1=some / 2=all；不是计数 ✗)；真实揭图由原版按运行时间调 revealSectors(ratio) 完成(scoutcommand.lua:157/162/179)，可达星区数在 area.analysis.reachable。
 
 风险(所有命令共用)：attackChance 是整段任务期间的被伏击概率。被伏击 = 强制召回 + 只按已完成进度部分结算。
 - safeMode(Mine/Salvage) 会把概率改成：<0.1 则 0，否则 ×0.1，但只走友方星区、产量下降。
