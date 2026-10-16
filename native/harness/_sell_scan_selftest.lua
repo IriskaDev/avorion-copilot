@@ -38,6 +38,7 @@ local SHIP, SHIP_X, SHIP_Y = "Trader-00001", -412, 73
 local CAP = 5000
 local CARGO = {}              -- good 对象 → 数量 ✓
 local nRun, nPred = 0, 0
+local lastAreaW, lastAreaH = nil, nil   -- ★ 记录 onOrder 预分析 run() 拿到的框宽高（验矩形 ✓）
 local SPEC = {}               -- 区域（按"中心相对船星的偏移"布置 ✓）
 
 local function resetAll()
@@ -60,6 +61,8 @@ CopilotRpc = { trace = function() end }
 
 function run(factionIndex, shipName, ctype, area, callingPlayer)
     nRun = nRun + 1
+    lastAreaW = area.upper.x - area.lower.x + 1
+    lastAreaH = area.upper.y - area.lower.y + 1
     local ox, oy = offsetOfArea(area)
     local key = ox .. "," .. oy
     local s = SPEC[key]
@@ -308,6 +311,27 @@ resetAll()
 local okT2, codeT2 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, deposit = 1000 })
 check("S7 空货舱时 Trade 不再被这条拦住 ✓（应走到别的原因或成功 ✓）",
     not (okT2 == false and codeT2 == "HOLD_HAS_GOODS"), tostring(codeT2))
+
+-- ⑦b onOrder 矩形框（缺陷②）：sizeX/sizeY 一起给 → 预分析 run() 拿到的必须是**矩形** ✓✓
+--   之前只读 data.size → 29x11 会静默退化成 17x17 ✗（goodName 找不到 → "No route selected" ✗）
+print("== S7b: onOrder 用 sizeX/sizeY 建矩形框（缺陷②修复）==")
+resetAll()
+lastAreaW, lastAreaH = nil, nil
+LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, sizeX = 29, sizeY = 11, deposit = 1000 })
+check("S7b sizeX=29,sizeY=11 → 预分析 run() 拿到 29x11 矩形 ✓",
+    lastAreaW == 29 and lastAreaH == 11, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
+
+resetAll()
+lastAreaW, lastAreaH = nil, nil
+LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, sizeX = 11, sizeY = 29, deposit = 1000 })
+check("S7b sizeX=11,sizeY=29 → 预分析 run() 拿到 11x29 矩形 ✓",
+    lastAreaW == 11 and lastAreaH == 29, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
+
+resetAll()
+lastAreaW, lastAreaH = nil, nil
+LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, deposit = 1000 })
+check("S7b 只给 size=17（没给 sizeX/sizeY）→ 仍是 17x17 正方形兜底 ✓",
+    lastAreaW == 17 and lastAreaH == 17, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
 
 -- ---------------------------------------------------------------------------
 -- ⑧ JSON 往返 + 源码里的 UUID 一致 ✓

@@ -357,6 +357,29 @@ local function attackKeepFraction(duration)
 end
 
 
+-- ★★★ 框的**宽 × 高**（不是只有正方形 ✓✓ —— Trade 有三种合法形状，见 legalAreaSizes ✓）
+--   `size` 给成单个数就是正方形（向后兼容 ✓）；给 width/height 就是矩形 ✓。
+--   半宽/半高按原版口径 `floor((n-1)/2)` 算（Mine/Salvage/Sell 15x15 → half=7 ✓、
+--   Scout 21x21 → half=10 ✓、Trade 17x17 → 8 / 29x11 → 14,5 / 11x29 → 5,14 ✓）。
+--
+--   ★★ 这里定义在 `onOrder` **之前** ✓（Lua 的 local 是词法作用域 ✓）：
+--     `onOrder` 也要按 sizeX/sizeY 建框 ✓（Trade 的矩形框就是靠它 ✓✓）。
+local function clampCoord(v)
+    return math.min(500, math.max(-499, v))
+end
+
+local function buildAreaWH(cx, cy, width, height)
+    local w = math.max(1, math.floor(tonumber(width) or 1))
+    local h = math.max(1, math.floor(tonumber(height) or w))
+    local halfW = math.floor((w - 1) / 2)
+    local halfH = math.floor((h - 1) / 2)
+    return {
+        lower = { x = clampCoord(cx - halfW), y = clampCoord(cy - halfH) },
+        upper = { x = clampCoord(cx - halfW + w - 1), y = clampCoord(cy - halfH + h - 1) },
+    }
+end
+
+
 function CopilotLinkIn.onOrder(data)
     data = data or {}
     local ship = data.ship
@@ -386,6 +409,8 @@ function CopilotLinkIn.onOrder(data)
     end
 
     -- 组 area ✓（未指定则以船当前星区为中心，按默认尺寸取方块 ✓）
+    -- ★ 矩形框（缺陷②修复）：data.sizeX/sizeY 一起给就是矩形（Trade 的 29x11 / 11x29 ✓）；
+    --   只给 data.size 或都没给 → 按默认正方形兜底 ✓（原逻辑保持不变 ✓）。
     local size = tonumber(data.size) or DEFAULT_SIZE[action] or 15
     local cx, cy = tonumber(data.x), tonumber(data.y)
     if cx == nil or cy == nil then
@@ -396,11 +421,13 @@ function CopilotLinkIn.onOrder(data)
         cx, cy = px, py
     end
 
-    local half = math.floor((size - 1) / 2)
-    local area = {
-        lower = { x = cx - half, y = cy - half },
-        upper = { x = cx - half + size - 1, y = cy - half + size - 1 },
-    }
+    local sizeX, sizeY = tonumber(data.sizeX), tonumber(data.sizeY)
+    local area
+    if sizeX ~= nil and sizeY ~= nil then
+        area = buildAreaWH(cx, cy, sizeX, sizeY)
+    else
+        area = buildAreaWH(cx, cy, size, size)
+    end
 
     -- ★★ 0) 先自己**同步**跑一遍分析 ✓✓（2026-10-16 实测的坑 ✓）
     --
@@ -660,28 +687,6 @@ local function pickSquareSize(templates, requested, fallback)
         if t.x == t.y then return t.x end
     end
     return want
-end
-
--- ★★★ 框的**宽 × 高**（不是只有正方形 ✓✓ —— Trade 有三种合法形状，见 legalAreaSizes ✓）
---   `size` 给成单个数就是正方形（向后兼容 ✓）；给 width/height 就是矩形 ✓。
---   半宽/半高按原版口径 `floor((n-1)/2)` 算（Mine/Salvage/Sell 15x15 → half=7 ✓、
---   Scout 21x21 → half=10 ✓、Trade 17x17 → 8 / 29x11 → 14,5 / 11x29 → 5,14 ✓）。
---
---   ★★ 这一段必须**定义在 onOrder 之前** ✗✓（Lua 的 local 是词法作用域 ✓）：
---     `onOrder` 也要按 sizeX/sizeY 建框 ✓（Trade 的矩形框就是靠它 ✓✓）。
-local function clampCoord(v)
-    return math.min(500, math.max(-499, v))
-end
-
-local function buildAreaWH(cx, cy, width, height)
-    local w = math.max(1, math.floor(tonumber(width) or 1))
-    local h = math.max(1, math.floor(tonumber(height) or w))
-    local halfW = math.floor((w - 1) / 2)
-    local halfH = math.floor((h - 1) / 2)
-    return {
-        lower = { x = clampCoord(cx - halfW), y = clampCoord(cy - halfH) },
-        upper = { x = clampCoord(cx - halfW + w - 1), y = clampCoord(cy - halfH + h - 1) },
-    }
 end
 
 local function buildArea(cx, cy, size)
