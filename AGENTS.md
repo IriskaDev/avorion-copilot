@@ -45,7 +45,10 @@ copilot/
 ├── data/
 │   ├── localization/zh.po              # mod 自带中文翻译（VFS 追加到原版 zh.po）
 │   └── scripts/
-│       ├── commands/copilot.lua        # 聊天命令 /copilot（文件名 = 命令名，引擎约定，不能改）
+│       ├── commands/copilot.lua        # **薄入口**：只留引擎三钩子（文件名 = 命令名，引擎约定，不能改）
+│       ├── lib/copilot/                # ★ mod 自己的库（放子目录 = 不与原版 lib 撞名 ✓）
+│       │   ├── cli.lua                 # ★ **/copilot 的真正实现**（on/off/explore/status/ops/reload/probe/goal/netstop/netstart）
+│       │   ├── card.lua / goal.lua / job.lua / json.lua / trade.lua
 │       ├── player/init.lua             # **入口**：VFS 追加到原版 init.lua，挂载 UI
 │       ├── player/ai/autopilot.lua     # 实体级自动驾驶大脑（接管玩家当前开的船）
 │       └── player/ui/panel.lua         # 自绘 HUD 按钮 + Copilot 面板（客户端 UI）
@@ -217,6 +220,7 @@ CopilotUI = {}                 -- 错：重载即失忆，守卫和引用全丢
 | 文件 | 可重载 |
 |---|---|
 | `player/ai/autopilot.lua`、`player/ai/ops.lua`、`player/ui/panel.lua`、`commands/copilot.lua` | ✅ |
+| ★ **`lib/copilot/cli.lua`**（命令中枢，2026-10-16 重构后逻辑在这里 ✓） | ✅ **必须在表里** ✗✓ |
 | `player/init.lua`（**入口**，VFS 追加到原版） | ❌ 只在玩家加载时执行一次 |
 | `bin\copilot.dll` | ❌ 重编后仍需重启（且 `keep_resident` 让它故意卸不掉） |
 
@@ -247,6 +251,13 @@ data/scripts/
 ├── player/ai/autopilot.lua       # 实体层：接管玩家当前开的船（★ 只接管一次）
 ├── player/ai/ops.lua             # 战略层：只作用于名单船，绝不碰 player.craft
 ├── player/ui/panel.lua           # 客户端面板（★ 每次打开都注册鼠标释放）
+├── lib/copilot/                  # 【lib】mod 自己的库（子目录，避免与原版 lib 撞名 ✓）
+│   ├── cli.lua                   # ★ /copilot 的真正实现（入口只转发 ✓ —— 2026-10-16 重构）
+│   ├── card.lua                  # 舰船能力卡（含货舱状态 / 炮塔）
+│   ├── goal.lua                  # 每船「目标」存取（player value）
+│   ├── job.lua                   # Mine/Salvage 的评分纯函数
+│   ├── json.lua                  # 纯 Lua JSON（原生 DLL 不再碰 Lua 分配 ✓）
+│   └── trade.lua                 # 贸易决策纯函数
 └── net/                          # 对外链路，按职责分层
     ├── net.lua                   # 【挂载】tick 泵 + 事件总线 + include 下面四个
     ├── inbound.lua               # 【lib】纯解析：文本 → 消息 → 按 cmd 再发事件
