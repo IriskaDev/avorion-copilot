@@ -909,7 +909,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       const where = error instanceof Error && error.stack
         ? error.stack.split('\n').slice(0, 4).map((s) => s.trim()).join(' | ')
         : ''
-      logger.warn(`avorion-copilot: EXCEPTION in decide(${ship}): ${message} @ ${where}`)
+      logger.warn(`avorion-copilot: EXCEPTION in decide: ${message} @ ${where}`)
       live(`  ⚠ 异常位置(栈): ${where}`)
       return [false, 'EXCEPTION', message] as [boolean, any, string]
     } finally {
