@@ -401,10 +401,68 @@ function M.shipCard(player, name)
 end
 
 -- ---------------------------------------------------------------------------
+-- ★★ 能力卡**简报**（2026-10-17 加 ✓✓）：一次查询回答"这艘船现在能做什么" ✓
+-- ---------------------------------------------------------------------------
+--
+-- 为什么要有它 ✗→✓：
+--   指挥那条会话（agent 路径）**先查后决** ✓ —— 它每次决策至少要看一眼"这艘船是谁、
+--   在哪、有没有船长、能不能做这个动作" ✓。完整能力卡约 **6 KB**（含 depth 的 21 个
+--   采样星区、逐动作的长说明、货舱逐项、炮塔构成 ✓）—— 每次都拉它并不贵，但**它的
+--   depth 段与逐动作说明对"这一单该干什么"几乎无用** ✗（那是战略层"要不要往里走"
+--   才要的 ✓）。
+--   → 于是给一个**有界**的简报视图 ✓：口径**逐字取自已算好的完整卡** ✓（不重算 ✗）、
+--     字段**一个不少地覆盖"能做什么"** ✓、采样点裁到 1（= 当前星区 ✓）。
+--
+-- ★ 这是**视图**不是新数据 ✗✓：
+--   · `card` 为 nil 时自己按名字重取一次 ✓（调用方不必先取 ✓）；
+--   · 任何缺失字段就**不写**它 ✓（绝不填空值假装有数据 ✗）；
+--   · `actions` **原样搬过来** ✓ —— "能做什么 + 约束"就是它的全部内容 ✓✓。
+--
+-- ★ 反例（本鱼明确**不做**）：不带 `depth` 就说"这艘船能不能往中心走" ✗ ——
+--   简报的回应是 `depthOmitted` ✓，让决策方知道"要么看完整卡、要么自己查 sectorFacts" ✓。
+function M.shipBrief(player, name, card)
+    if type(name) ~= "string" or name == "" then return nil end
+    if type(card) ~= "table" then
+        local ok, c = pcall(M.shipCard, player, name)
+        if not ok or type(c) ~= "table" then return nil end
+        card = c
+    end
+
+    local out = {
+        name = card.name or name,
+        brief = true,
+        briefNote = "★ 这是**能力卡简报** ✓：只含「这艘船现在能做什么」必需的事实 ✓" ..
+            "（完整卡的 depth 采样 / 炮塔构成 / 逐动作长说明没搬过来 ✓）。",
+    }
+    local keep = {
+        "sector", "busy", "availability", "hasCaptain", "captainClass", "captainClassKnown",
+        "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
+        "holdHasGoods", "cargoState", "turretCount", "hyperspace", "actionNames", "actions",
+        "scoutNote", "cargoNote", "probe",
+    }
+    for _, k in ipairs(keep) do
+        if card[k] ~= nil then out[k] = card[k] end
+    end
+
+    -- 当前星区的**那一组数字**（不朝中心采样 ✓ —— 要比较就去看完整卡 / sectorFacts ✓）
+    local depth = card.depth
+    if type(depth) == "table" and type(depth.here) == "table" then
+        out.sectorFacts = depth.here
+        out.depthOmitted = "★ 这里**只给当前星区**的数字 ✗（完整卡的 depth.towardCentre 有朝中心一个、" ..
+            "两个跳跃处的同类数字 ✓）。要比较「待在这里 vs 往里走」，请取完整卡或用 " ..
+            "fleet_query {what:'sectorFacts', x, y} ✓。"
+    else
+        out.depthOmitted = "★ 没拿到星区数字 ✗（完整卡的 depth 段也缺 ✓）—— 需要时用 " ..
+            "fleet_query {what:'sectorFacts', x, y} 直接问 ✓。"
+    end
+    return out
+end
+
+-- ---------------------------------------------------------------------------
 -- 舰队快照：只包含**名单里的船**，且**永不包含玩家自己开的那条** ✓
 -- ---------------------------------------------------------------------------
 
-function M.fleetSnapshot(player)
+function M.fleetSnapshot(player, opts)
     local ships = {}
     local names = M.designated(player)
 
@@ -412,9 +470,20 @@ function M.fleetSnapshot(player)
     local piloted = player.craft
     local pilotedName = (piloted ~= nil and valid(piloted)) and piloted.name or nil
 
+    -- ★★ 简报模式（2026-10-17 加 ✓）：船多的时候，`fleet` 会一次带走**每一艘**的完整卡 ✓
+    --    （实测一艘 ≈ 6 KB → 8 艘 ≈ 48 KB ✗）—— 而"哪艘空闲 / 在哪 / 有没有船长"只要一个子集 ✓。
+    --    缺省**不变**（完整快照 ✓）—— 面板与老消费方一个字都不用改 ✓。
+    local brief = (opts ~= nil and (opts.brief == true or opts.compact == true))
+
     for _, name in ipairs(names) do
         if name ~= pilotedName then
-            ships[#ships + 1] = M.shipCard(player, name)
+            local card = M.shipCard(player, name)
+            if brief then
+                local b = M.shipBrief(player, name, card)
+                ships[#ships + 1] = b or card
+            else
+                ships[#ships + 1] = card
+            end
         end
     end
 
@@ -436,11 +505,34 @@ end
 M.WHATS = {
     "fleet", "ship", "goal", "caps",
     "sectorFacts",      -- ★ 任意星区的事实（富饶度/材料概率/环侧/离中心距离 ✓ 2026-10-17 补 ✓）
+    "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- Trade：多区域 × 多商品 × 净收益 ✓
     "minePlan",         -- Mine：多区域 × 参数 × 层级加权（采最高阶矿 ✓）
     "salvagePlan",      -- Salvage：装备件数 × E[稀有度层级]（收最高科技战利品 ✓）
     "jobPlan",          -- 上面两个的通用入口（data.action = Mine | Salvage ✓）
     "sellPlan",         -- ★ Sell：把船上的货在 ≤10% 风险下变现（风险调整期望 ✓）Issue B ✓✓
+    "scoutPlan",        -- ★ Scout：揭未探索星区（主口径 = 框内未探索数 ✓）
 }
+
+-- ★★ 计划查询的**参数**（给 DSH 看 ✓ —— 2026-10-17 加 ✓✓）
+--
+--   为什么不写在模块注释里就算完 ✗：指挥那条会话是**按工具说明**决定"怎么问、问多大"的 ✓，
+--   参数名拼错就会静默拿不到数据 ✗✓ —— 所以让游戏**自己声明**它能读哪些参数 ✓。
+M.PLAN_PARAMS = {
+    compact = "boolean：缺省 true（**小答案** ✓：候选裁到 top 个、去掉逐框巨表 ✓）；" ..
+        "传 compact=false（或 full=true）才拿完整原答复 ✓",
+    top = "number：compact 时每个计划保留**前几个**候选框（缺省 4 ✓，上限 24 ✓）",
+    maxAttackChance = "number：风险闸门（缺省 0.10 ✓）",
+    maxAreas = "number：粗扫几个框（缺省 9 ✓）",
+    step = "number：粗扫步长",
+    size = "number：区域边长（不合法时原版会自己夹到合法形状 ✓）",
+    action = "string：仅 jobPlan —— Mine | Salvage（缺省 Mine ✓）",
+}
+M.DOSSIER_PARAMS = {
+    top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",
+    maxAttackChance = "number：风险闸门（缺省 0.10 ✓）",
+}
+M.NOTE = "★ 计划查询缺省给**小答案** ✓（compact，top=4）—— 完整答复请显式传 compact=false（或 full=true）✓；" ..
+    "「没取到」与「没有候选」是两件事 ✗，请照 noCandidatesReason / planFetchFailures 区分 ✓。"
 
 return M

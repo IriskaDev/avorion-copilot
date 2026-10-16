@@ -62,61 +62,75 @@ function CopilotLinkIn.onQuery(data)
         if type(name) ~= "string" or name == "" then
             return false, "BAD_REQUEST", "query ship needs data.ship"
         end
-        return true, Card.shipCard(player, name)
+        local card = Card.shipCard(player, name)
+        -- ★★ `brief` / `compact`（2026-10-17 加 ✓✓）：**只要"这艘船现在能做什么"**
+        --
+        --   为什么要有它 ✗→✓：指挥那条会话一次决策只要**一次**查询就够用 ✓ ——
+        --   完整能力卡约 6 KB（含 depth 的 21 个采样星区、逐动作说明、货舱逐项 ✓），
+        --   而"能不能做 / 叫什么 / 在哪 / 有船长吗 / 舱位够不够"只占其中一小块 ✓。
+        --   → 于是给一个**有界**的简报视图 ✓（口径不变，只是少采样点 ✓）。
+        --   ★ 缺省**不变**（完整卡 ✓）—— 老消费方一个字都不用改 ✓。
+        if data.brief == true or data.compact == true then
+            return true, Card.shipBrief(player, name, card)
+        end
+        return true, card
 
+    -- ------------------------------------------------------------------
+    -- ★★ 六个计划：**一个调度口**（2026-10-17 重构 ✓✓）
+    --
+    --   原状：六个分支各自 `local ok2, payload2, why2 = …plan(…)` 再
+    --   `return true, informOnly(payload2, data)` ✓ —— 六份**逐字重复**的调用序列 ✓，
+    --   于是"给计划响应加一层统一处理（trim ✓ / 体积闸 ✓）"就得改六处 ✗✓。
+    --   现在统一走 `planQuery` ✓：**语义逐字不变**（同样的 plan 函数、同样的
+    --   informOnly 包装、同一个 (ok, payload, why) 契约 ✓），只是接口收成一个 ✓。
+    --
+    --   ★ 血案提醒（2026-10-17 ✓）：六个分支曾经写成 `return informOnly(plan(…))` ✗ ——
+    --     plan 是**非末位参数** → Lua 只取第一个返回值 `true` ✗ → 载荷变成布尔 ✗ →
+    --     模型"完全没有计划数据却以为没有候选" ✓✓。所以**永远**要显式接三个返回值 ✓。
+    --
+    --   各计划自己的说明留在各函数头上 ✓（tradePlan / jobPlan / sellPlan / scoutPlan ✓）。
+    --     · tradePlan —— 数据获取 + 组装（只算不下单 ✓，主人 2026-10-16 指定 ✓）：
+    --         ① include("areaanalysis") → run(…) 同步返回 results（含 routes ✓）
+    --         ② include("commandfactory") → makeCommand(Trade) → calculatePrediction ✓
+    --         ③ lib/copilot/trade.lua 的纯函数 → 挑路线 + 定预付金 + 挑护卫 ✓
+    --         为什么可行：areaanalysis.run 末尾把结果交出来了 ✓（该文件 line 138 ✓）
+    --     · minePlan / salvagePlan / jobPlan —— 多区域 × 参数 × 层级加权 + 同一道闸门 ✓
+    --     · sellPlan —— 把船上的货变现（被伏击召回后货还在船上 ✓）
+    --     · scoutPlan —— 勘察（没有已探索星区就没有"往里推"的方向 ✓）
+    --
+    --   ⚠️ 这里**不要**放任何顶层可执行语句 ✗（2026-10-16 实测 ✓）：
+    --     `/copilot reload` 是用**命令脚本那个 VM 的 _ENV** 去 load 本文件的 ✗，
+    --     而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
+    --     "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
+    --     （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
+    -- ------------------------------------------------------------------
     elseif what == "tradePlan" then
-        -- ★★★ 贸易决策的**数据获取 + 组装**（只算不下单 ✓ —— 主人 2026-10-16 指定 ✓）
-        --
-        -- 走的路线（全部由本 mod 自己完成 ✓，不需要原版开洞 ✗✓）：
-        --   ① include("areaanalysis") → run(…) **同步**返回 results（含 results.routes ✓✓）
-        --   ② include("commandfactory") → makeCommand(Trade) → calculatePrediction(…, config) ✓
-        --   ③ lib/copilot/trade.lua 的纯函数 → 挑路线 + 定预付金 + 挑护卫 ✓
-        --
-        -- 为什么可行 ✗✓：areaanalysis.run 的末尾是
-        --     return shipName, type, area, results, callingPlayer
-        --   —— 它把结果交出来了 ✓✓（见该文件 line 138 ✓）
-        -- ⚠️ 这里**不要**放任何顶层可执行语句 ✗（2026-10-16 实测 ✓）：
---   `/copilot reload` 是用**命令脚本那个 VM 的 _ENV** 去 load 本文件的 ✗，
---   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
---   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
---   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
-local ok2, payload2, why2 = CopilotLinkIn.tradePlan(player, data)
-if ok2 ~= true then return false, payload2, why2 end
-return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, "Trade")
 
     elseif what == "minePlan" then
-        -- ★★★ 采矿决策的**数据获取 + 组装**（只算不下单 ✓）—— 见 jobPlan ✓
-        --   与 tradePlan 同构：多区域 × 参数 × 层级加权 + 同一道 0.10 风险闸门 ✓✓
-        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, "Mine")
-        if ok2 ~= true then return false, payload2, why2 end
-        return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, "Mine")
 
     elseif what == "salvagePlan" then
-        -- ★★★ 打捞决策：装备件数 × E[稀有度层级]，次级键 = 残骸场材料层级均值 ✓
-        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, "Salvage")
-        if ok2 ~= true then return false, payload2, why2 end
-        return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, "Salvage")
 
     elseif what == "jobPlan" then
         -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
-        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, data.action)
-        if ok2 ~= true then return false, payload2, why2 end
-        return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, data.action)
 
     elseif what == "sellPlan" then
-        -- ★★★ 卖货决策（2026-10-17 加，Issue B ✓✓）：把**船上的货**变现 ✓
-        --   为什么需要：Trader 被伏击召回时**只退押金、不发利润**，货还留在船上 ✓
-        --   （原版 tradecommand.lua:456-490 ✓），此时再下 Trade 会**装不进新货** ✗
-        --   → 必须先 Sell ✓✓（主人的场景 ✓）
-        local ok2, payload2, why2 = CopilotLinkIn.sellPlan(player, data)
-        if ok2 ~= true then return false, payload2, why2 end
-        return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, "Sell")
 
     elseif what == "scoutPlan" then
-        -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
-        local ok2, payload2, why2 = CopilotLinkIn.scoutPlan(player, data)
-        if ok2 ~= true then return false, payload2, why2 end
-        return true, CopilotLinkIn.informOnly(payload2, data)
+        return CopilotLinkIn.planQuery(player, data, "Scout")
+
+    elseif what == "dossier" then
+        -- ★★ 单发路径的**有界档案**（2026-10-17 加 ✓✓）：
+        --   那条路是**没有工具、没有文件访问**的模型调用 ✓ → 它不能自己查 ✗ →
+        --   必须**预取 + 裁剪**（而不是像 agent 路径那样"只告知、自己拉" ✓）。
+        --   ★ 两条路共享**数据**（同一批 plan 函数 ✓），不共享**渲染** ✗✓（主人点出的根因 ✓）。
+        --   ★ 缺省 `top=6`（比工具缺省 4 宽一点 ✓ —— 这条路**没法再查** ✓）；
+        --     插件侧还会再按**字节预算**裁一遍，并记录裁了什么 ✓。
+        return CopilotLinkIn.dossier(player, data)
 
     elseif what == "sectorFacts" then
         -- ★★ 任意星区的**事实**（2026-10-17 补 ✓✓）
@@ -2576,6 +2590,11 @@ local function buildJobRanking(scanned, opts)
             entry.items = rec.best.items
             entry.scrapHigh = rec.best.scrapHigh
             entry.scoreBasis = rec.best.scoreBasis
+            -- ★★ 风险**标签**（2026-10-17 加 ✓✓）：系统提示词明说"比较前先看清标签" ✓
+            --   （Sell 的是 sellAmbushChance / Trade 的是 tradeAmbushChance / Mine+Salvage 的是
+            --    jobAmbushChance ✓ —— 三个不是一回事 ✗）。Trade/Sell/Scout 早就带着自己的标签 ✓，
+            --   只有 Mine/Salvage 缺 ✗ → 这里补上 ✓（口径逐字取自提示词，不是我新发明的名字 ✓）。
+            entry.riskKind = "jobAmbushChance(whole task, this box, this parameter set)"
             -- ★ 已知风险（safeMode 修正后的那个 ✓）；**未**修正的基础概率在下面
             --   `baseAttackChance`（★ 主人钦定的比较口径：判断"<10%"**永远用这个** ✓✓）
             entry.baseAttackChance = rec.best.baseAttackChance
@@ -3605,6 +3624,497 @@ function CopilotLinkIn.jobPlan(player, data, action)
             duration = durs,
             objective = "多区域 × 参数（时长/安全模式/护航）× 层级加权 —— 采最高阶的矿 / 收最高科技的战利品，且在伏击概率 ≤ 10% 之下",
         },
+    }
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ★★★ 计划的**统一出口** + **体积闸** + **有界档案**（2026-10-17 加 ✓✓）
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ## 为什么必须做（实测血案 ✗✗）
+--
+-- 一条投进会话的 `<fleet_task>` 曾经长到 **8,761,847 字符（≈8.7 MB）** ✓ —— 其中一份
+-- **Scout 计划**的 JSON 就是 8.7 MB ✓。根因**不是**"少了一个上限" ✗：
+--   ① 插件把**预取的全部数据**（船卡两遍 ✓、每个计划的原始 JSON ✓、并排渲染的候选表 ✓、
+--      再加上一堆解释性散文 ✓）**推**进会话 ✗ —— 而会话完全可以用工具**自己拉** ✓✓；
+--   ② 计划响应本身**无界** ✗：`scoutPlan` 的每个候选里带着粗扫 `run()` 的完整
+--      `analysis`（`reachableCoordinates` / `offgridSectors` 逐星区表 ✓，441 个框 × 每框
+--      最多 441 个坐标 ✓）；`sellPlan` 的 `perGoodByArea` 是**逐框 × 逐货**；`tradePlan`
+--      的 `candidates` 是**逐框全部路线** ✓ —— 全是"审计要、决策不要"的明细 ✓。
+--
+-- ## 所以这里的修法（三层 ✓）
+--
+--   ① **compact（缺省）**：`areaRanking` 裁到 `top` 个 ✓、逐框只留**标量** ✓、
+--      丢掉逐框巨表（`perGoodByArea` / 完整 `candidates` / 粗扫逐星区坐标 ✓）。
+--      ★ 完整原答复仍然拿得到 ✓：显式传 `compact=false`（或 `full=true`）✓✓。
+--   ② **闸门**：`compact=false` 也**不是**无界 ✗ —— 超过 `PLAN_HARD_BUDGET` 条目上限时
+--      按同一套规则裁，并把"裁了什么"写进 `planTruncated` ✓（**绝不静默** ✗✓）。
+--   ③ **dossier**：单发路径（无工具、无文件）要一份**有界**的档案 ✓ ——
+--      它是"预取 + 裁剪"，不是上面那条"告知 + 自拉" ✓（两条路**共享数据、不共享渲染** ✓✓）。
+--
+-- ★ 与主人的设计一致（原话）：「你应该仅投递决策请求，就仅仅是告知会话，有东西需要决策
+--   就行了，然后会话再根据插件提供的工具自行查询」✓ —— agent 路径 = 告知 ✓；
+--   compact = 让"自己查"变便宜 ✓✓。
+
+-- 每个候选框里"逐材料/逐货"明细的**上限**（审计要，决策不要 ✓）
+local COMPACT_DETAIL_MAX = 4
+-- ★ 硬闸：即使 compact=false，下面这些**逐框巨表**也裁到这个条目数（0 = 全丢 ✓）
+local FULL_ARRAY_MAX = 8
+-- ★ 单帧响应的**条目级**硬上限（估算用，不是精确字节数 ✓）：compact=false 时
+--   候选框最多留这么多（超过就裁 ✓ 并在 planTruncated 里说明 ✓）
+local PLAN_HARD_AREAS = 24
+
+-- 小工具：非 nil 才写 ✓（绝不用 nil 顶替一个真实字段 ✗）
+local function put(dst, keys, src)
+    for _, k in ipairs(keys) do
+        local v = src[k]
+        if v ~= nil then dst[k] = v end
+    end
+    return dst
+end
+
+-- 数组裁到 n 个 ✓（返回新表 ✓ 不改原表 ✗ —— 完整答复可能还有别的消费方 ✓）
+local function firstN(list, n)
+    if type(list) ~= "table" then return nil end
+    local cap = n
+    if cap == nil then cap = #list end
+    if cap < 0 then cap = 0 end
+    local out = {}
+    for i = 1, math.min(cap, #list) do out[i] = list[i] end
+    return out
+end
+
+-- 一个候选框的**标量视图** ✓（口径逐字取自已算好的字段 ✓；不做任何重算 ✗）
+--
+--   ★ 这里**故意**不写死某个计划特有的字段 ✗：四个计划（Trade/Mine/Salvage/Sell/Scout）
+--     的候选字段名不同 ✓，但**标量**就是标量 ✓ —— 逐字段 copy 既不会漂移，
+--     也不会把"逐框巨表"带过来 ✓✓。表/函数类型的值**一律丢** ✗（那正是体积的来源 ✓）。
+local function compactArea(a, riskKind)
+    if type(a) ~= "table" then return nil end
+    local out = {}
+    for k, v in pairs(a) do
+        local tv = type(v)
+        if tv == "number" or tv == "string" or tv == "boolean" then
+            out[k] = v
+        end
+    end
+    if riskKind ~= nil and out.riskKind == nil then out.riskKind = riskKind end
+    return out
+end
+
+-- 逐材料明细的**兜底裁剪**（compact=false 时用 ✓）
+local function trimMaterials(list, n)
+    if type(list) ~= "table" then return list end
+    local out = {}
+    for i = 1, math.min(#list, n or COMPACT_DETAIL_MAX) do out[i] = list[i] end
+    return out
+end
+
+-- ★★ 一个计划答复的**有界视图** ✓
+--
+--   `top`     —— 每个计划保留前几个候选框 ✓（默认 4 ✓，上限 24 ✓）
+--   `context` —— 插件侧要的**整段**信息（`what` / `full` / `top` ✓），面朝的调用方专用 ✓
+--
+--   返回 (compacted, meta) ✓ —— meta 说明"裁了什么" ✓（进 `planCompaction` ✓）。
+function CopilotLinkIn.compactPlan(resp, top, whole)
+    if type(resp) ~= "table" then return resp, nil end
+    local rank = resp.areaRanking
+    if type(rank) ~= "table" then return resp, nil end
+
+    local n = math.floor(tonumber(top) or 4)
+    if n < 1 then n = 1 end
+    if n > 24 then n = 24 end
+
+    -- ★★ 有些响应的 `areaRanking` **就是** `scanned` 本身（Scout ✓）——
+    --    于是"再回一份 areasScannedList = scanned" = **整份体积翻倍** ✗✓。
+    --    这里把它**指向同一张裁好的表** ✓（一个字节都不多 ✓）。
+    local sameList = (resp.areasScannedList ~= nil and resp.areasScannedList == rank)
+
+    local kept = {}
+    for i = 1, math.min(n, #rank) do
+        kept[i] = compactArea(rank[i], resp.riskKind)
+    end
+
+    local out = {}
+    for k, v in pairs(resp) do
+        local tv = type(v)
+        if tv ~= "table" then
+            out[k] = v                                   -- 标量 / 字符串 / 布尔：全留 ✓
+        end
+    end
+
+    -- ★★ 表类型的字段**不能一律丢** ✗✗（本鱼第一版就是这么写的，自检当场抓到 ✓✓）：
+    --   下面的这几个是**口径骨架** ✓（推荐那一档 / 下单参数 / 扫描说明 / 船的能力 ✓）——
+    --   丢了它们，compact 回来的东西就"有候选但没法下单"了 ✗（自检里
+    --   "compact 仍然给了 recommendation / orderHint" 那条断言就是为了钉死这一点 ✓）。
+    --   ★ 逐个显式列出（**白名单** ✓）—— 因为"默默留全部表"就等于没有体积闸 ✗✓。
+    local KEEP_TABLES = {
+        "recommendation", "orderHint", "moveHint", "area", "scan",
+        "capability", "rarity",                      -- Mine/Salvage：能力与权重表（审计骨架 ✓）
+        "durationChoices", "hold",                   -- 合法时长 / 货舱状态 ✓
+        "perGoodBest",                               -- Sell：跨框每种货最好的那个框 ✓
+        "coverage", "neighbourhood", "centre", "travelFacts", "shipSector",  -- Scout 的事实段 ✓
+    }
+    for _, k in ipairs(KEEP_TABLES) do
+        if resp[k] ~= nil then out[k] = resp[k] end
+    end
+
+    -- ★★ `area` / `recommendation` 也**必须**过同一道标量裁剪 ✗✗（实测抓到的第二个体积源 ✓）
+    --
+    --   病因（**实测数字**，不是猜 ✓）：Scout 的一份 compact 计划 44.4 KB 里，
+    --     `recommendation` = **17.2 KB** ✓、`area` = **16.1 KB** ✗✗ —— 而真正的候选榜
+    --     （areaRanking + areasScannedList）加起来才 **5.2 KB** ✓。
+    --   为什么 ✗：`recommendation` / `area` **就是**候选表里的那一个条目 ✓ ——
+    --     它身上带着**同一个** 441 星区的 `unknown` / `analysis` 大表 ✓。
+    --   → 只裁 `areaRanking` 而留它们 = 换个地方继续放大 ✗（"只修一半"的典型 ✓）。
+    --   ★ 现在两个都过 `compactArea` ✓：**同一个口径**（标量 ✓），因此它们和榜上那一行
+    --     仍然**逐字一致** ✓（不会出现"推荐说 3、榜上说 5"的漂移 ✓✓）。
+    out.area = compactArea(resp.area, resp.riskKind)
+    out.recommendation = compactArea(resp.recommendation, resp.riskKind)
+
+    out.areaRanking = kept
+    if sameList then out.areasScannedList = kept end
+
+    -- 逐框巨表：**compact 一律不带走** ✗（它们能长到 MB 级 ✓）
+    --   · Scout 的 analysis 已经在上面 per-area 裁过了 ✓ —— 但**整段的** `scan` 仍可能带
+    --     大表（`bestFineArea` 是标量 ✓、`phases` 是标量 ✓）→ 所以照留 ✓。
+    out.droppedForSize = {}
+    local function dropped(name, detail)
+        out.droppedForSize[#out.droppedForSize + 1] = { field = name, detail = detail }
+    end
+    if type(resp.perGoodByArea) == "table" then
+        dropped("perGoodByArea", "逐框 × 逐货的完整表（审计要 ✓）—— 决策用不着 ✗；" ..
+            "compact 视图里每种货的跨框最好值仍在推荐 / 候选的 perGood 里 ✓")
+    end
+    if type(resp.candidates) == "table" and #resp.candidates > COMPACT_DETAIL_MAX then
+        out.candidates = trimMaterials(resp.candidates, COMPACT_DETAIL_MAX)
+        dropped("candidates", "只留前 " .. tostring(COMPACT_DETAIL_MAX) .. " 条 ✓")
+    end
+    if type(resp.materials) == "table" and #resp.materials > COMPACT_DETAIL_MAX then
+        out.materials = trimMaterials(resp.materials, COMPACT_DETAIL_MAX)
+        dropped("materials", "只留前 " .. tostring(COMPACT_DETAIL_MAX) .. " 条 ✓")
+    end
+    if type(resp.weights) == "table" and #resp.weights > COMPACT_DETAIL_MAX then
+        out.weights = trimMaterials(resp.weights, COMPACT_DETAIL_MAX)
+        dropped("weights", "只留前 " .. tostring(COMPACT_DETAIL_MAX) .. " 条 ✓")
+    end
+    -- ★ Sell 的货舱清单：件数多时**明说**裁掉了（**绝不**让"货少了"看起来像"本来就这么点" ✗✓）
+    do
+        local hold = out.hold
+        if type(hold) == "table" and type(hold.goods) == "table"
+            and #hold.goods > COMPACT_DETAIL_MAX then
+            local before = #hold.goods
+            local copy = {}
+            for k, v in pairs(hold) do copy[k] = v end
+            copy.goods = trimMaterials(hold.goods, COMPACT_DETAIL_MAX)
+            copy.goodsTruncated = true
+            copy.goodsNote = "★ compact：货舱清单只留了前 " .. tostring(COMPACT_DETAIL_MAX)
+                .. " 种（共 " .. tostring(before) .. " 种 ✓）—— 要全部请用 compact=false ✓。"
+            out.hold = copy
+            dropped("hold.goods", "只留前 " .. tostring(COMPACT_DETAIL_MAX) .. " 种（共 " .. tostring(before) .. "）✓")
+        end
+    end
+
+    -- ★★★ `trim`（缺省 false ✓）：**只剩数字与键名**的极简视图 ✓✓
+    --
+    --   为什么还要再一层 ✗→✓：上面的 compact 把"逐框巨表"清掉了 ✓，但**解释性散文**还在
+    --   （`compactNote` / `decisionNote` / `unknownNote` / `revealsOffgridNote` / `factNote` /
+    --   `moveHint` / `scan` / `coverage` / `neighbourhood` ✓ —— 实测一份 Scout compact
+    --   11.8 KB 里它们占了大半 ✓）。
+    --   ★ 对那些散文，正确的处置**不是删掉** ✗ —— 它们该由**提示词**与**工具说明**承担 ✓
+    --   （主人要的：机制在提示词里，数据在查询里 ✓✓）。所以这里做成**可选的极简视图** ✓：
+    --     · 只给 `dossier`（单发路径）用 ✓ —— 因为那条路**没法再查**，越短越安全 ✓；
+    --     · agent 路径**不用**它 ✗（它会话里有提示词，也能再查 ✓）。
+    --   ★ `trim=true` 时**逐候选只留**：位置 / 形状 / 来源 / 风险 / 收益 / 时长 / 层级 /
+    --     可选项标签 ✓ —— 一个字节的解释文字都不带 ✓。
+    if whole ~= nil and whole.trim == true then
+        local TRIM_NOTES = {
+            "compactNote", "decisionNote", "unknownNote", "revealsOffgridNote", "factNote",
+            "scanNote", "moveHint", "scan", "coverage", "neighbourhood", "travelFacts",
+            "perGoodNote", "note",
+        }
+        for _, k in ipairs(TRIM_NOTES) do out[k] = nil end
+        out.trimmed = true
+        -- ★ 候选 / 推荐 / area 再收一道**白名单**（只留决策真要的键 ✓）
+        local AREA_KEYS = {
+            "x", "y", "shape", "sizeX", "sizeY", "origin", "offset", "distance",
+            "acceptable", "bestTag", "duration", "safeMode", "attackChance",
+            "baseAttackChance", "attackChanceEffective", "riskLimit", "exceedsRiskLimit",
+            "satisfiesPlayerRiskRule", "valueLow", "valueHigh", "netProfitLow", "netProfitHigh",
+            "bestCaseLow", "bestCaseHigh", "items", "topTier", "topMaterial", "fieldTier",
+            "unknownCount", "knownCount", "totalSectors", "revealsLow", "revealsOffgridEnum",
+            "routeCount", "bestRouteName", "flights", "deposit", "profitPerSize", "riskKind",
+            "escortsNeeded", "unknownCountReliable", "hasUnknown", "parameterTags",
+        }
+        local function trimRow(row)
+            if type(row) ~= "table" then return row end
+            local r = {}
+            for _, k in ipairs(AREA_KEYS) do
+                if row[k] ~= nil then r[k] = row[k] end
+            end
+            return r
+        end
+        out.areaRanking = (function()
+            local list = {}
+            for i, row in ipairs(kept) do list[i] = trimRow(row) end
+            return list
+        end)()
+        if sameList then out.areasScannedList = out.areaRanking end
+        out.recommendation = trimRow(out.recommendation)
+        out.area = nil
+        -- 推荐里的逐货表（Sell）也收一下 ✓（每货 5 个键 × 货种数 ✓）
+        local rec = out.recommendation
+        if type(rec) == "table" and type(rec.perGood) == "table" then
+            local g = {}
+            for i, row in ipairs(rec.perGood) do
+                g[i] = { goodName = row.goodName, amount = row.amount,
+                         expectedRevenue = row.expectedRevenue,
+                         priceDeltaPercent = row.priceDeltaPercent,
+                         expectedUnitPrice = row.expectedUnitPrice }
+            end
+            rec.perGood = g
+        end
+        local cap = out.capability
+        if type(cap) == "table" and type(cap.materials) == "table" then
+            local m = {}
+            for i, row in ipairs(cap.materials) do
+                m[i] = { material = row.material, dps = row.dps, refinedEfficiency = row.refinedEfficiency }
+            end
+            cap.materials = m
+        end
+        out.trimNote = "★ trim=true：**只有数字与键名** ✓ —— 解释性散文一律不带（它们由提示词承担 ✓）。"
+    end
+
+    out.compacted = true
+    out.compactNote = "★ 这是**小答案** ✓：每个计划只回前 " .. tostring(n) .. " 个候选框、" ..
+        "逐框只保留标量（x/y/shape/风险/收益/时长 ✓）；逐框巨表已按 droppedForSize 丢弃 ✓。" ..
+        "要完整反答复请显式传 compact=false（或 full=true）✓。"
+    out.planCompaction = {
+        mode = "compact", top = n, areasTotal = #rank, areasKept = #kept,
+        areasDropped = math.max(0, #rank - #kept),
+        dropped = out.droppedForSize,
+        note = "★ `droppedForSize` 里逐条写明**裁掉了什么** ✓（绝不静默 ✗✓）。",
+    }
+    if sameList then
+        out.planCompaction.note = out.planCompaction.note ..
+            " ★ `areasScannedList` 与 `areaRanking` 是**同一张表**（有些计划本来就是同引用 ✓），" ..
+            "所以不会重复占体积 ✓。"
+    end
+    if whole ~= nil and whole.full == true then
+        out.planCompaction.requestedFull = true
+        out.planCompaction.note = out.planCompaction.note ..
+            " ⚠ 你传了 full=true，但这一层仍然按 " .. tostring(n) .. " 个候选裁了 —— 因为这里永远有闸 ✓。"
+    end
+    return out, out.planCompaction
+end
+
+-- ★★ 完整答复的**体积闸**（compact=false 也**不是**无界 ✗✓）
+--
+--   只裁"逐框巨表"与"候选条数"✓，**绝不**动口径字段 ✓（recommendation / orderHint /
+--   scoreBasis / riskWarning / capability ✓）—— 那些是决策与审计的骨架 ✓。
+local function boundFullPlan(resp)
+    if type(resp) ~= "table" then return resp, nil end
+    local notes = {}
+    local rank = resp.areaRanking
+    if type(rank) == "table" and #rank > PLAN_HARD_AREAS then
+        local kept = firstN(rank, PLAN_HARD_AREAS)
+        resp.areaRanking = kept
+        if resp.areasScannedList == rank then resp.areasScannedList = kept end
+        notes[#notes + 1] = "areaRanking 裁到 " .. tostring(PLAN_HARD_AREAS) .. " 个候选框（原 "
+            .. tostring(#rank) .. " 个 ✓）"
+    end
+    local function capArray(name)
+        local v = resp[name]
+        if type(v) == "table" and #v > FULL_ARRAY_MAX then
+            resp[name] = firstN(v, FULL_ARRAY_MAX)
+            notes[#notes + 1] = name .. " 裁到 " .. tostring(FULL_ARRAY_MAX) .. " 条（原 " .. tostring(#v) .. " 条 ✓）"
+        end
+    end
+    capArray("candidates")
+    capArray("materials")
+    capArray("weights")
+    if type(resp.perGoodByArea) == "table" and #resp.perGoodByArea > FULL_ARRAY_MAX then
+        resp.perGoodByArea = firstN(resp.perGoodByArea, FULL_ARRAY_MAX)
+        notes[#notes + 1] = "perGoodByArea 裁到 " .. tostring(FULL_ARRAY_MAX) .. " 个框（原 "
+            .. tostring(#resp.perGoodByArea) .. " 个 ✓）"
+    end
+    if #notes == 0 then return resp, nil end
+    resp.planCompaction = {
+        mode = "full-bounded", dropped = notes,
+        note = "★ 你要求了完整答复 ✓，但**这里永远有闸** ✗ —— 上面列的就是被裁掉的部分 ✓；" ..
+            "口径字段（recommendation / orderHint / scoreBasis / riskWarning / capability）**一个都没动** ✓。",
+    }
+    return resp, resp.planCompaction
+end
+
+-- 计划答复里**嵌套的**逐候选巨表（Scout 的 entry.analysis ✓）
+local function trimNestedPlan(resp, top)
+    local rank = resp.areaRanking
+    if type(rank) ~= "table" then return resp end
+    for i = 1, math.min(#rank, math.max(1, math.floor(tonumber(top) or 4))) do
+        local e = rank[i]
+        if type(e) == "table" then
+            -- Scout：粗扫 run() 的完整 results ✓（`reachableCoordinates` / `offgridSectors`
+            --   是逐星区坐标表 ✓ —— 441 个框里每个吃 441 个坐标就能到 MB 级 ✓✓）
+            if type(e.analysis) == "table" then
+                local an = e.analysis
+                e.analysis = {
+                    reachable = an.reachable, sectors = an.sectors, unreachable = an.unreachable,
+                    note = "★ compact：**逐星区坐标表已丢**（reachableCoordinates / offgridSectors ✓）—— " ..
+                        "决策只要计数 ✓；要审计请用 compact=false ✓。",
+                }
+            end
+            if type(e.unknown) == "table" then
+                local u = e.unknown
+                e.unknown = {
+                    unknownCount = u.unknownCount, knownCount = u.knownCount, total = u.total,
+                    share = u.share, unreliable = u.unreliable, revealsNothingNew = u.revealsNothingNew,
+                }
+            end
+        end
+    end
+    return resp
+end
+
+-- ★★★ 计划查询的**唯一出口** ✓
+--
+--   契约：**总是** (true, payload) 或 (false, code, why) ✓ —— 与原来六个分支逐字一致 ✓
+--   （★ 绝不再写 `return true, informOnly(jobPlan(...))` ✗ —— 非末位参数只取第一个返回值 ✓）。
+function CopilotLinkIn.planQuery(player, data, action)
+    data = data or {}
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local what, ok, payload, why
+    if action == "Trade" then
+        what = "tradePlan"
+        ok, payload, why = CopilotLinkIn.tradePlan(player, data)
+    elseif action == "Sell" then
+        what = "sellPlan"
+        ok, payload, why = CopilotLinkIn.sellPlan(player, data)
+    elseif action == "Scout" then
+        what = "scoutPlan"
+        ok, payload, why = CopilotLinkIn.scoutPlan(player, data)
+    else
+        -- Mine | Salvage（缺省 Mine ✓ —— 与原来的 data.action 透传一致 ✓）
+        action = action or "Mine"
+        what = (action == "Salvage") and "salvagePlan" or "minePlan"
+        ok, payload, why = CopilotLinkIn.jobPlan(player, data, action)
+    end
+    if ok ~= true then return false, payload, why end
+
+    -- ★ ① 先打**决定**字段（informOnly：闸门标签 / 零候选原因 ✓）—— 与原来那次包装同一个函数 ✓
+    payload = CopilotLinkIn.informOnly(payload, data)
+
+    -- ★ ② 体积处理：缺省 compact（**小答案** ✓）；显式 `compact=false` / `full=true` 才给完整答复 ✓
+    local full = (data.compact == false) or (data.full == true)
+    if full then
+        -- ★ 逐候选巨表（Scout 的 entry.analysis ✓）在**任何**模式下都不该到 MB 级 ✓
+        trimNestedPlan(payload, PLAN_HARD_AREAS)
+        payload = select(1, boundFullPlan(payload))
+    else
+        local top = data.top
+        local compacted = CopilotLinkIn.compactPlan(payload, top, data)
+        payload = compacted
+    end
+
+    CopilotRpc.trace(string.format("planQuery %s action=%s full=%s top=%s",
+        tostring(what), tostring(action), tostring(full), tostring(data.top)))
+    return true, payload
+end
+
+-- ★★ 单发路径的**有界档案**：船 + 规则 + 能做什么 + 每个计划前几个候选 ✓✓
+--
+--   为什么这条路的形状**必须**是"预取 + 裁剪"而不是"告知 + 自拉" ✗→✓：
+--   单发是一个**没有工具、没有文件访问**的模型调用 ✓ —— 它**不能**自己查任何东西 ✓。
+--   所以它必须**带着数据**上桌 ✓；但"带多少"必须**有界** ✓（旧行为是带**全部** ✗）。
+--
+--   ★ 两条路**共享数据、不共享渲染** ✓✓（主人点出的根因）：
+--     · 数据（卡片 / 计划）来自**同一批** plan 函数 ✓ —— 口径不会漂 ✓；
+--     · 渲染则**彻底分开**：agent 路径 = 一行通知（渲染在 task.ts ✓）；
+--       单发路径 = 这份有界档案（渲染在 plugin/src/dossier.ts ✓，那里还有一道字节预算 ✓）。
+--
+--   `top` = 每个计划留几个候选（缺省 6 ✓）—— 比工具缺省（4）宽一点，因为这条路**没法再查** ✓。
+function CopilotLinkIn.dossier(player, data)
+    data = data or {}
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "dossier needs data.ship"
+    end
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local Card = include("copilot/card")
+    local card = Card.shipCard(player, ship)
+    local brief = Card.shipBrief(player, ship, card) or card
+
+    local goalOk, goal = pcall(function()
+        local Goal = include("copilot/goal")
+        return Goal.describe(player, ship)
+    end)
+    if not goalOk then goal = nil end
+
+    local top = math.floor(tonumber(data.top) or 6)
+    if top < 1 then top = 1 end
+    if top > 24 then top = 24 end
+    local gate = tonumber(data.maxAttackChance) or 0.10
+
+    local dossierData = { ship = ship, top = top, maxAttackChance = gate, compact = true }
+    local actions = card.actionNames or { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout" }
+
+    -- 只拉**这艘船真的能做**的计划 ✓（少一次没意义的扫描 ✓，也少一份体积 ✓）
+    local planSpecs = {
+        { what = "minePlan",    action = "Mine" },
+        { what = "salvagePlan", action = "Salvage" },
+        { what = "tradePlan",   action = "Trade" },
+        { what = "sellPlan",    action = "Sell" },
+        { what = "scoutPlan",   action = "Scout" },
+    }
+    local function canDo(name)
+        for _, a in ipairs(actions) do if a == name then return true end end
+        return false
+    end
+
+    local plans, failures = {}, {}
+    for _, spec in ipairs(planSpecs) do
+        if canDo(spec.action) then
+            local pcallOk, ok, payload, why = pcall(function()
+                if spec.action == "Trade" then
+                    return CopilotLinkIn.tradePlan(player, dossierData)
+                elseif spec.action == "Sell" then
+                    return CopilotLinkIn.sellPlan(player, dossierData)
+                elseif spec.action == "Scout" then
+                    return CopilotLinkIn.scoutPlan(player, dossierData)
+                else
+                    return CopilotLinkIn.jobPlan(player, dossierData, spec.action)
+                end
+            end)
+            if not pcallOk then
+                failures[#failures + 1] = { what = spec.what, why = "pcall: " .. tostring(ok) }
+            elseif ok ~= true then
+                failures[#failures + 1] = { what = spec.what, why = tostring(payload) }
+            else
+                local tagged = CopilotLinkIn.informOnly(payload, dossierData)
+                trimNestedPlan(tagged, top)
+                local compacted = CopilotLinkIn.compactPlan(tagged, top, { trim = true })
+                plans[#plans + 1] = compacted
+            end
+        end
+    end
+
+    return true, {
+        what = "dossier",
+        ship = ship,
+        action = "dossier",
+        generatedFor = "single-shot (no tools, no file access) —— 所以这里是**预取 + 裁剪** ✓",
+        gate = gate,
+        goal = (goalOk and type(goal) == "table") and goal or nil,
+        card = brief,
+        plans = plans,
+        planFetchFailures = (#failures > 0) and failures or nil,
+        top = top,
+        note = "★ 这是**有界**档案 ✓：每个计划只回前 " .. tostring(top) .. " 个候选框、" ..
+            "逐框只有标量 ✓；插件侧**另有一道字节预算** ✓（超了就按固定顺序继续裁，并记录裁了什么 ✓）。" ..
+            "★ 计划**取不到** ≠ **没有候选** ✗ —— 看 planFetchFailures / noCandidatesReason ✓。",
+        planParams = Card.PLAN_PARAMS,
     }
 end
 
