@@ -80,31 +80,43 @@ function CopilotLinkIn.onQuery(data)
 --   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
 --   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
 --   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
-return true, CopilotLinkIn.informOnly(CopilotLinkIn.tradePlan(player, data), data)
+local ok2, payload2, why2 = CopilotLinkIn.tradePlan(player, data)
+if ok2 ~= true then return false, payload2, why2 end
+return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "minePlan" then
         -- ★★★ 采矿决策的**数据获取 + 组装**（只算不下单 ✓）—— 见 jobPlan ✓
         --   与 tradePlan 同构：多区域 × 参数 × 层级加权 + 同一道 0.10 风险闸门 ✓✓
-        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Mine"), data)
+        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, "Mine")
+        if ok2 ~= true then return false, payload2, why2 end
+        return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "salvagePlan" then
         -- ★★★ 打捞决策：装备件数 × E[稀有度层级]，次级键 = 残骸场材料层级均值 ✓
-        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Salvage"), data)
+        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, "Salvage")
+        if ok2 ~= true then return false, payload2, why2 end
+        return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "jobPlan" then
         -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
-        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, data.action), data)
+        local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, data.action)
+        if ok2 ~= true then return false, payload2, why2 end
+        return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "sellPlan" then
         -- ★★★ 卖货决策（2026-10-17 加，Issue B ✓✓）：把**船上的货**变现 ✓
         --   为什么需要：Trader 被伏击召回时**只退押金、不发利润**，货还留在船上 ✓
         --   （原版 tradecommand.lua:456-490 ✓），此时再下 Trade 会**装不进新货** ✗
         --   → 必须先 Sell ✓✓（主人的场景 ✓）
-        return true, CopilotLinkIn.informOnly(CopilotLinkIn.sellPlan(player, data), data)
+        local ok2, payload2, why2 = CopilotLinkIn.sellPlan(player, data)
+        if ok2 ~= true then return false, payload2, why2 end
+        return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "scoutPlan" then
         -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
-        return true, CopilotLinkIn.informOnly(CopilotLinkIn.scoutPlan(player, data), data)
+        local ok2, payload2, why2 = CopilotLinkIn.scoutPlan(player, data)
+        if ok2 ~= true then return false, payload2, why2 end
+        return true, CopilotLinkIn.informOnly(payload2, data)
 
     elseif what == "sectorFacts" then
         -- ★★ 任意星区的**事实**（2026-10-17 补 ✓✓）
@@ -3021,7 +3033,13 @@ end
 --
 --   本函数只加字段、不改任何既有字段 ✓ —— 既不重排、也不删减 ✓。
 --
---   ★★ ★ 调用它时**必须**写成 `return true, CopilotLinkIn.informOnly(...)` ✓✓
+--   ★★ ★ 计划函数**自己**就返回 (ok, payload, why) ✓；包装时必须传**载荷** ✗✓：--   ★★ ★ 计划函数**自己**就返回 (ok, payload, why) ✓；包装时必须传**载荷** ✗✓：
+--      local ok2, payload2, why2 = CopilotLinkIn.jobPlan(player, data, "Mine")
+--      if ok2 ~= true then return false, payload2, why2 end
+--      return true, CopilotLinkIn.informOnly(payload2, data)
+--   ✗ 反例（2026-10-17 血案 ✗）: `return true, informOnly(jobPlan(...), data)` ——
+--     jobPlan 是**非末位参数** ✓ → Lua 只取第一个返回值 `true` ✗ → informOnly 收到**
+    --    布尔** ✓ → 载荷变成 `true` ✗ → 插件看到"空计划" ✗✓（实测工具直查就是返回 true ✓）
 --   （2026-10-17 实测血案 ✗：六个计划分支写成 `return informOnly(...)` 只有一个返回值 ✗，
 --     而 RPC 契约是 (ok, payload, why) ✓ —— 于是 ok=那个表（真值 ✓）而 payload=nil ✗
 --     → DSH 收到**空载荷 {}** ✗✓，模型**完全没有计划数据**却以为"没有候选" ✗✓✓。
