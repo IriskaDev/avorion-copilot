@@ -1,6 +1,6 @@
 # 机制总目录
 
-> 上一级：仓库根 [`AGENTS.md`](../../AGENTS.md) 顶部 → [`docs/README.md`](../README.md)。
+> 上一级：二级索引 [`../README.md`](../README.md)（docs/game/README.md，决策者第一屏）。
 > 本文件**只做分发**：每节 2~5 行 + 指一个子文件。**不要**在这里堆细节。
 > 引用约定见 [`../README.md`](../README.md) §4（`✓` = 实读核对）。
 
@@ -73,7 +73,7 @@
 
 ## 10. 背景与资料库
 
-- [`../../GAME-GOALS-AND-OPS.md`](../../GAME-GOALS-AND-OPS.md)：主线（Swoks → 8 钥匙 → Guardian）、
+- [`../../../GAME-GOALS-AND-OPS.md`](../../../GAME-GOALS-AND-OPS.md)：主线（Swoks → 8 钥匙 → Guardian）、
   派系声望、经济与工厂、世界 Boss、裂隙 DLC、13 个后台命令全集。
   → **背景**，不是决策依据；本 mod 的后台命令不涉及派系战斗与登船。
 
