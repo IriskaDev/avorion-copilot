@@ -235,6 +235,25 @@ function parseDecision(text) {
         else if (['false', 'no', 'n', '0', '否', '关', 'off'].includes(w))
             decision.safeMode = false;
     }
+    // ★ Sell 的选货（2026-10-17 补 ✓）：`goodsToSell=all` 或 `货名:数量,货名:数量` ✓
+    const rawGoods = field(text, 'goodsToSell');
+    if (rawGoods !== undefined) {
+        const g = rawGoods.replace(/[`*"']/g, '').trim();
+        if (/^all$/i.test(g) || g === '全部' || g === '全卖')
+            decision.goodsToSell = 'all';
+        else {
+            const list = [];
+            for (const part of g.split(/[,，;；]/)) {
+                const m = part.trim().match(/^(.+?)\s*[:：=]\s*(\d+(?:\.\d+)?)$/);
+                if (m !== null)
+                    list.push({ goodName: m[1].trim(), amount: Number(m[2]) });
+            }
+            if (list.length > 0)
+                decision.goodsToSell = list;
+            else
+                live(`  ⚠ goodsToSell 解析不出"货名:数量"（原文: ${g}）—— 不回传，交给游戏侧"默认全卖" ✓`);
+        }
+    }
     const reason = field(text, 'reason');
     if (reason !== undefined && reason.length > 0)
         decision.reason = reason;
@@ -460,6 +479,11 @@ function toAnswer(decision, f, raw) {
         params.duration = decision.duration;
     if (decision.safeMode !== undefined)
         params.safeMode = decision.safeMode; // ★ Mine/Salvage ✓
+    // ★ Sell 的选货（2026-10-17 补 ✓）：游戏侧读 data.goodsToSell ✓（link_in.lua:483-516 ✓）。
+    //   'all' **不回传** ✗ —— 游戏侧不给它就是"默认全卖" ✓，回传字符串反而会被它按表判空 ✓。
+    if (decision.goodsToSell !== undefined && decision.goodsToSell !== 'all') {
+        params.goodsToSell = decision.goodsToSell;
+    }
     if (decision.escorts !== undefined && decision.escorts.length > 0) {
         // ★★ 清洗（2026-10-16 实测的坑 ✗）：模型写 `escorts=` 空行时，
         //   解析会把**下一行**当成护航名 ✓✓（实测收到 ["deposit=1000000"] ✗）。
@@ -1145,11 +1169,47 @@ export function apply(ctx, config = {}) {
             if (line.trim() !== '')
                 live(`  │ ${line.trim()}`); // ★ 思维链**逐行**进流水 ✓✓
         }
-        const decision = parseDecision(result.text);
-        const answer = toAnswer(decision, facts, result.text);
+        let decision = parseDecision(result.text);
+        let answer = toAnswer(decision, facts, result.text);
         if (typeof answer === 'string') {
-            logger.warn(`avorion-copilot: 决策无法解析 —— ${answer}`);
-            return [false, 'BAD_MODEL_REPLY', answer];
+            // ★★ 重试一次（2026-10-17 ✓✓）：实测她**想太久、正文一个动作行都没吐** ✗
+            //   （decisions.live.log 16:18:10 `BAD_MODEL_REPLY ... saw: no action line` ✓）——
+            //   于是整轮决策被丢弃 ✓、货也没卖成 ✓✓。
+            //   规矩：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
+            //        ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗（慢且游戏状态可能已变 ✓）、
+            //        两次都不行就照旧失败 ✓ —— **绝不替她编一个动作** ✗✓。
+            const answerOnly = "\n\n★ 你上一次**没有输出任何 action 行**（想太久、额度烧光 ✗）。\n"
+                + "现在**只输出答案行** ✓: action 必须在**第一行** ✓；**不要**写任何推理或解释 ✗；"
+                + "reason 可以留空 ✓。一行一个字段，从 action= 开始。";
+            live(`  ├ ⚠ 首轮没有可用动作行（${answer}）→ **重试一次**：同一批事实，只要求答案行 ✓`);
+            rawKind = null;
+            liveRaw('reasoning', '');
+            let retryResult;
+            try {
+                retryResult = await askModel(ctx, cfg, buildPrompt(facts) + answerOnly, liveRaw);
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.warn(`avorion-copilot: 重试时模型调用异常 ${message}`);
+                return [false, 'MODEL_ERROR', message];
+            }
+            if (retryResult.failure !== undefined) {
+                logger.warn(`avorion-copilot: 重试模型调用失败 ${retryResult.failure}`);
+                return [false, 'MODEL_FAILED', retryResult.failure];
+            }
+            rec.modelText = retryResult.text;
+            rec.reasoning = result.reasoning + String.fromCharCode(10) + '--- 重试（仅答案行）---'
+                + String.fromCharCode(10) + retryResult.reasoning;
+            rec.truncated = retryResult.truncated;
+            live(`  ├ 重试回复 正文 ${retryResult.text.length} 字 / 思维链 ${retryResult.reasoning.length} 字${retryResult.truncated ? '  ⚠️被maxTokens截断' : ''}`);
+            decision = parseDecision(retryResult.text);
+            answer = toAnswer(decision, facts, retryResult.text);
+            if (typeof answer === 'string') {
+                logger.warn(`avorion-copilot: 重试后仍无法解析 —— ${answer}`);
+                return [false, 'BAD_MODEL_REPLY',
+                    `first attempt had no action line (text ${result.text.length} chars, truncated=${result.truncated}); retry also failed: ${answer}`];
+            }
+            live('  ├ ✔ 重试成功（拿到动作行 ✓）');
         }
         // ★ 记录④"结论"（先记下，⑤ 结果随后补 ✓）
         rec.answer = answer;

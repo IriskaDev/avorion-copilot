@@ -281,6 +281,30 @@ try {
       order?.x === HERE.x && order?.y === HERE.y, `${order?.x},${order?.y}`)
   }
 
+  // ---- b2. Sell + goodsToSell（2026-10-17 主人截图实证 ✓✓：原版窗口是**逐货勾选** ✓，
+  //          **不勾货命令就起不来** ✗ → 我们必须能把选货透传下去 ✓）------------------
+  {
+    const { rpc, order } = await decideOnce(`action=Sell\ngoodsToSell=小麦:100,原油:120\nx=${HERE.x}\ny=${HERE.y}\nreason=卖一部分\n`)
+    console.log(`\n[b2] order 载荷: ${show(order)}`)
+    check('b2. Sell+选货: decide 成功', rpc.ok === true, rpc)
+    check('b2. Sell+选货: ★ 载荷带 goodsToSell ✓✓',
+      Array.isArray(order?.goodsToSell) && order.goodsToSell.length === 2, JSON.stringify(order?.goodsToSell))
+    check('b2. Sell+选货: 货名/数量解析正确',
+      order?.goodsToSell?.[0]?.goodName === '小麦' && order?.goodsToSell?.[0]?.amount === 100
+      && order?.goodsToSell?.[1]?.goodName === '原油' && order?.goodsToSell?.[1]?.amount === 120,
+      JSON.stringify(order?.goodsToSell))
+  }
+
+  // ---- b3. Sell + goodsToSell=all（★ 不该把这个**字符串**回传 ✗ ——
+  //          游戏侧"没给 goodsToSell"本来就是**默认全卖** ✓，给字符串反被它按表判空 ✗）----
+  {
+    const { rpc, order } = await decideOnce(`action=Sell\ngoodsToSell=all\nx=${HERE.x}\ny=${HERE.y}\n`)
+    console.log(`\n[b3] order 载荷: ${show(order)}`)
+    check('b3. Sell=all: decide 成功', rpc.ok === true, rpc)
+    check('b3. Sell=all: ★ 不回传字符串（交给游戏侧的"默认全卖" ✓）',
+      order !== null && order.goodsToSell === undefined, JSON.stringify(order?.goodsToSell))
+  }
+
   // ---- c. Trade + goodName + deposit -----------------------------------------
   {
     const { rpc, order } = await decideOnce(`action=Trade\ngoodName=Antigrav Unit\nx=${HERE.x}\ny=${HERE.y}\ndeposit=752000\nreason=跑货\n`)
