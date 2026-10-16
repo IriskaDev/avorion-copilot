@@ -14,10 +14,11 @@
 3. 之后按需要写字段：x= / y= / sizeX= / sizeY= / duration= / goodName= / deposit= / safeMode= / escorts= / goodsToSell= / reason=；
 4. 如果你需要主人拍板，就直接把问题写出来、不写 action 行即可（本轮记为"等主人裁决"，不会替你编一个动作）。
 
-★ 不确定该做什么时：先不要猜。去读 mod 的 docs/game/README.md（游戏二级索引），按它的指引逐级查阅文档与查询工具，然后再决策、再下单。
+★ 不确定该做什么时，先不要猜，按你的处境二选一：
 
-★ 那个文件的位置（稳的写法）：%APPDATA%\Avorion\mods\copilot\docs\game\README.md
-   —— 这是游戏 mod 目录的联接，与 mod 仓库根是同一份文件；不要写死某台机器的绝对路径。
+· 有工具时：按 %APPDATA%\Avorion\mods\copilot\docs\game\README.md 的路由表逐级查阅，并用 fleet_query 等工具直接问游戏，然后再决策、再下单（这是 mod 目录联接，别写死某台机器的绝对路径）。
+
+· 没有工具、也读不到文件时：只能依据本条消息里已经带上的事实（单发路径会把有界档案附在同一段文本里）来决策，不要假装能去读文件。
 
 ★ 硬规矩（细节与理由见 docs/game/README.md 的「决策者第一屏」）：
    风险闸门是 attackChance ≤ 0.10；判断"安全"只看基准概率 baseAttackChance（未经 safeMode 修正的那个数）；
