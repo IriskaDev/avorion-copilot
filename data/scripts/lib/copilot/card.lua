@@ -495,6 +495,49 @@ function M.fleetSnapshot(player, opts)
 end
 
 -- ---------------------------------------------------------------------------
+-- ★★ 列表（接口原子化，2026-10-17 加 ✓✓）—— "有哪些船"的**索引级**清单 ✓
+-- ---------------------------------------------------------------------------
+--
+-- 原则（主人原话）：**不要一次性把全部舰船状态查回来** ✗ ——
+--   「查一个列表，看列表里有什么船，决定先处理哪条船就查哪条船的信息」✓。
+-- 所以本函数只给：name / busy / hasCaptain / sector ——
+--   ★ **绝不含**每船完整状态 ✗、不含货舱明细 ✗、不含预测 ✗、不含 depth 采样 ✗✓。
+-- 决策者拿到它 → 挑一条 → 再 `ship` 查**那一条**的完整能力卡 ✓。
+function M.fleetList(player)
+    local names = M.designated(player)
+    local piloted = player.craft
+    local pilotedName = (piloted ~= nil and valid(piloted)) and piloted.name or nil
+
+    local ships = {}
+    for _, name in ipairs(names) do
+        if name ~= pilotedName then
+            local busy, avail = M.isBusy(player, name)
+            local hasCaptain = nil
+            do
+                local entry = ShipDatabaseEntry(player.index, name)
+                if entry ~= nil then
+                    local okC, captain = probe(entry, "getCaptain")
+                    if okC then hasCaptain = (captain ~= nil) end
+                end
+            end
+            local sx, sy = nil, nil
+            do
+                local okPos, px, py = pcall(function() return player:getShipPosition(name) end)
+                if okPos and px ~= nil and py ~= nil then sx, sy = px, py end
+            end
+            ships[#ships + 1] = {
+                name = name,
+                busy = busy,
+                availability = avail,
+                hasCaptain = hasCaptain,
+                sector = (sx ~= nil and sy ~= nil) and { x = sx, y = sy } or nil,
+            }
+        end
+    end
+    return { ships = ships, designated = #names, piloted = pilotedName }
+end
+
+-- ---------------------------------------------------------------------------
 -- 我提供哪些 query 功能（给 rpc.caps / hello 用 ✓）
 -- ---------------------------------------------------------------------------
 --
@@ -503,15 +546,18 @@ end
 --   现在又多了 minePlan / salvagePlan / jobPlan（Mine/Salvage 的决策数据 ✓）。
 --   这是**给 DSH 看的自我声明** ✓ —— 列表必须跟实现同步，否则 DSH 只能靠猜 ✗✓
 M.WHATS = {
+    "list",             -- ★★ 原子：有哪些船（索引级：name/busy/hasCaptain/sector ✓）—— 不含每船完整状态 ✗
     "fleet", "ship", "goal", "caps",
     "sectorFacts",      -- ★ 任意星区的事实（富饶度/材料概率/环侧/离中心距离 ✓ 2026-10-17 补 ✓）
+    "predict",          -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓）
+    "tradeRoutes",      -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序/推荐 ✗）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
-    "tradePlan",        -- Trade：多区域 × 多商品 × 净收益 ✓
-    "minePlan",         -- Mine：多区域 × 参数 × 层级加权（采最高阶矿 ✓）
-    "salvagePlan",      -- Salvage：装备件数 × E[稀有度层级]（收最高科技战利品 ✓）
-    "jobPlan",          -- 上面两个的通用入口（data.action = Mine | Salvage ✓）
-    "sellPlan",         -- ★ Sell：把船上的货在 ≤10% 风险下变现（风险调整期望 ✓）Issue B ✓✓
-    "scoutPlan",        -- ★ Scout：揭未探索星区（主口径 = 框内未探索数 ✓）
+    "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
+    "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
+    "salvagePlan",      -- legacy：Salvage 装备件数 × E[稀有度层级]
+    "jobPlan",          -- legacy：上面两个的通用入口（data.action = Mine | Salvage ✓）
+    "sellPlan",         -- legacy：Sell 把船上的货在 ≤10% 风险下变现
+    "scoutPlan",        -- legacy：Scout 揭未探索星区
 }
 
 -- ★★ 计划查询的**参数**（给 DSH 看 ✓ —— 2026-10-17 加 ✓✓）
@@ -527,6 +573,28 @@ M.PLAN_PARAMS = {
     step = "number：粗扫步长",
     size = "number：区域边长（不合法时原版会自己夹到合法形状 ✓）",
     action = "string：仅 jobPlan —— Mine | Salvage（缺省 Mine ✓）",
+}
+M.PREDICT_PARAMS = {
+    ship = "string：必填 ✓（哪艘船 ✓）",
+    action = "string：必填 ✓ —— Mine | Salvage | Trade | Sell | Scout ✓",
+    x = "number：框心绝对星区 x（必填 ✓ —— 不自动选框 ✗）",
+    y = "number：框心绝对星区 y（必填 ✓）",
+    sizeX = "number：框宽（必填 ✓；与 sizeY 一起给就是矩形 ✓）",
+    sizeY = "number：框高（必填 ✓）",
+    duration = "number：可选 —— Mine/Salvage 时长（小时 ✓）；缺省用原版默认 1 ✓",
+    safeMode = "boolean：可选 —— Mine/Salvage 安全模式 ✓",
+    escorts = "array<string>：可选 —— 护航船名 ✓",
+    goodName = "string：Trade 必填 ✓（哪条路线 ✓；从 tradeRoutes 拿 ✓）",
+    deposit = "number：Trade 必填 ✓（预付金 > 0 ✓）",
+    goodsToSell = "array：Sell 可选 ✓（缺省 = 整舱全卖 ✓）",
+    boxes = "array：批量 —— 一个数组，每个元素是 {x,y,sizeX,sizeY,goodName?,deposit?,duration?,safeMode?,escorts?} ✓（N≤24 ✓；单个框也可以走这里 ✓）",
+}
+M.TRADE_ROUTES_PARAMS = {
+    ship = "string：必填 ✓（哪艘船 ✓）",
+    x = "number：框心绝对星区 x（必填 ✓）",
+    y = "number：框心绝对星区 y（必填 ✓）",
+    sizeX = "number：框宽（必填 ✓）",
+    sizeY = "number：框高（必填 ✓）",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",

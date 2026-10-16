@@ -57,6 +57,12 @@ function CopilotLinkIn.onQuery(data)
         CopilotRpc.trace("  fleetSnapshot 返回，船数=" .. tostring(#(snap.ships or {})))
         return true, snap
 
+    elseif what == "list" then
+        -- ★★ 原子：有哪些船（**索引级** ✓ —— 只给 name/busy/hasCaptain/sector ✓✓）
+        --   ★ 绝不含每船完整状态、货舱明细、预测、depth 采样 ✗✓（见 card.lua 的 fleetList ✓）。
+        --   决策者先拿它决定"先处理哪条船" → 再 `ship` 查**那一条**的完整能力卡 ✓。
+        return true, Card.fleetList(player)
+
     elseif what == "ship" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -122,6 +128,14 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "scoutPlan" then
         return CopilotLinkIn.planQuery(player, data, "Scout")
+
+    elseif what == "predict" then
+        -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓）
+        return CopilotLinkIn.predict(player, data)
+
+    elseif what == "tradeRoutes" then
+        -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序、不含推荐 ✗）
+        return CopilotLinkIn.tradeRoutes(player, data)
 
     elseif what == "dossier" then
         -- ★★ 单发路径的**有界档案**（2026-10-17 加 ✓✓）：
@@ -2663,6 +2677,117 @@ end
 --       （transfercrewgoods.lua:881 `playerCargoName[i] = good.name` ✓、factory.lua:109 ✓）
 --   · 空货舱 → 没有可卖的（getErrors :345 `No good to sell selected!` ✓）
 
+-- ★★★ 单框 Sell 求值器（**模块级**，2026-10-17 抽出来 ✓✓）——
+--   与 sellPlan 里的 sellMakeRec **逐字同源** ✓（sellPlan 现在也调它 ✓），
+--   供 `predict` 复用：一个框 → 一个 Sell 预测，**口径一致、不重写预测逻辑** ✓。
+--   返回 rec（与 sellPlan 里的 rec 同形状 ✓）；框不含船 → nil ✓。
+local function scanSellArea(command, player, ship, ctype, hold, gate, shipX, shipY, cx, cy, w, h, origin)
+    local area = buildAreaWH(cx, cy, w, h)
+    if not areaContainsShip(area, shipX, shipY) then return nil end
+    local rec = { area = area, candidates = {}, acceptable = false, origin = origin }
+    local okRun, _s, _ty, rArea, results = pcall(function()
+        return run(player.index, ship, ctype, area, player.index)
+    end)
+    if not okRun or type(results) ~= "table" then
+        rec.error = "analysis failed: " .. tostring(rArea)
+        return rec
+    end
+    rArea.analysis = results
+    rec.analysis = results
+    local okP, pred = pcall(function()
+        return command:calculatePrediction(player.index, ship, rArea, { goodsToSell = hold })
+    end)
+    if not (okP and type(pred) == "table") then
+        rec.error = "prediction failed: " .. tostring(pred)
+        return rec
+    end
+
+    local yLo, yHi = numericRange(pred.yield)
+    local p = pred.attackChance and tonumber(pred.attackChance.value) or nil
+    local dur = tonumber(pred.duration)
+    local keep = attackKeepFraction(dur)
+    local cand = {
+        name = "Sell",
+        goodsToSell = hold,
+        yieldLow = yLo, yieldHigh = yHi,
+        duration = dur,
+        attackChance = p,
+        keepFractionOnAttack = keep,
+        pricesPerGood = pred.pricesPerGood,
+        percentages = pred.percentages,
+        predictionError = pred.error,
+        riskKind = "sellAmbushChance(whole task, this box)",
+    }
+    if yLo ~= nil and p ~= nil then
+        cand.netProfitLow = (1 - p) * yLo + p * (yLo * keep)
+        cand.netProfitHigh = (1 - p) * (yHi or yLo) + p * ((yHi or yLo) * keep)
+        cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
+        cand.profitBasis = "sellYield(riskAdjusted)"
+    elseif yLo ~= nil then
+        cand.netProfitLow, cand.netProfitHigh = yLo, (yHi or yLo)
+        cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
+        cand.profitBasis = "sellYield(chance unknown -> unadjusted)"
+    else
+        rec.error = "prediction gave no yield: " .. tostring(pred.error)
+    end
+    rec.candidates = { cand }
+    rec.best = cand
+    rec.acceptable = (cand.netProfitLow ~= nil)
+        and (cand.attackChance == nil or cand.attackChance <= gate)
+    rec.bestChance = cand.attackChance
+    rec.bestDur = cand.duration
+    rec.bestNetLow = cand.netProfitLow
+    rec.bestNetHigh = cand.netProfitHigh
+    rec.bestCaseLow = cand.bestCaseLow
+    rec.bestCaseHigh = cand.bestCaseHigh
+    return rec
+end
+
+-- ★★★ 单框 Sell 的**逐货数字**（模块级 ✓ —— 与 sellPlan 里的 perGoodNumbers 逐字同源 ✓）
+local function sellPerGoodNumbers(hold, rec)
+    local b = rec and rec.best
+    if b == nil then return nil end
+    local pg = b.pricesPerGood
+    local pc = b.percentages
+    local out, missing = {}, {}
+    for _, g in ipairs(hold) do
+        local name = g.goodName
+        local displayName, hit = nil, false
+        if type(pg) == "table" then
+            if pg[name] ~= nil then displayName, hit = name, true end
+            if not hit then
+                for k in pairs(pg) do
+                    if type(k) == "string" and (k == name or string.sub(k, 1, #name) == name) then
+                        displayName, hit = k, true
+                        break
+                    end
+                end
+            end
+        end
+        local price = hit and tonumber(pg[displayName]) or nil
+        local pct = hit and type(pc) == "table" and tonumber(pc[displayName]) or nil
+        local entry = {
+            goodName = name,
+            amount = g.amount,
+            stolen = g.stolen,
+            displayName = displayName,
+            expectedRevenue = price,
+            priceDeltaPercent = (pct ~= nil) and (pct - 100) or nil,
+            pricePercentOfNormal = pct,
+            expectedUnitPrice = (price ~= nil and g.amount and g.amount > 0)
+                and (price / g.amount) or nil,
+            normalRevenueEstimate = (price ~= nil and pct ~= nil and pct ~= 0)
+                and (price / (pct / 100)) or nil,
+        }
+        if price == nil then
+            entry.priceUnavailable = true
+            missing[#missing + 1] = name
+        end
+        out[#out + 1] = entry
+    end
+    return out, missing
+end
+
 function CopilotLinkIn.sellPlan(player, data)
     data = data or {}
     local ship = data.ship
@@ -2764,113 +2889,14 @@ function CopilotLinkIn.sellPlan(player, data)
     --      sellcommand.lua:559 ✓），而舱里的键是 `good.name` ✓ → 先按键名精确匹配 ✓，
     --      再退回"键名等于 displayName，或 displayName 以键名开头" ✓。
     --   ★ 实在匹配不上的货：**明说**（pricesUnavailable ✓），**绝不编一个价** ✗✓。
+    -- ★ 逐货数字：委托给模块级 sellPerGoodNumbers ✓（与 predict 共用同一份口径 ✓）
     local function perGoodNumbers(rec)
-        local b = rec and rec.best
-        if b == nil then return nil end
-        local pg = b.pricesPerGood
-        local pc = b.percentages
-        local out, missing = {}, {}
-        for _, g in ipairs(hold) do
-            local name = g.goodName
-            local displayName, hit = nil, false
-            if type(pg) == "table" then
-                if pg[name] ~= nil then displayName, hit = name, true end
-                if not hit then
-                    for k in pairs(pg) do
-                        if type(k) == "string" and (k == name or string.sub(k, 1, #name) == name) then
-                            displayName, hit = k, true
-                            break
-                        end
-                    end
-                end
-            end
-            local price = hit and tonumber(pg[displayName]) or nil
-            local pct = hit and type(pc) == "table" and tonumber(pc[displayName]) or nil
-            local entry = {
-                goodName = name,
-                amount = g.amount,
-                stolen = g.stolen,
-                displayName = displayName,
-                expectedRevenue = price,                -- 这一箱货在这个框里**预计卖到**的钱 ✓
-                priceDeltaPercent = (pct ~= nil) and (pct - 100) or nil,
-                pricePercentOfNormal = pct,
-                expectedUnitPrice = (price ~= nil and g.amount and g.amount > 0)
-                    and (price / g.amount) or nil,
-                normalRevenueEstimate = (price ~= nil and pct ~= nil and pct ~= 0)
-                    and (price / (pct / 100)) or nil,
-            }
-            if price == nil then
-                entry.priceUnavailable = true
-                missing[#missing + 1] = name
-            end
-            out[#out + 1] = entry
-        end
-        return out, missing
+        return sellPerGoodNumbers(hold, rec)
     end
 
-    -- 一个框的完整评估（粗扫 / 细扫共用 ✓）
+    -- 一个框的完整评估：委托给模块级 scanSellArea ✓（与 predict 共用同一份口径 ✓）
     local function sellMakeRec(cx, cy, w, h, origin)
-        local area = buildAreaWH(cx, cy, w, h)
-        if not areaContainsShip(area, shipX, shipY) then return nil end
-        local rec = { area = area, candidates = {}, acceptable = false, origin = origin }
-        local okRun, _s, _ty, rArea, results = pcall(function()
-            return run(player.index, ship, ctype, area, player.index)
-        end)
-        if not okRun or type(results) ~= "table" then
-            rec.error = "analysis failed: " .. tostring(rArea)
-            return rec
-        end
-        rArea.analysis = results
-        rec.analysis = results
-        local okP, pred = pcall(function()
-            return command:calculatePrediction(player.index, ship, rArea, config)
-        end)
-        if not (okP and type(pred) == "table") then
-            rec.error = "prediction failed: " .. tostring(pred)
-            return rec
-        end
-
-        local yLo, yHi = numericRange(pred.yield)
-        local p = pred.attackChance and tonumber(pred.attackChance.value) or nil
-        local dur = tonumber(pred.duration)
-        local keep = attackKeepFraction(dur)
-        local cand = {
-            name = "Sell",
-            goodsToSell = hold,
-            yieldLow = yLo, yieldHigh = yHi,
-            duration = dur,
-            attackChance = p,
-            keepFractionOnAttack = keep,
-            pricesPerGood = pred.pricesPerGood,
-            percentages = pred.percentages,
-            predictionError = pred.error,
-            riskKind = "sellAmbushChance(whole task, this box)",
-        }
-        -- 逐货数字（把 best 之后的步骤放在下面统一挂 ✓ —— cand 要先有 pricesPerGood ✓）
-        if yLo ~= nil and p ~= nil then
-            -- ★ 风险调整期望（主人口径 ✓）：被伏击只能卖掉 keep 那部分 ✓
-            cand.netProfitLow = (1 - p) * yLo + p * (yLo * keep)
-            cand.netProfitHigh = (1 - p) * (yHi or yLo) + p * ((yHi or yLo) * keep)
-            cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
-            cand.profitBasis = "sellYield(riskAdjusted)"
-        elseif yLo ~= nil then
-            cand.netProfitLow, cand.netProfitHigh = yLo, (yHi or yLo)
-            cand.bestCaseLow, cand.bestCaseHigh = yLo, (yHi or yLo)
-            cand.profitBasis = "sellYield(chance unknown -> unadjusted)"
-        else
-            rec.error = "prediction gave no yield: " .. tostring(pred.error)
-        end
-        rec.candidates = { cand }
-        rec.best = cand
-        rec.acceptable = (cand.netProfitLow ~= nil)
-            and (cand.attackChance == nil or cand.attackChance <= gate)
-        rec.bestChance = cand.attackChance
-        rec.bestDur = cand.duration
-        rec.bestNetLow = cand.netProfitLow
-        rec.bestNetHigh = cand.netProfitHigh
-        rec.bestCaseLow = cand.bestCaseLow
-        rec.bestCaseHigh = cand.bestCaseHigh
-        return rec
+        return scanSellArea(command, player, ship, ctype, hold, gate, shipX, shipY, cx, cy, w, h, origin)
     end
 
     local res = runTwoPhaseScan({
@@ -4295,6 +4321,90 @@ end
 --   主键 = **revealsOffgrid**（新揭开多少"隐藏质量星区" ✓ = 多少**新地图** ✓）
 --   次键 = **离地图中心 (0,0) 越近越好** ✓（推进方向 ✓）
 --   ★ 若原版没给出可用的 revealsOffgrid → 退到"可达星区数"，并在 scoreBasis **写明** ✓
+
+-- ★★★ 单框 Scout 的未知计数（模块级，2026-10-17 抽出 ✓✓ —— 与 scoutPlan 里的 surveyArea 逐字同源 ✓）
+local function scoutSurveyArea(isKnown, knownErrors, a)
+    local w = a.upper.x - a.lower.x + 1
+    local h = a.upper.y - a.lower.y + 1
+    local unknown, total = 0, 0
+    for x = a.lower.x, a.upper.x do
+        for y = a.lower.y, a.upper.y do
+            total = total + 1
+            if not isKnown(x, y) then unknown = unknown + 1 end
+        end
+    end
+    local errN = (type(knownErrors) == "table" and knownErrors.n) or 0
+    local out = {
+        unknownCount = unknown, knownCount = total - unknown, total = total,
+        share = (total > 0) and (unknown / total) or nil,
+        lookups = total, unreliable = (errN > 0),
+        basis = "player:getKnownSector(x,y)==nil 视为未探索 ✓（orderchain.lua:887 / factionmapsegment.lua:235 ✓）",
+        note = "★ 这是**这个框里**还剩多少未探索星区（数字 ✓，不是原版那个 0/1/2 枚举 ✗）",
+    }
+    if errN > 0 then
+        out.note = out.note .. "；⚠️ 有 " .. tostring(errN)
+            .. " 次 getKnownSector 调用失败 → 这个计数**不可信** ✓（别当 0 用 ✗）"
+    end
+    out.revealsNothingNew = (unknown == 0 and errN == 0)
+    return out
+end
+
+-- ★★★ 单框 Scout 求值器（模块级，2026-10-17 抽出 ✓✓ —— 与 scoutPlan 里的 makeScoutRec 逐字同源 ✓），
+--   供 `predict` 复用：一个框 → 一个 Scout 预测（unknownCount / revealsOffgrid / attackChance ✓），
+--   口径一致、不重写预测逻辑 ✓。框不含船 → nil ✓。
+local function scanScoutArea(command, player, ship, ctype, sx, sy, cx, cy, w, h, origin, isKnown, knownErrors)
+    local a = buildAreaWH(cx, cy, w, h)
+    if not areaContainsShip(a, sx, sy) then return nil end
+    local entry = {
+        area = a, centre = { x = cx, y = cy },
+        distance = math.abs(cx) + math.abs(cy),
+        origin = origin, shape = shapeLabel(w, h), sizeX = w, sizeY = h,
+        x = cx, y = cy,      -- ★ **绝对星区坐标**（模型不做算术 ✓✓）
+    }
+    -- ★ 未知计数（**每个候选框** ✓✓）
+    entry.unknown = scoutSurveyArea(isKnown, knownErrors, a)
+    entry.unknownCount = entry.unknown.unknownCount
+    entry.knownCount = entry.unknown.knownCount
+    entry.totalSectors = entry.unknown.total
+
+    local okR, _s, _t, rArea, rRes = pcall(function()
+        return run(player.index, ship, ctype, a, player.index)
+    end)
+    if not (okR and type(rRes) == "table") then
+        entry.error = tostring(rRes)
+        return entry
+    end
+    rArea.analysis = rRes
+    entry.analysis = {
+        reachable = rRes.reachable, sectors = rRes.sectors,
+        unreachable = rRes.unreachable,
+    }
+    local okP, pred = pcall(function()
+        return command:calculatePrediction(player.index, ship, rArea, { addCaptainsNote = true })
+    end)
+    if not (okP and type(pred) == "table") then
+        entry.predictionFailed = tostring(pred)
+        return entry
+    end
+    local revLo, revHi = numericRange(pred.revealsOffgrid)
+    local durLo, durHi = numericRange(pred.duration)
+    entry.revealsLow, entry.revealsHigh = revLo, revHi
+    entry.durationLow, entry.durationHigh = durLo, durHi
+    entry.attackChance = pred.attackChance and pred.attackChance.value or nil
+    -- ★ 退路：原版没给 revealsOffgrid → 用"可达星区数"当代理 ✓ 并写明 ✓
+    if entry.revealsLow == nil then
+        entry.revealsLow = tonumber(rRes.reachable) or 0
+        entry.revealsHigh = entry.revealsLow
+        entry.scoreBasis = "revealsOffgrid unavailable -> reachable sector count (proxy)"
+    else
+        entry.scoreBasis = "revealsOffgrid (vanilla, scoutcommand.lua:519-530)"
+    end
+    -- ★★ 枚举的含义照样留着（旧字段不变 ✓），但**主键换成未探索数** ✓✓
+    entry.revealsOffgridEnum = entry.revealsLow
+    entry.revealsOffgridMeaning = "0=none / 1=some / 2=all —— ★ 是枚举不是计数 ✗（scoutcommand.lua:519-529 ✓）"
+    return entry
+end
+
 function CopilotLinkIn.scoutPlan(player, data)
     data = data or {}
     local ship = data.ship
@@ -4343,7 +4453,7 @@ function CopilotLinkIn.scoutPlan(player, data)
     --   （orderchain.lua:887 / factionmapsegment.lua:235 / entitydbg.lua:3955 ✓ 实读）
     -- ★ 成本：一个 21x21 框 = 441 次查询 ✓ —— 所以**必须复用两阶段扫描**（粗扫 + 细扫 ✓），
     --   并且把结果**缓存**（同一个星区被多个框覆盖时只查一次 ✓✓）。
-    local knownCache, cacheHits, cacheMisses, knownErrors = {}, 0, 0, 0
+    local knownCache, cacheHits, cacheMisses, knownErrors = {}, 0, 0, { n = 0 }
     local function isKnown(x, y)
         local key = x .. "," .. y
         local v = knownCache[key]
@@ -4356,90 +4466,16 @@ function CopilotLinkIn.scoutPlan(player, data)
         elseif not ok then
             -- ★ API **调用失败** ≠ 星区未知 ✗✓：计数因此**不可信** ✓ ——
             --   绝不能拿"未知数 = 0"把一个候选判死 ✗（那会把"取不到数据"变成"没得揭"✓）。
-            knownErrors = knownErrors + 1
+            knownErrors.n = knownErrors.n + 1
         end
         knownCache[key] = kn
         return kn
     end
 
-    local function surveyArea(a)
-        local w = a.upper.x - a.lower.x + 1
-        local h = a.upper.y - a.lower.y + 1
-        local unknown, total = 0, 0
-        for x = a.lower.x, a.upper.x do
-            for y = a.lower.y, a.upper.y do
-                total = total + 1
-                if not isKnown(x, y) then unknown = unknown + 1 end
-            end
-        end
-        local out = {
-            unknownCount = unknown, knownCount = total - unknown, total = total,
-            share = (total > 0) and (unknown / total) or nil,
-            lookups = total, unreliable = (knownErrors > 0),
-            basis = "player:getKnownSector(x,y)==nil 视为未探索 ✓（orderchain.lua:887 / factionmapsegment.lua:235 ✓）",
-            note = "★ 这是**这个框里**还剩多少未探索星区（数字 ✓，不是原版那个 0/1/2 枚举 ✗）",
-        }
-        if knownErrors > 0 then
-            out.note = out.note .. "；⚠️ 有 " .. tostring(knownErrors)
-                .. " 次 getKnownSector 调用失败 → 这个计数**不可信** ✓（别当 0 用 ✗）"
-        end
-        out.revealsNothingNew = (unknown == 0 and knownErrors == 0)
-        return out
-    end
-
     -- 两阶段扫描需要的 pre-scan 统计：**粗扫只拿几何**（形状/坐标 ✓），
-    -- 真正的分析与预测放在 makeScoutRec 里 ✓
+    -- 真正的分析与预测放在 scanScoutArea（模块级 ✓ —— 与 predict 共用同一份口径 ✓）里 ✓
     local function makeScoutRec(cx, cy, w, h, origin)
-        local a = buildAreaWH(cx, cy, w, h)
-        if not areaContainsShip(a, sx, sy) then return nil end
-        local entry = {
-            area = a, centre = { x = cx, y = cy },
-            distance = math.abs(cx) + math.abs(cy),
-            origin = origin, shape = shapeLabel(w, h), sizeX = w, sizeY = h,
-            x = cx, y = cy,      -- ★ **绝对星区坐标**（模型不做算术 ✓✓）
-        }
-        -- ★ 未知计数（**每个候选框** ✓✓）
-        entry.unknown = surveyArea(a)
-        entry.unknownCount = entry.unknown.unknownCount
-        entry.knownCount = entry.unknown.knownCount
-        entry.totalSectors = entry.unknown.total
-
-        local okR, _s, _t, rArea, rRes = pcall(function()
-            return run(player.index, ship, ctype, a, player.index)
-        end)
-        if not (okR and type(rRes) == "table") then
-            entry.error = tostring(rRes)
-            return entry
-        end
-        rArea.analysis = rRes
-        entry.analysis = {
-            reachable = rRes.reachable, sectors = rRes.sectors,
-            unreachable = rRes.unreachable,
-        }
-        local okP, pred = pcall(function()
-            return command:calculatePrediction(player.index, ship, rArea, { addCaptainsNote = true })
-        end)
-        if not (okP and type(pred) == "table") then
-            entry.predictionFailed = tostring(pred)
-            return entry
-        end
-        local revLo, revHi = numericRange(pred.revealsOffgrid)
-        local durLo, durHi = numericRange(pred.duration)
-        entry.revealsLow, entry.revealsHigh = revLo, revHi
-        entry.durationLow, entry.durationHigh = durLo, durHi
-        entry.attackChance = pred.attackChance and pred.attackChance.value or nil
-        -- ★ 退路：原版没给 revealsOffgrid → 用"可达星区数"当代理 ✓ 并写明 ✓
-        if entry.revealsLow == nil then
-            entry.revealsLow = tonumber(rRes.reachable) or 0
-            entry.revealsHigh = entry.revealsLow
-            entry.scoreBasis = "revealsOffgrid unavailable -> reachable sector count (proxy)"
-        else
-            entry.scoreBasis = "revealsOffgrid (vanilla, scoutcommand.lua:519-530)"
-        end
-        -- ★★ 枚举的含义照样留着（旧字段不变 ✓），但**主键换成未探索数** ✓✓
-        entry.revealsOffgridEnum = entry.revealsLow
-        entry.revealsOffgridMeaning = "0=none / 1=some / 2=all —— ★ 是枚举不是计数 ✗（scoutcommand.lua:519-529 ✓）"
-        return entry
+        return scanScoutArea(command, player, ship, ctype, sx, sy, cx, cy, w, h, origin, isKnown, knownErrors)
     end
 
     local function chanceOfEntry(e)
@@ -4633,6 +4669,468 @@ function CopilotLinkIn.scoutPlan(player, data)
     CopilotRpc.trace(string.format("scoutPlan %s 扫 %d 区 / %dms 推荐=%s",
         ship, #scanned, out.scanMs, acceptable and "有" or "无"))
     return true, out
+end
+
+-- ===========================================================================
+-- ★★★ 原子接口：predict —— 一个框 + 一个动作 + 一组参数 → 预测数字（2026-10-17 加 ✓✓）
+-- ===========================================================================
+--
+-- 主人原则（本次唯一标准）：「接口要拆到最散」✗✓ —— 游戏**只给**"给一个框 → 算这个框的数字"，
+--   「扫哪些框 / 怎么排序 / 选哪个 / 给不给建议」**全部还给调用方（决策者）** ✓。
+--
+-- ★ 它**不做什么**（原子判据 ✗）：
+--   · 不生成候选框 ✗（框由调用方给 x/y/sizeX/sizeY ✓）
+--   · 不跨框排序 ✗、不套 0.10 闸门 ✗、不产 recommendation / orderHint / riskWarning ✗
+--   · 不自动补参数 ✗（Trade 缺 goodName/deposit 就 BAD_REQUEST，绝不自己挑 ✗）
+--
+-- ★ 口径与旧计划查询**逐字一致** ✓✓（复用同一批内部函数，不重写预测逻辑 ✗）：
+--   Trade → `run` + `calculatePrediction` + `fillPrediction` + `profitModel`（= scanOneArea 的口径 ✓）
+--   Mine/Salvage → `scanJobArea`（= jobPlan 的口径 ✓）
+--   Sell → `scanSellArea`（= sellPlan 的口径 ✓）
+--   Scout → `scanScoutArea`（= scoutPlan 的口径 ✓）
+--
+-- 入参：
+--   单框  {what="predict", ship, action, x, y, sizeX, sizeY, duration?, safeMode?,
+--          escorts[]?, goodName?, deposit?(Trade), goodsToSell?(Sell)}
+--   批量  {what="predict", ship, action, boxes=[{x,y,sizeX,sizeY, …同上…}]}（N≤24 ✓）
+-- 出参（每框）：{ box:{x,y,sizeX,sizeY,lower,upper,containsShip},
+--                 risk:{attackChance,baseAttackChance,riskKind}, value:{…按动作口径…} }
+-- 错误串：BAD_REQUEST / NO_POSITION / NO_ANALYSIS_RUN / NO_COMMAND / SHIP_NOT_IN_AREA /
+--          NO_ROUTE / HOLD_EMPTY / BAD_ACTION；预测失败 → 该框 predictionFailed（不中断整批 ✓）
+
+local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job)
+    local cx, cy = tonumber(b.x), tonumber(b.y)
+    local sizeX, sizeY = tonumber(b.sizeX), tonumber(b.sizeY)
+    if cx == nil or cy == nil or sizeX == nil or sizeY == nil then
+        return { box = { x = b.x, y = b.y, sizeX = b.sizeX, sizeY = b.sizeY, containsShip = nil },
+                 error = "BAD_REQUEST: each box needs x, y, sizeX, sizeY" }
+    end
+    cx, cy = math.floor(cx), math.floor(cy)
+    local area = buildAreaWH(cx, cy, sizeX, sizeY)
+    local containsShip = areaContainsShip(area, shipX, shipY)
+    local boxInfo = {
+        x = cx, y = cy, sizeX = math.floor(sizeX), sizeY = math.floor(sizeY),
+        lower = { x = area.lower.x, y = area.lower.y },
+        upper = { x = area.upper.x, y = area.upper.y },
+        containsShip = containsShip,
+    }
+    if not containsShip then
+        return { box = boxInfo, error = "SHIP_NOT_IN_AREA", value = nil, risk = nil }
+    end
+
+    if action == "Trade" then
+        local goodName = b.goodName
+        local deposit = tonumber(b.deposit)
+        if type(goodName) ~= "string" or goodName == "" then
+            return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs goodName (from tradeRoutes)" }
+        end
+        if deposit == nil or deposit <= 0 then
+            return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs deposit > 0" }
+        end
+        local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+            return run(player.index, ship, ctype, area, player.index)
+        end)
+        if not okRun then
+            return { box = boxInfo, error = "area analysis failed: " .. tostring(rShipName) }
+        end
+        local results = rResults or rArea
+        if type(rArea) == "table" then area = rArea end
+        if type(results) ~= "table" then
+            return { box = boxInfo, error = "area analysis returned nothing" }
+        end
+        -- ★ 与 scanOneArea 同一道：把分析结果挂回 area（否则 calculatePrediction 报 analysis nil ✗）
+        area.analysis = results
+        local routes = (type(results.routes) == "table") and results.routes or {}
+        attachGoodsPrices(goodsLib, routes)
+        local route = nil
+        for _, r in ipairs(routes) do if r.name == goodName then route = r break end end
+        if route == nil then
+            return { box = boxInfo, error = "NO_ROUTE: no route named '" .. tostring(goodName) .. "' in this box" }
+        end
+        local escorts = {}
+        if type(b.escorts) == "table" then
+            for _, n in ipairs(b.escorts) do
+                if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
+            end
+        end
+        local cand = {
+            name = route.name, lowest = route.lowest, highest = route.highest,
+            basePrice = route.basePrice, unitSize = route.unitSize,
+            profitPerSize = route.profitPerSize, from = route.from, to = route.to,
+        }
+        cand.unitProfit = (route.basePrice and route.basePrice * ((route.highest or 0) - (route.lowest or 0))) or nil
+        cand.deposit = math.floor(deposit)
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, area,
+                { goodName = goodName, deposit = cand.deposit, escorts = {} })
+        end)
+        if not (okP and type(pred) == "table") then
+            return { box = boxInfo, error = nil, predictionFailed = "prediction failed: " .. tostring(pred), value = nil, risk = nil }
+        end
+        fillPrediction(cand, pred)
+        if #escorts > 0 then
+            local ok2, p2 = pcall(function()
+                return command:calculatePrediction(player.index, ship, area,
+                    { goodName = goodName, deposit = cand.deposit, escorts = escorts })
+            end)
+            if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
+                cand.attackChanceWithEscorts = tonumber(p2.attackChance.value)
+            end
+        end
+        local base = tonumber(cand.attackChance)
+        local we = tonumber(cand.attackChanceWithEscorts)
+        if we ~= nil and (base == nil or we < base) then cand.attackChanceEffective = we
+        else cand.attackChanceEffective = base end
+        -- ★ 最终口径与 summariseArea 一致：用 attackChanceEffective 重算 netProfit ✓
+        local bl, bh, el, eh, basis = profitModel(cand)
+        cand.bestCaseLow, cand.bestCaseHigh = bl, bh
+        cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = el, eh, basis
+        return {
+            box = boxInfo,
+            risk = {
+                attackChance = cand.attackChanceEffective,
+                baseAttackChance = cand.attackChance,
+                attackChanceWithEscorts = cand.attackChanceWithEscorts,
+                riskKind = "tradeAmbushChance(whole task, this box)",
+            },
+            value = {
+                routeName = cand.name,
+                profitPerFlight = cand.profitPerFlight,
+                flights = cand.flights,
+                flightTime = cand.flightTime,
+                netProfitLow = cand.netProfitLow,
+                netProfitHigh = cand.netProfitHigh,
+                bestCaseLow = cand.bestCaseLow,
+                bestCaseHigh = cand.bestCaseHigh,
+                profitBasis = cand.profitBasis,
+                deposit = cand.deposit,
+                profitPerSize = cand.profitPerSize,
+                maxAvailable = cand.maxAvailable,
+                transportedPerFlight = cand.transportedPerFlight,
+                from = cand.from,
+                to = cand.to,
+                escorts = escorts,
+            },
+        }
+
+    elseif action == "Mine" or action == "Salvage" then
+        if type(Job) ~= "table" then
+            return { box = boxInfo, error = "NO_LIB: copilot/job did not load" }
+        end
+        local matList, nMaterials = jobMaterialTable(goodsLib)
+        local matNames = {}
+        for i = 1, nMaterials do matNames[i] = matList[i].name end
+        local weights, scoreBasis, _weightSource = jobTierWeights(Job, matList, nMaterials, b.tierWeights)
+        local rarityTierOf = nil
+        do
+            local okR, tierOf = pcall(function()
+                local t = {}
+                for _, r in ipairs(Job.RARITY_MIX) do t[r.name] = tonumber(Rarity(r.type).value) end
+                return t
+            end)
+            if okR and type(tierOf) == "table" then rarityTierOf = tierOf end
+        end
+        local rarityTier = Job.expectedRarityTier(rarityTierOf)
+        local collected = {}
+        for i = 0, 15 do collected[i] = true end
+        local escorts = {}
+        if type(b.escorts) == "table" then
+            for _, n in ipairs(b.escorts) do
+                if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
+            end
+        end
+        -- duration 夹到命令的合法区间（与 jobParamGrid 同口径 ✓）
+        local duration = tonumber(b.duration) or 1
+        if duration <= 0 then duration = 1 end
+        do
+            local from, to = 0.5, 2
+            local okV = pcall(function()
+                local v = command:getConfigurableValues(player.index, ship)
+                if type(v) == "table" and type(v.duration) == "table" then
+                    local a, bb = tonumber(v.duration.from), tonumber(v.duration.to)
+                    if a ~= nil and a > 0 then from = a end
+                    if bb ~= nil and bb > 0 then to = bb end
+                end
+            end)
+            if to < from then to = from end
+            if duration < from then duration = from end
+            if duration > to then duration = to end
+        end
+        local opts = {
+            action = action, gate = gate, band = NET_PROFIT_BAND,
+            nMaterials = nMaterials, matNames = matNames, weights = weights,
+            scoreBasis = scoreBasis, rarityTier = rarityTier, collected = collected,
+        }
+        local params = { { tag = "predict", duration = duration, safeMode = (b.safeMode == true), escorts = escorts } }
+        local rec = scanJobArea(command, Job, player, ship, ctype, area, params, opts)
+        local best = rec.best
+        if best == nil then
+            return { box = boxInfo, error = rec.error or "no prediction", value = nil, risk = nil }
+        end
+        if best.predictionFailed ~= nil or best.error ~= nil then
+            return { box = boxInfo, predictionFailed = best.predictionFailed or best.error, value = nil, risk = nil }
+        end
+        local value = {
+            tag = best.tag,
+            duration = best.duration,
+            safeMode = best.safeMode,
+            hasOutput = best.hasOutput,
+            valueLow = best.valueLow,
+            valueHigh = best.valueHigh,
+            topTier = best.topTier,
+            topMaterial = best.topMaterial,
+            items = best.items,
+            scrapLow = best.scrapLow,
+            scrapHigh = best.scrapHigh,
+            fieldTier = rec.fieldTier,
+        }
+        return {
+            box = boxInfo,
+            risk = {
+                attackChance = best.chance,
+                baseAttackChance = best.baseAttackChance,
+                riskKind = "jobAmbushChance(whole task, this box, this parameter set)",
+            },
+            value = value,
+        }
+
+    elseif action == "Sell" then
+        local hold, herr = readHoldGoods(player, ship)
+        if hold == nil then
+            return { box = boxInfo, error = "HOLD_UNREADABLE: " .. tostring(herr) }
+        end
+        if #hold == 0 then
+            return { box = boxInfo, error = "HOLD_EMPTY: the hold is empty — there is nothing to sell" }
+        end
+        if type(b.goodsToSell) == "table" and #b.goodsToSell > 0 then
+            local wanted = {}
+            for _, want in ipairs(b.goodsToSell) do
+                local wn = type(want) == "table" and want.goodName or nil
+                if type(wn) == "string" then
+                    for _, have in ipairs(hold) do
+                        if have.goodName == wn then
+                            local amt = tonumber(want.amount) or have.amount
+                            if amt > have.amount then amt = have.amount end
+                            if amt > 0 then
+                                wanted[#wanted + 1] = { goodName = wn, amount = math.floor(amt), stolen = have.stolen }
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+            if #wanted > 0 then hold = wanted end
+        end
+        local rec = scanSellArea(command, player, ship, ctype, hold, gate, shipX, shipY, cx, cy, sizeX, sizeY, "predict")
+        if rec == nil then
+            return { box = boxInfo, error = "SHIP_NOT_IN_AREA" }
+        end
+        local cand = rec.best
+        if cand == nil then
+            return { box = boxInfo, error = rec.error or "no prediction", value = nil, risk = nil }
+        end
+        local perGood, missing = sellPerGoodNumbers(hold, rec)
+        return {
+            box = boxInfo,
+            risk = {
+                attackChance = cand.attackChance,
+                baseAttackChance = cand.attackChance,
+                riskKind = "sellAmbushChance(whole task, this box)",
+            },
+            value = {
+                yieldLow = cand.yieldLow,
+                yieldHigh = cand.yieldHigh,
+                netProfitLow = cand.netProfitLow,
+                netProfitHigh = cand.netProfitHigh,
+                bestCaseLow = cand.bestCaseLow,
+                bestCaseHigh = cand.bestCaseHigh,
+                profitBasis = cand.profitBasis,
+                duration = cand.duration,
+                keepFractionOnAttack = cand.keepFractionOnAttack,
+                perGood = perGood,
+                perGoodUnavailable = (#missing > 0) and missing or nil,
+            },
+        }
+
+    elseif action == "Scout" then
+        local knownCache, knownErrors = {}, { n = 0 }
+        local function isKnown(x, y)
+            local key = x .. "," .. y
+            local v = knownCache[key]
+            if v ~= nil then return v end
+            local ok, view = pcall(function() return player:getKnownSector(x, y) end)
+            local kn = false
+            if ok and view ~= nil then kn = true
+            elseif not ok then knownErrors.n = knownErrors.n + 1 end
+            knownCache[key] = kn
+            return kn
+        end
+        local entry = scanScoutArea(command, player, ship, ctype, shipX, shipY, cx, cy, sizeX, sizeY, "predict", isKnown, knownErrors)
+        if entry == nil then
+            return { box = boxInfo, error = "SHIP_NOT_IN_AREA" }
+        end
+        if entry.error ~= nil or entry.predictionFailed ~= nil then
+            return { box = boxInfo, predictionFailed = entry.predictionFailed or entry.error, value = nil, risk = nil }
+        end
+        return {
+            box = boxInfo,
+            risk = {
+                attackChance = entry.attackChance,
+                baseAttackChance = entry.attackChance,
+                riskKind = "scoutAmbushChance(whole task, this box)",
+            },
+            value = {
+                unknownCount = entry.unknownCount,
+                knownCount = entry.knownCount,
+                totalSectors = entry.totalSectors,
+                revealsLow = entry.revealsLow,
+                revealsHigh = entry.revealsHigh,
+                revealsOffgridEnum = entry.revealsOffgridEnum,
+                durationLow = entry.durationLow,
+                durationHigh = entry.durationHigh,
+                distance = entry.distance,
+                scoreBasis = entry.scoreBasis,
+            },
+        }
+
+    else
+        return { box = boxInfo, error = "BAD_ACTION: unsupported action " .. tostring(action) }
+    end
+end
+
+function CopilotLinkIn.predict(player, data)
+    data = data or {}
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "predict needs data.ship"
+    end
+    local action = data.action
+    if type(action) ~= "string" or action == "" then
+        return false, "BAD_REQUEST", "predict needs data.action (Mine | Salvage | Trade | Sell | Scout)"
+    end
+    local ctype = COMMAND_TYPES[action]
+    if ctype == nil then
+        return false, "BAD_ACTION", "known actions: Mine, Salvage, Trade, Sell, Scout (got " .. tostring(action) .. ")"
+    end
+
+    local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if not okPos or tonumber(px) == nil or tonumber(py) == nil then
+        return false, "NO_POSITION", "cannot read ship position for " .. ship
+    end
+    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+
+    local okInc, incErr = pcall(function() return include("areaanalysis") end)
+    if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
+    if type(run) ~= "function" then return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define run()" end
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF or type(factory) ~= "table" then return false, "NO_COMMAND_FACTORY", tostring(factory) end
+    local okCmd, command = pcall(function() return factory.makeCommand(ctype) end)
+    if not okCmd or command == nil then return false, "NO_COMMAND", tostring(command) end
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if not okGoods then goodsLib = nil end
+
+    local Job = nil
+    if action == "Mine" or action == "Salvage" then
+        local okJob, j = pcall(function() return include("copilot/job") end)
+        if okJob and type(j) == "table" then Job = j end
+    end
+
+    local gate = tonumber(data.maxAttackChance) or 0.10
+
+    local boxes = data.boxes
+    local single = true
+    if type(boxes) == "table" and #boxes > 0 then
+        if #boxes > 24 then
+            return false, "BAD_REQUEST", "predict boxes: N <= 24 (got " .. tostring(#boxes) .. ")"
+        end
+        single = false
+    else
+        boxes = { data }
+    end
+
+    local results = {}
+    for _, b in ipairs(boxes) do
+        results[#results + 1] = predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job)
+    end
+
+    if single then
+        local r = results[1]
+        if r.error == "SHIP_NOT_IN_AREA" then
+            return false, "SHIP_NOT_IN_AREA", "the box does not contain the ship; this action requires the ship inside the box"
+        end
+        return true, r
+    end
+    return true, {
+        ship = ship, action = action, boxCount = #results, boxes = results,
+        note = "★ 每个框独立：单框只算一框、批量 N 只算 N 框 ✓；不排序、不推荐、不套闸门 ✗（选哪个由调用方定 ✓）。",
+    }
+end
+
+-- ===========================================================================
+-- ★★★ 原子接口：tradeRoutes —— 某个框内的贸易路线 + 逐货数字（2026-10-17 加 ✓✓）
+-- ===========================================================================
+--
+-- 出参：{ box:{x,y,sizeX,sizeY,lower,upper,containsShip}, routes:[{name,lowest,highest,
+--         basePrice,unitSize,profitPerSize,from,to}, …] }（每条路线逐货数字 ✓，不含预测 ✗）
+-- ★ 它**不做什么** ✗：不挑路线、不算预付金、不排序、不推荐 ✓。
+--   组合关系：tradeRoutes(box) 拿路线 → 决策者挑 goodName + 定 deposit → predict(box, Trade, …) 拿风险与净收益 ✓。
+function CopilotLinkIn.tradeRoutes(player, data)
+    data = data or {}
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "tradeRoutes needs data.ship"
+    end
+    local cx, cy = tonumber(data.x), tonumber(data.y)
+    local sizeX, sizeY = tonumber(data.sizeX), tonumber(data.sizeY)
+    if cx == nil or cy == nil or sizeX == nil or sizeY == nil then
+        return false, "BAD_REQUEST", "tradeRoutes needs data.x, data.y, data.sizeX, data.sizeY"
+    end
+
+    local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if not okPos or tonumber(px) == nil or tonumber(py) == nil then
+        return false, "NO_POSITION", "cannot read ship position for " .. ship
+    end
+    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+
+    local okInc, incErr = pcall(function() return include("areaanalysis") end)
+    if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
+    if type(run) ~= "function" then return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define run()" end
+
+    local area = buildAreaWH(math.floor(cx), math.floor(cy), sizeX, sizeY)
+    local containsShip = areaContainsShip(area, shipX, shipY)
+
+    local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+        return run(player.index, ship, COMMAND_TYPES.Trade, area, player.index)
+    end)
+    if not okRun then
+        return false, "NO_ANALYSIS_RUN", "area analysis failed: " .. tostring(rShipName)
+    end
+    local results = rResults or rArea
+    if type(rArea) == "table" then area = rArea end
+    if type(results) ~= "table" then
+        return false, "NO_ANALYSIS_RUN", "area analysis returned nothing"
+    end
+    local routes = (type(results.routes) == "table") and results.routes or {}
+
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if okGoods then attachGoodsPrices(goodsLib, routes) end
+
+    return true, {
+        ship = ship,
+        box = {
+            x = math.floor(cx), y = math.floor(cy),
+            sizeX = math.floor(sizeX), sizeY = math.floor(sizeY),
+            lower = { x = area.lower.x, y = area.lower.y },
+            upper = { x = area.upper.x, y = area.upper.y },
+            containsShip = containsShip,
+        },
+        routeCount = #routes,
+        routes = routes,
+        note = "★ 只有这个框里的路线与逐货数字 ✓；不挑路线、不算预付金、不排序、不推荐 ✗。"
+            .. "要某条路线的风险/净收益，用 predict 单独算 ✓。",
+    }
 end
 
 -- ---------------------------------------------------------------------------
