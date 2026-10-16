@@ -54,6 +54,7 @@
 | 主人的硬规矩是什么 | [`rules/owner-rules.md`](rules/owner-rules.md) |
 | "安全"是什么意思 / safeMode 能不能开 | [`rules/owner-rules.md`](rules/owner-rules.md) + [`mechanics/risk-and-ambush.md`](mechanics/risk-and-ambush.md) |
 | 手上有哪些工具 / 该查哪个 `what` / 下单字段哪些真被读 | [`ops/tools-cheatsheet.md`](ops/tools-cheatsheet.md) |
+| 游戏接口为什么/怎么拆原子（predict / tradeRoutes / 迁移顺序） | [`ops/atomic-rpc.md`](ops/atomic-rpc.md) |
 | 这个船空闲了，我能给它下什么命令 | [`mechanics/commands.md`](mechanics/commands.md) |
 | 某条命令的区域多大 / 船必须进去吗 | [`mechanics/areas-and-boxes.md`](mechanics/areas-and-boxes.md) |
 | 候选框为什么有好几个 / 框心能不能挪 / 形状能不能变 | [`mechanics/areas-and-boxes.md`](mechanics/areas-and-boxes.md) |
