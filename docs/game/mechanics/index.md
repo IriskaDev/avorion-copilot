@@ -62,9 +62,8 @@
 
 ## 8. 规则层（玩家定的，不是机制）
 
-- [`../rules/owner-rules.md`](../rules/owner-rules.md) —— **硬规矩**：风险闸门 ≤10%、safeMode 一般不要开、
-  「安全」= 局势概率 <10%（**不是**那个开关）、比较只用 `baseAttackChance`。
-- [`../rules/reference-strategy.md`](../rules/reference-strategy.md) —— 主人的偏好，**明确不具约束力**。
+- **硬规矩** → [`../rules/owner-rules.md`](../rules/owner-rules.md)。
+- 主人的偏好（**明确不具约束力**）→ [`../rules/reference-strategy.md`](../rules/reference-strategy.md)。
 
 ## 9. 工具层 —— [`../ops/tools-cheatsheet.md`](../ops/tools-cheatsheet.md)
 
