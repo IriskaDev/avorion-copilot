@@ -212,7 +212,7 @@ const DEFAULTS = {
   port: 8765,
   provider: 'deepseek-official',
   model: 'deepseek-flash',
-  maxTokens: 2000,   // ★ 700 不够：模型会把额度烧在思维链上，正文被截断 → 解析失败 ✗
+  maxTokens: 8000,   // ★ 700 不够：模型会把额度烧在思维链上，正文被截断 → 解析失败 ✗
   temperature: 0.2,
 }
 /**
@@ -1036,7 +1036,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         }
         // ★★ 空载荷也必须当"没取到" ✗✓（2026-10-17 实测: 六个计划分支少返回一个 true ✗
         //    → RPC 的 payload=nil → 工具层看到 `{}` ✓ —— 而模型会把它读成"没有候选" ✗✓✓）
-        const emptyPayload = jr.ok
+        const emptyPayload = jr.ok && (jr.data === undefined || jr.data === null || (typeof jr.data === 'object' && Object.keys(jr.data as Record<string, unknown>).length === 0))
           && (jr.data === undefined || jr.data === null
             || (typeof jr.data === 'object' && !Array.isArray(jr.data)
               && Object.keys(jr.data as Record<string, unknown>).length === 0))
