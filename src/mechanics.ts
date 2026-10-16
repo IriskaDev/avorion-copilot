@@ -15,8 +15,9 @@ export const MECHANICS_BRIEF = `可用命令（都是后台命令：船长带队
     pirate activity. **However, these contain more resources.**」(minecommand.lua:1260)；
     且 safeMode 会**主动把选择权重从更肥的派系星区挪开**（outerFactionSectorWeight/3、
     centralFactionSectorWeight/1.5，minecommand.lua:1180 附近）—— 字面上把船长赶去更贫瘠的地面。
-  · ★★ **主人的规矩（玩家约束）**：safeMode **收益十分低** ——
-    **伏击概率在 10% 以下时不要开**；只有伏击概率 **> 10%** 时它才值得考虑。
+  · ★★ **主人的规矩（玩家约束）**：「安全模式**一般不要开**；我们说的**安全**是指
+    **遭遇伏击概率 < 10%**（是**局势**，不是这个开关）；概率 < 10% 时**绝不要开**；
+    它是**最后手段**，不是默认的求稳手段。」✗ 也不许用"没拿到风险数字 → 先开 safeMode 保平安"这条推理 ✗。
 - 时长与风险：伏击概率随任务时长上升 —— **超过 1 小时后，每多 1 小时在基准概率上再 +40%**
   （原版 'attackProbability = attackProbability + attackProbability * (hours - 1) * 0.4'，
   'simulationutility.lua:818-821' ✓）；短于 1 小时则低于基准 ✓；最后还会取 'max(baseProbability, …)' ✓。
