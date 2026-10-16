@@ -1370,11 +1370,15 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           path: COMMANDER_API,
           handler: async (req, res) => {
             try {
-              const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
-                .replace(/^\/avorion-copilot\/api/, '') || '/'
+              const url = new URL(req.url ?? '/', 'http://localhost')
+              const pathname = url.pathname.replace(/^\/avorion-copilot\/api/, '') || '/'
               const method = String(req.method ?? 'GET').toUpperCase()
               const body = method === 'POST' ? await readBody(req) : {}
-              const mine = typeof body.session === 'string' && body.session.trim() !== '' ? body.session.trim() : null
+              // ★ 缺陷③修复：GET 时 body 恒为 {} → `mine` 恒 null ✗ → 页面永远显示"关" ✗。
+              //   现在从 URL 查询串 `?session=` 兜底 ✓（POST 的 toggle/clear 仍走 body ✓）。
+              const fromBody = typeof body.session === 'string' && body.session.trim() !== '' ? body.session.trim() : null
+              const fromQuery = url.searchParams.get('session')
+              const mine = fromBody ?? (typeof fromQuery === 'string' && fromQuery.trim() !== '' ? fromQuery.trim() : null)
 
               if (method === 'GET' && (pathname === '/commander' || pathname === '/')) {
                 return json(res, 200, { ok: true, ...snapshot(mine) })
