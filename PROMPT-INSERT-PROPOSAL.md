@@ -1,5 +1,7 @@
 # PROMPT-INSERT-PROPOSAL.md —— 提示词插入提案
 
+> ★ **权威说明**：决策口径以 [`docs/game/`](docs/game/README.md) 为准，本文件是历史/资料库。
+
 > **这是一份提案，不是改动。** 本文件只说明「要加什么、加在哪、为什么能过守卫」，
 > **不直接修改** [`MECHANICS.md`](MECHANICS.md) 或 [`plugin/prompt/system.md`](plugin/prompt/system.md)。
 > 等主人点头后再动手，改完按文末「操作清单」跑生成/校验脚本。
