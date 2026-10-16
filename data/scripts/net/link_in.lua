@@ -80,31 +80,31 @@ function CopilotLinkIn.onQuery(data)
 --   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
 --   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
 --   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
-return CopilotLinkIn.informOnly(CopilotLinkIn.tradePlan(player, data), data)
+return true, CopilotLinkIn.informOnly(CopilotLinkIn.tradePlan(player, data), data)
 
     elseif what == "minePlan" then
         -- ★★★ 采矿决策的**数据获取 + 组装**（只算不下单 ✓）—— 见 jobPlan ✓
         --   与 tradePlan 同构：多区域 × 参数 × 层级加权 + 同一道 0.10 风险闸门 ✓✓
-        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Mine"), data)
+        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Mine"), data)
 
     elseif what == "salvagePlan" then
         -- ★★★ 打捞决策：装备件数 × E[稀有度层级]，次级键 = 残骸场材料层级均值 ✓
-        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Salvage"), data)
+        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Salvage"), data)
 
     elseif what == "jobPlan" then
         -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
-        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, data.action), data)
+        return true, CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, data.action), data)
 
     elseif what == "sellPlan" then
         -- ★★★ 卖货决策（2026-10-17 加，Issue B ✓✓）：把**船上的货**变现 ✓
         --   为什么需要：Trader 被伏击召回时**只退押金、不发利润**，货还留在船上 ✓
         --   （原版 tradecommand.lua:456-490 ✓），此时再下 Trade 会**装不进新货** ✗
         --   → 必须先 Sell ✓✓（主人的场景 ✓）
-        return CopilotLinkIn.informOnly(CopilotLinkIn.sellPlan(player, data), data)
+        return true, CopilotLinkIn.informOnly(CopilotLinkIn.sellPlan(player, data), data)
 
     elseif what == "scoutPlan" then
         -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
-        return CopilotLinkIn.informOnly(CopilotLinkIn.scoutPlan(player, data), data)
+        return true, CopilotLinkIn.informOnly(CopilotLinkIn.scoutPlan(player, data), data)
 
     elseif what == "sectorFacts" then
         -- ★★ 任意星区的**事实**（2026-10-17 补 ✓✓）
@@ -3020,6 +3020,13 @@ end
 --   而"超闸门"的候选也**照样列出来**（标 exceedsRiskLimit=true ✓），不静默丢弃 ✓✓。
 --
 --   本函数只加字段、不改任何既有字段 ✓ —— 既不重排、也不删减 ✓。
+--
+--   ★★ ★ 调用它时**必须**写成 `return true, CopilotLinkIn.informOnly(...)` ✓✓
+--   （2026-10-17 实测血案 ✗：六个计划分支写成 `return informOnly(...)` 只有一个返回值 ✗，
+--     而 RPC 契约是 (ok, payload, why) ✓ —— 于是 ok=那个表（真值 ✓）而 payload=nil ✗
+--     → DSH 收到**空载荷 {}** ✗✓，模型**完全没有计划数据**却以为"没有候选" ✗✓✓。
+--     其它查询（ship/caps/fleet/sectorFacts）都写对了 true ✓，所以只有计划坏 ✗。
+--     ★ 加包装/加字段时，**先看这一行** ✓✓。）
 function CopilotLinkIn.informOnly(resp, data)
     if type(resp) ~= "table" then return resp end
     local gate = 0.10
@@ -3046,6 +3053,39 @@ function CopilotLinkIn.informOnly(resp, data)
                 end
                 if depth ~= nil and depth > 0 then tagList(c.candidates, depth - 1) end
             end
+        end
+    end
+
+    -- ★★ 零候选时给**机器可读的原因** ✓✓（2026-10-17 补 ✗✓ —— 主人实测血案 ✓）
+    --
+    --   为什么必须有它 ✗：模型看到空 plan 会**自己编一个解释** ✗✓（实测思维链：
+    --   「areaRanking is empty … maybe the ship can't mine anything」✓）——
+    --   而"这船没这个工具 ✗" / "区域里真没东西 ✗" / "有候选但全越了闸门 ✗" 是**三件不同的事** ✓。
+    --   本段**只用响应里已有的事实**推断 ✓（capability.materials[].dps ✓ + areaRanking ✓），
+    --   **不新造数据、不做推荐** ✗✓（选哪个仍由决策模型定 ✓）。
+    if type(resp.areaRanking) == "table" and #resp.areaRanking == 0 then
+        local cap = resp.capability
+        local canDo = nil                       -- nil = 不知道 ✓
+        if type(cap) == "table" and type(cap.materials) == "table" then
+            canDo = false
+            for _, m in ipairs(cap.materials) do
+                local dps = tonumber(m.dps)
+                if dps ~= nil and dps > 0 then canDo = true; break end
+            end
+        end
+        if canDo == false then
+            resp.noCandidatesReasonKind = "NO_TOOL_FOR_THIS_JOB"
+            resp.noCandidatesReason = "这艘船对**所有**材料 dps=0 ✗ —— 它没有做这个动作的设备 ✓" ..
+                "（口径来自原版 getMiningProperties / getSalvagingProperties ✓，见 capability.materials ✓）"
+        elseif canDo == nil then
+            resp.noCandidatesReasonKind = "UNKNOWN_NO_CAPABILITY"
+            resp.noCandidatesReason = "没拿到这艘船的能力信息 ✗（capability 缺失 ✓）—— " ..
+                "**无法判断**是「它做不了」还是「区域里没东西」✗✓，别当后者用 ✓"
+        else
+            resp.noCandidatesReasonKind = "NO_ACCEPTABLE_CANDIDATE"
+            resp.noCandidatesReason = "这艘船有设备 ✓，但扫过的区域里**没有任何有产出/可用的档位** ✓" ..
+                "（看 areaRanking[].error 与 scanNote ✓ —— 也可能是区域里本来就没有可采/可捞目标 ✓）；" ..
+                "★ 与「闸门」无关：越闸门的候选**本来也会列出来** ✓，这里是真的一个都没有 ✓"
         end
     end
 
