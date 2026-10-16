@@ -433,6 +433,15 @@ interface DecideFacts {
   sellPlan?: Record<string, unknown>
   /** 勘察计划（能勘察的船才有）：揭开的新地图 + 离地图中心多远 */
   scoutPlan?: Record<string, unknown>
+  /**
+   * ★★ 这次**没取到**的计划 ✗✓（2026-10-17 实测血案补 ✓）
+   *
+   * 为什么必须有它 ✗：游戏侧算好了计划 ✓（rpc_trace 里有 `推荐=longest/Titanium` ✓），
+   * 但响应因为 bug/重连丢了 ✗ → 插件只打一行日志就 `continue` ✗✓ → 模型拿到的是
+   * **什么都没有** ✓，于是它以为「**没有候选**」✗✓ 而开始瞎猜 ✓✓。
+   * "取不到" 与 "确实没有候选" 是**两个完全不同的事实** ✗ —— 必须让模型分得清 ✓。
+   */
+  planFetchFailures?: Array<{ what: string; why: string }>
 }
 
 /**
@@ -502,6 +511,17 @@ function buildPrompt(f: DecideFacts): string {
   lines.push('这艘船的现状（能力卡）：')
   lines.push(JSON.stringify(f.card ?? {}, null, 2))
   lines.push('')
+  if (f.planFetchFailures !== undefined && f.planFetchFailures.length > 0) {
+    // ★★ 「没取到」必须与「没有候选」分开说 ✗✓（2026-10-17 实测血案 ✓）
+    lines.push('★★ 这次**没取到**下面这些计划 ✗✓ —— 这是**取数失败**，')
+    lines.push('   **并不代表那里没有候选** ✗✗（计划可能根本是好的 ✓，只是这次没传过来 ✓）：')
+    for (const pf of f.planFetchFailures) {
+      lines.push(`  · ${pf.what} 取失败，原因：${pf.why}`)
+    }
+    lines.push('  → 所以：不要据"它没来"就断定"没得挖/没得捞" ✗；')
+    lines.push('    你可以再等一轮、换个动作、先侦察/换位置、或者先做别的 —— **由你判断** ✓。')
+    lines.push('')
+  }
   if (f.jobPlans !== undefined && f.jobPlans.length > 0) {
     // ★★ Mine / Salvage 的真实计划（游戏侧算好的 ✓ —— 2026-10-17 补）
     //   之前 Mine/Salvage 是**瞎猜**的 ✗：卡片只说"15x15、要船长、产出进全局资源"，
@@ -1002,13 +1022,29 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     // ★★ Mine / Salvage：拉游戏侧算好的真实计划 ✓✓（多区域 × 参数 × 层级加权 ✓）
     if (jobWants.length > 0) {
       const planned: Array<{ action: string; plan: Record<string, unknown> }> = []
+      const planFails: Array<{ what: string; why: string }> = []
       for (const jw of jobWants) {
         const q: Record<string, unknown> = { what: jw.what, ship, escorts: facts.escortCandidates ?? [] }
         if (jobAreaCap !== undefined) q.maxAreas = jobAreaCap
-        const jr = await ask(peer, 'query', q, 120)
+        let jr = await ask(peer, 'query', q, 120)
         if (!jr.ok) {
-          logger.warn(`avorion-copilot: ${ship} 拉 ${jw.what} 失败 ${jr.why ?? ''}`)
-          live(`  ├ ${jw.what} 拉取失败：${String(jr.why ?? '')}`)
+          // ★ 重试一次 ✓（实测: 游戏侧重连会打断在途请求 ✗ → "connection replaced by a newer one" ✓）
+          live(`  ├ ${jw.what} 拉取失败（${String(jr.why ?? '')}）→ 重试一次 ✓`)
+          await new Promise((r) => setTimeout(r, 1500))
+          jr = await ask(peer, 'query', q, 120)
+          if (jr.ok) live(`  ├ ${jw.what} 重试成功 ✓`)
+        }
+        // ★★ 空载荷也必须当"没取到" ✗✓（2026-10-17 实测: 六个计划分支少返回一个 true ✗
+        //    → RPC 的 payload=nil → 工具层看到 `{}` ✓ —— 而模型会把它读成"没有候选" ✗✓✓）
+        const emptyPayload = jr.ok
+          && (jr.data === undefined || jr.data === null
+            || (typeof jr.data === 'object' && !Array.isArray(jr.data)
+              && Object.keys(jr.data as Record<string, unknown>).length === 0))
+        if (!jr.ok || emptyPayload) {
+          const why = jr.ok ? '游戏回了空载荷（★ 这不代表"没有候选" ✗✓）' : String(jr.why ?? 'unknown')
+          logger.warn(`avorion-copilot: ${ship} 拉 ${jw.what} 失败 ${why}`)
+          live(`  ├ ${jw.what} **没取到** ✗（${why}）`)
+          planFails.push({ what: jw.what, why })
           continue
         }
         const jd = (jr.data ?? {}) as Record<string, unknown>
@@ -1032,6 +1068,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         )
       }
       if (planned.length > 0) facts.jobPlans = planned
+      if (planFails.length > 0) facts.planFetchFailures = planFails
 
     // ★★ 船上有货 → 拉一份 Sell 计划 ✓✓（Issue B：被伏击召回后必须先变现才能再贸易 ✓）
     const cardObj = (facts.card ?? {}) as Record<string, unknown>

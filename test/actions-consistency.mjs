@@ -92,6 +92,31 @@ check('compactJobPlan 保留 riskLimit', /riskLimit: e\.riskLimit/.test(idx))
 check('ESCORT_RISK_FACTOR 有"估计"标注', /我们自己的估计/.test(idx))
 check('优先用原版 attackChanceWithEscorts', /best\.withEscorts \?\?/.test(idx))
 
+// ── ⑧ ★★ RPC 返回值契约（2026-10-17 实测血案 ✓✓）
+//   游戏侧 query 分支必须写成 `return true, <payload>` ✓ —— RPC 契约是 (ok, payload, why) ✓。
+//   六个计划分支曾是 `return CopilotLinkIn.informOnly(...)` ✗（只有一个返回值 ✓）
+//   → ok=那个表（真值）而 payload=nil ✗ → DSH 收到空载荷 {} ✗✓ → 模型**完全没计划数据**
+//   却以为「没有候选」✗✓ 并开始瞎猜 ✓✓。这条断言让那种写法**再也进不了仓库** ✓。
+{
+  const bare = [...lua.matchAll(/return\s+(CopilotLinkIn\.informOnly\s*\()/g)].length
+  const good = [...lua.matchAll(/return\s+true\s*,\s*CopilotLinkIn\.informOnly\s*\(/g)].length
+  check('六个计划分支都返回 (true, payload) ✓', bare === 0, `仍单返回值 ${bare} 处 ✗`)
+  check('确实存在包装调用（不是把代码删光了 ✓）', good >= 6, `只找到 ${good} 处 ✓`)
+}
+
+// ── ⑨ 零候选必须自带机器可读的原因（否则模型自己编 ✗✓）
+check('informOnly 提供 noCandidatesReason', /noCandidatesReason\s*=/.test(lua))
+check(
+  '零候选原因区分"没设备"/"不知道"/"真没有"',
+  /NO_TOOL_FOR_THIS_JOB/.test(lua) && /UNKNOWN_NO_CAPABILITY/.test(lua) && /NO_ACCEPTABLE_CANDIDATE/.test(lua),
+)
+
+// ── ⑩ 插件侧：「没取到」必须与「没有候选」分开 ✓✓
+check('DecideFacts 有 planFetchFailures', /planFetchFailures\?/.test(idx))
+check('空载荷被当成取失败', /emptyPayload/.test(idx))
+check('提示词里明说"没取到 ≠ 没有候选"', /并不代表那里没有候选/.test(idx))
+check('取失败会重试一次', /重试一次/.test(idx))
+
 // 输出
 for (const c of checks) {
   console.log(`${c.ok ? '  ✓' : '  ✗'} ${c.name}${c.ok || !c.detail ? '' : '  → ' + c.detail}`)
