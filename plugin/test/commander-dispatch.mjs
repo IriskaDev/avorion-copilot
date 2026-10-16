@@ -192,7 +192,12 @@ await test('③ 会话挂死：硬闸内 cancel() + 放弃这一级 → 单发�
   console.log(`  result: ${JSON.stringify(out)}   took ${took}ms`)
   assert.equal(out.source, 'single-shot')
   assert.equal(agent.cancelled, 1, '挂死的一轮必须被 cancel ✓')
-  assert.equal(agent.cancelCause.kind, 'timeout')
+  // ★ cause 必须是宿主认得的 kind（user | parent | disposed | hook ✓）。
+  //   原先传的是 'timeout' ✗ —— 宿主的 abortedCancelCause 会落到 assertNever 抛错，
+  //   那一轮的 turn/end 被写成 reason: null ✗，客户端回放轨迹时 `reason.kind`
+  //   直接 TypeError → 整个会话界面空白 ✗✗（2026-10-17 实机事故）。
+  //   "插件/钩子让这一轮停下"的官方语义就是 hook ✓，所以断言跟着代码走 ✓。
+  assert.equal(agent.cancelCause.kind, 'hook')
   assert.equal(agent.inbox.length, 1, '★ 失败**绝不重递** ✓（同一艘船只递一次 ✓）')
   assert.ok(took < FAST.sessionDeadlineMs + FAST.singleShotTimeoutMs + 500, `耗时失控: ${took}ms`)
   return `掐掉挂死的一轮，仍在 ${took}ms 内给出了决策`
