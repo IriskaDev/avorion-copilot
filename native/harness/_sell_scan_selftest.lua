@@ -294,13 +294,14 @@ check("S6 失败的区域内标了 error ✓", anyErr)
 check("S6 坏区域之后照样给出推荐 ✓", r6 and r6.recommendation ~= nil)
 
 -- ---------------------------------------------------------------------------
--- ⑦ onOrder：有货时 Trade 必须被拒 ✓ 并指向 Sell ✓✓
+-- ⑦ onOrder：有货时 Trade 必须被拒 ✓ 并指向 Sell ✓✓（原子：先要显式框，再查货舱 ✓）
 -- ---------------------------------------------------------------------------
 print("== S7: onOrder 的货舱感知 ✓✓ ==")
 resetAll()
 CARGO = { [mkGood("Force Generator")] = 120 }
 local okT, codeT, msgT = LinkIn.onOrder({
-    ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, goodName = "Force Generator", deposit = 1000,
+    ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17,
+    goodName = "Force Generator", deposit = 1000,
 })
 check("S7 有货时 Trade 被拒 ✓", okT == false, tostring(okT))
 check("S7 拒绝码 = HOLD_HAS_GOODS ✓", codeT == "HOLD_HAS_GOODS", tostring(codeT))
@@ -308,30 +309,34 @@ check("S7 提示里指向 Sell ✓✓（主人点出的场景 ✓）",
     type(msgT) == "string" and msgT:find("Sell", 1, true) ~= nil, tostring(msgT))
 
 resetAll()
-local okT2, codeT2 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, deposit = 1000 })
-check("S7 空货舱时 Trade 不再被这条拦住 ✓（应走到别的原因或成功 ✓）",
+local okT2, codeT2 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, deposit = 1000 })
+check("S7 空货舱时 Trade 不再被这条拦住 ✓（走到缺 goodName 的 BAD_REQUEST ✓）",
     not (okT2 == false and codeT2 == "HOLD_HAS_GOODS"), tostring(codeT2))
 
--- ⑦b onOrder 矩形框（缺陷②）：sizeX/sizeY 一起给 → 预分析 run() 拿到的必须是**矩形** ✓✓
---   之前只读 data.size → 29x11 会静默退化成 17x17 ✗（goodName 找不到 → "No route selected" ✗）
-print("== S7b: onOrder 用 sizeX/sizeY 建矩形框（缺陷②修复）==")
+-- ⑦b onOrder 原子：sizeX/sizeY → 矩形框（缺陷②修复保留 ✓）；不再同步预分析 ✗
+print("== S7b: onOrder 用 sizeX/sizeY 建矩形框（原子，无预分析）==")
 resetAll()
-lastAreaW, lastAreaH = nil, nil
-LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, sizeX = 29, sizeY = 11, deposit = 1000 })
-check("S7b sizeX=29,sizeY=11 → 预分析 run() 拿到 29x11 矩形 ✓",
-    lastAreaW == 29 and lastAreaH == 11, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
+local okB1, rB1 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y,
+    sizeX = 29, sizeY = 11, goodName = "Force Generator", deposit = 1000 })
+check("S7b sizeX=29,sizeY=11 → 回执 area 是 29x11 矩形 ✓",
+    okB1 == true and rB1.area and (rB1.area.upper.x - rB1.area.lower.x + 1) == 29
+    and (rB1.area.upper.y - rB1.area.lower.y + 1) == 11,
+    rB1.area and (tostring(rB1.area.upper.x - rB1.area.lower.x + 1) .. "x" .. tostring(rB1.area.upper.y - rB1.area.lower.y + 1)))
 
 resetAll()
-lastAreaW, lastAreaH = nil, nil
-LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, sizeX = 11, sizeY = 29, deposit = 1000 })
-check("S7b sizeX=11,sizeY=29 → 预分析 run() 拿到 11x29 矩形 ✓",
-    lastAreaW == 11 and lastAreaH == 29, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
+local okB2, rB2 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y,
+    sizeX = 11, sizeY = 29, goodName = "Force Generator", deposit = 1000 })
+check("S7b sizeX=11,sizeY=29 → 回执 area 是 11x29 矩形 ✓",
+    okB2 == true and rB2.area and (rB2.area.upper.x - rB2.area.lower.x + 1) == 11
+    and (rB2.area.upper.y - rB2.area.lower.y + 1) == 29, "")
 
 resetAll()
-lastAreaW, lastAreaH = nil, nil
-LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, deposit = 1000 })
-check("S7b 只给 size=17（没给 sizeX/sizeY）→ 仍是 17x17 正方形兜底 ✓",
-    lastAreaW == 17 and lastAreaH == 17, tostring(lastAreaW) .. "x" .. tostring(lastAreaH))
+local okB3, rB3 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y,
+    size = 17, goodName = "Force Generator", deposit = 1000 })
+check("S7b 只给 size=17 → 回执 area 是 17x17 正方形 ✓",
+    okB3 == true and rB3.area and (rB3.area.upper.x - rB3.area.lower.x + 1) == 17
+    and (rB3.area.upper.y - rB3.area.lower.y + 1) == 17, "")
+check("S7b onOrder 不再同步预分析（nRun 仍 0 ✓ —— 原子化拆掉了顺手扫框 ✗）", nRun == 0, nRun)
 
 -- ---------------------------------------------------------------------------
 -- ⑧ JSON 往返 + 源码里的 UUID 一致 ✓

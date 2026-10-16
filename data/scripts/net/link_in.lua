@@ -409,7 +409,7 @@ function CopilotLinkIn.onOrder(data)
     local ctype = COMMAND_TYPES[action]
     if ctype == nil then
         return false, "UNKNOWN_ACTION",
-            "known actions: Mine, Salvage, Trade, Travel (got '" .. tostring(action) .. "')"
+            "known actions: Mine, Salvage, Trade, Travel, Sell, Scout (got '" .. tostring(action) .. "')"
     end
 
     local player = Player()
@@ -422,55 +422,29 @@ function CopilotLinkIn.onOrder(data)
             "ship is not available (probably busy with another command)"
     end
 
-    -- 组 area ✓（未指定则以船当前星区为中心，按默认尺寸取方块 ✓）
-    -- ★ 矩形框（缺陷②修复）：data.sizeX/sizeY 一起给就是矩形（Trade 的 29x11 / 11x29 ✓）；
-    --   只给 data.size 或都没给 → 按默认正方形兜底 ✓（原逻辑保持不变 ✓）。
-    local size = tonumber(data.size) or DEFAULT_SIZE[action] or 15
+    -- ★★★ 接口原子化（2026-10-17 主人钦定 ✓✓）：order 只做「给**这一艘**船下**这一个**动作 +
+    --    这个动作的**最小参数**」✗✓ —— **不自动选框、不自动加参数、不自动退避** ✗✓。
+    --   · 框**必须显式给**（x/y + size 或 sizeX/sizeY）✗ —— 不再"没给就用船的位置兜底" ✗
+    --   · Trade 的 goodName/deposit **必须显式给** ✗ —— 不再"自动挑一条 / 自动兜底预付金" ✗
+    --   · 不再**同步跑一遍 area analysis** 去校验/兜底路线 ✗（那是"顺手把别的也做了" ✗；
+    --     路线对不对由游戏侧 startCommand 自己校验 ✓，回错就让游戏原样报回 ✓）
     local cx, cy = tonumber(data.x), tonumber(data.y)
     if cx == nil or cy == nil then
-        local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
-        if not okPos or px == nil then
-            return false, "NO_POSITION", "cannot read ship position; pass x,y explicitly"
-        end
-        cx, cy = px, py
+        return false, "NO_POSITION", "order needs explicit data.x and data.y (no auto box selection)"
     end
-
     local sizeX, sizeY = tonumber(data.sizeX), tonumber(data.sizeY)
+    local size = tonumber(data.size)
     local area
-    if sizeX ~= nil and sizeY ~= nil then
+    if action == "Travel" then
+        area = buildAreaWH(cx, cy, 1, 1)           -- Travel = 1x1 目标星区 ✓（不要求 size ✓）
+    elseif sizeX ~= nil and sizeY ~= nil then
         area = buildAreaWH(cx, cy, sizeX, sizeY)
-    else
+    elseif size ~= nil and size > 0 then
         area = buildAreaWH(cx, cy, size, size)
+    else
+        return false, "BAD_REQUEST",
+            "order needs an explicit area: data.size (square) or data.sizeX + data.sizeY (rectangle)"
     end
-
-    -- ★★ 0) 先自己**同步**跑一遍分析 ✓✓（2026-10-16 实测的坑 ✓）
-    --
-    -- 起因：DSH 给的 goodName 可能属于**另一个区域** ✗ ——
-    --   实测就是如此：tradePlan 用 17×17 拿到 "Antigrav Unit" ✓，
-    --   而这里默认 29×29 → 商品表完全不同 ✗ →
-    --   游戏回 **"No route selected."** ✓（tradecommand.lua:762 ✓）
-    --
-    -- `run` 是**同步**的（areaanalysis.lua 末尾直接 return ✓），所以这里能立刻
-    -- 拿到本区域**真实存在**的路线表 ✓，用来校验并兜底 ✓✓。
-    local routeNames = {}
-    do
-        local okInc = pcall(function() return include("areaanalysis") end)
-        if okInc and type(run) == "function" then
-            local okPre, _s, _ty, _ar, preResults = pcall(function()
-                return run(player.index, ship, ctype, area, player.index)
-            end)
-            if okPre and type(preResults) == "table" and type(preResults.routes) == "table" then
-                for _, r in ipairs(preResults.routes) do
-                    if type(r) == "table" and type(r.name) == "string" then
-                        routeNames[#routeNames + 1] = r.name
-                    end
-                end
-            end
-        end
-    end
-    CopilotRpc.trace(string.format("onOrder 预算：%s 在 [%d,%d]-[%d,%d] 里有 %d 条路线: %s",
-        ship, area.lower.x, area.lower.y, area.upper.x, area.upper.y,
-        #routeNames, table.concat(routeNames, ", ")))
 
     -- ① 异步分析
     local ok1, err1 = invokeSimulation("startAreaAnalysis", ship, ctype, area)
@@ -482,24 +456,13 @@ function CopilotLinkIn.onOrder(data)
     self.orders = (self.orders or 0) + 1
 
     -- ② 排队第二阶段（等分析落地 ✓ —— 给 6 秒）
-    -- ★ tradecommand 只认这三个字段（源码核实 ✓）：
-    --     config.goodName  = 选哪条贸易路线（routes 里的 name ✓）
-    --     config.deposit   = 预付金（**必须 > 0**，否则 "Error starting command." ✓）
-    --     config.escorts   = 护航舰艇（★ 原版判据：与行动船距离 ≤ **护卫自己一跳航程** ✓，不要求同星系 ✓）
     local config = {
         duration = tonumber(data.duration) or 1,
         safeMode = data.safeMode == true,
         immediateDelivery = data.immediateDelivery == true,
     }
-    -- ★★ 注意：**只有 Trade 才有"路线"** ✗✓（2026-10-16 实测）
-    --   本鱼原先把这段校验放在**所有动作**上 ✗ → 下 Mine 时也被判
-    --   "this area has no trade routes at all" ✓（Mine 的 routes 当然是空的 ✓）。
-    --   所以整段用 `if ctype == COMMAND_TYPES.Trade then` 圈起来 ✓✓。
 
-    -- ★★★ Trade 的**货舱感知**（Issue B ✓✓）：船上有货 → 先卖 ✗→✓
-    --   原因（原版 tradecommand.lua ✓）：被伏击召回时货**留在船上**（:460-464 ✓），
-    --   而 Trade 只能装**剩余空间** ✗（:773-797 transportedPerFlight 受 freeCargoSpace 限制 ✓）
-    --   → 有货还去贸易 = 装得少、赚得少、钱被压在货里 ✓（主人明确点出的场景 ✓✓）
+    -- ★★★ Trade 的**货舱感知**（Issue B ✓✓，保留——这是**拒绝**不是复合 ✗）：船上有货 → 先卖 ✗→✓
     if ctype == COMMAND_TYPES.Trade then
         local hold, _herr, used = readHoldGoods(player, ship)
         if hold ~= nil and #hold > 0 then
@@ -510,34 +473,24 @@ function CopilotLinkIn.onOrder(data)
         end
     end
 
-    -- ★ goodName 必须落在**本区域的**路线表里 ✓，否则**自动挑一条** ✓✓
-    --   （原版把最好的排在最前 ✓ —— 它按 profitPerSize 排序 ✓）
+    -- ★★★ Trade 的**最小参数**（原子 ✗）：goodName + deposit **必须显式给** ✓✓
+    --   不再"自动挑一条 / 自动兜底预付金" ✗ —— 挑哪条路线、给多少预付金，是**调用方（决策者）**的活 ✓。
     if ctype == COMMAND_TYPES.Trade then
-    local wantGood = (type(data.goodName) == "string" and data.goodName ~= "") and data.goodName or nil
-    if wantGood ~= nil then
-        local found = false
-        for _, n in ipairs(routeNames) do
-            if n == wantGood then found = true; break end
+        local wantGood = (type(data.goodName) == "string" and data.goodName ~= "") and data.goodName or nil
+        if wantGood == nil then
+            return false, "BAD_REQUEST", "Trade order needs an explicit data.goodName (route name from tradeRoutes)"
         end
-        if found then
-            config.goodName = wantGood
-        else
-            CopilotRpc.trace(string.format(
-                "onOrder：goodName「%s」不在本区域路线里 → 自动改选 ✓", tostring(wantGood)))
-            wantGood = nil
+        local dep = tonumber(data.deposit)
+        if dep == nil or dep <= 0 then
+            return false, "BAD_REQUEST", "Trade order needs an explicit data.deposit > 0"
         end
+        config.goodName = wantGood
+        config.deposit = math.floor(dep)
     end
-    if config.goodName == nil and #routeNames > 0 then
-        config.goodName = routeNames[1]
-    end
-    if config.goodName == nil then
-        return false, "NO_ROUTE", "this area has no trade routes at all — try another area"
-    end
-    end   -- ★ 结束"仅 Trade"的范围 ✓
 
     -- ★★★ Sell：把 config.goodsToSell 装上（Issue B ✓✓ 2026-10-17）
     --   形状由原版决定 ✓：`{ {goodName=…, amount=…, stolen=…} }`（sellcommand.lua:243/:326-343 ✓）
-    --   默认**卖掉船上的全部货** ✓；若 DSH 显式给了 goodsToSell 就按它来（并按船上实际数量夹紧 ✓）。
+    --   默认**卖掉船上的全部货** ✓；若显式给了 goodsToSell 就按它来（并按船上实际数量夹紧 ✓）。
     if ctype == COMMAND_TYPES.Sell then
         local hold, herr, used = readHoldGoods(player, ship)
         if hold == nil then
@@ -548,7 +501,6 @@ function CopilotLinkIn.onOrder(data)
         end
         local wanted = nil
         if type(data.goodsToSell) == "table" and #data.goodsToSell > 0 then
-            -- 只认船上真有的货 ✓，数量夹到船上实际值 ✓（原版 getErrors :349-360 会在超量时报错 ✗）
             wanted = {}
             for _, want in ipairs(data.goodsToSell) do
                 local wn = type(want) == "table" and want.goodName or nil
@@ -573,25 +525,6 @@ function CopilotLinkIn.onOrder(data)
             math.floor(used or 0)))
     end
 
-    local dep = tonumber(data.deposit)
-    if dep ~= nil and dep > 0 then
-        config.deposit = math.floor(dep)
-    else
-        -- ★ 兜底：收不到预付金时**不能留 nil** ✗✓
-        --   实测：config.deposit 为 nil 会让命令在
-        --   "tradecommand.lua:797: attempt to perform arithmetic on field 'deposit'" 处炸掉 ✓，
-        --   而且那是**静默失败**——船干脆不动 ✗。所以给一个"付得起"的默认值 ✓。
-        local want = 1000000
-        local okPay, canPay = pcall(function() return player:canPay(want) end)
-        if okPay and canPay ~= true then
-            for _, cand in ipairs({ 500000, 200000, 100000, 50000, 20000, 10000, 5000, 1000 }) do
-                local ok2, can2 = pcall(function() return player:canPay(cand) end)
-                if ok2 and can2 == true then want = cand; break end
-            end
-        end
-        config.deposit = want
-        CopilotRpc.trace("onOrder：未给预付金 → 兜底 " .. tostring(want))
-    end
     if type(data.escorts) == "table" then config.escorts = data.escorts end
 
     -- ★ Mine/Salvage 还要一个 `collected` 表 ✗✓（2026-10-16 实测）

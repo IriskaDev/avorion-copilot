@@ -131,7 +131,8 @@ local player = {
         if key == "copilot_auto_ships" then return "Trader-00001\nMiner-00001\n" end
         return ""
     end,
-    getShipAvailability = function(self, name) return ShipAvailability.InBackground end,
+    getShipAvailability = function(self, name) return ShipAvailability.Available end,
+    invokeFunction = function(self, path, fn, ...) return true end,   -- startAreaAnalysis/startCommand 替身 ✓
 }
 
 local LinkIn = dofile("data/scripts/net/link_in.lua")
@@ -288,6 +289,30 @@ if okTP == true and rTP.recommendation ~= nil then
             tostring(rC.value.bestCaseLow) .. " vs " .. tostring(rec.bestCaseLow))
     end
 end
+
+-- ---------------------------------------------------------------------------
+-- ⑧ 发命令原子化：order 只做"一艘船 + 一个动作 + 最小参数"，不复合/不自动补 ✗
+-- ---------------------------------------------------------------------------
+print("== ⑧ order 原子化：不自动选框 / 不自动加参数 / 不自动退避 ==")
+-- ⑧-1 没给 x/y → 明确报错（不自动用船的位置兜底 ✗）
+local okO1, codeO1 = LinkIn.onOrder({ ship = SHIP, action = "Mine", size = 15 })
+check("⑧ 没给 x/y → NO_POSITION（不自动选框 ✗）", okO1 == false and codeO1 == "NO_POSITION", tostring(codeO1))
+-- ⑧-2 没给 size → 明确报错（不自动用默认尺寸 ✗）
+local okO2, codeO2 = LinkIn.onOrder({ ship = SHIP, action = "Mine", x = SHIP_X, y = SHIP_Y })
+check("⑧ 没给 size → BAD_REQUEST（不自动加尺寸 ✗）", okO2 == false and codeO2 == "BAD_REQUEST", tostring(codeO2))
+-- ⑧-3 Trade 没给 goodName → 明确报错（不自动挑路线 ✗）
+local okO3, codeO3 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, deposit = 1000000 })
+check("⑧ Trade 没给 goodName → BAD_REQUEST（不自动挑路线 ✗）", okO3 == false and codeO3 == "BAD_REQUEST", tostring(codeO3))
+-- ⑧-4 Trade 没给 deposit → 明确报错（不自动兜底预付金 ✗）
+local okO4, codeO4 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, goodName = "Drill" })
+check("⑧ Trade 没给 deposit → BAD_REQUEST（不自动兜底预付金 ✗）", okO4 == false and codeO4 == "BAD_REQUEST", tostring(codeO4))
+-- ⑧-5 参数齐全 → 成功，且**不**同步跑 area analysis（run 0 次 ✓）
+nRun, nPred = 0, 0
+local okO5, rO5 = LinkIn.onOrder({ ship = SHIP, action = "Mine", x = SHIP_X, y = SHIP_Y, size = 15, duration = 1 })
+check("⑧ 参数齐全 → accepted=true", okO5 == true and rO5.accepted == true, rO5)
+check("⑧ order 不含同步 area analysis（run 0 次 ✓ —— 不再顺手扫框 ✗）", nRun == 0, nRun)
+check("⑧ order 回执只带最小参数（area/config，不含 routeNames/推荐 ✗）",
+    rO5 and rO5.recommendation == nil and rO5.routeNames == nil, "")
 
 -- ---------------------------------------------------------------------------
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
