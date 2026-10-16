@@ -1,0 +1,588 @@
+/**
+ * dispatch.ts —— 「把决策任务投递给指挥官会话」的**阶梯**与**硬期限**（Phase A/B ✓）
+ *
+ * 设计书：`AGENT-DESIGN.md` §2.2/§3.4；离线原型：`test/commander-dispatch-proto.mjs`（7/7 ✓）。
+ * 本文件是原型的**生产版**：把桩换成真依赖（`ctx.agents` / `ctx.on('session/event')`），
+ * 把原型抓到的两个坑**原样避开** ✓✓：
+ *
+ *   1. **`whenIdle()` 的解析值就是 `undefined`** ✗（原型第一版 7 项挂 2 项的真凶 ✓）——
+ *      所以"跑完了"和"超时了"**必须显式区分** ✓：本文件的 `settled` 结果是
+ *      `{settled:true}` / `{settled:false}`，**绝不**用返回值判 ✓✓。
+ *   2. **失败绝不重投** ✗（同一艘船同一轮只投一次 ✓ —— 重投会让同一艘船收到两条矛盾命令，
+ *      正是 TAKEOVER.md 那条铁律要防的 ✗✓）。
+ *
+ * ## 三级阶梯（**永不卡住舰队** ✓）
+ *
+ * ```
+ * ① 指挥官会话（若主人指定且活着）
+ *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
+ *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队，直接下② ✓
+ *      超时          → cancel({kind:'timeout'}) → 下② ✓
+ *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下② ✓
+ *      在问主人       → **显式延期**（ASKED_OWNER：不派单、写清原因 ✓）—— 不是失败 ✓
+ * ② 今天的单发事实调用（**保留，永远在**）★ 现在有**硬期限**了（今天没有 ✗）
+ * ③ 都没有 → action=None + 原因写清 ✓
+ * ```
+ *
+ * ## 两种模式（**Phase A 与 B 的差别只在这里** ✓）
+ *
+ * | 模式 | 会话级的答案 | 谁真的决定了这一单 |
+ * |---|---|---|
+ * | `live`   | **采纳** ✓（校验通过就直接下单 ✓） | 会话（否则单发 ✓） |
+ * | `shadow` | **只并排记下来** ✗✓（**零风险** ✓ —— 不改任何实际下单行为 ✓） | **永远是单发** ✓ |
+ *
+ * `shadow` 就是设计书推荐的"最重要的第一步" ✓：主人能提前看到她会怎么答、
+ * 能对比"会话答案 vs 单发答案"、能测延迟与成本，而**实际下单一个字节都没变** ✓✓。
+ *
+ * ★ 舰队级串行（设计书 §3.4）：一个会话同一时刻**只能有一个 turn** ✓。
+ *   所以用一个跨决策共享的 `lock`：取不到就**根本不投递** ✗ → 直接下② ✓
+ *   （不排队、不等待 ✓ —— 排队等 20 秒只会让游戏侧的 decide 白等 ✓，而单发本来就是对的答案 ✓）。
+ */
+
+import type { TaskAnswer, TaskRequest } from './task.js'
+import { field, makeTaskId, renderTaskBlock, validateAnswer } from './task.js'
+
+// ---------------------------------------------------------------------------
+// 时间预算（设计书 §3.4 的建议值 ✓）
+// ---------------------------------------------------------------------------
+
+export interface Budgets {
+  /** 等指挥官会话的**硬闸**：超了就 `cancel()` 并放弃这一级 ✓ */
+  sessionDeadlineMs: number
+  /** 剩余预算不够这个数，就**不要开始投递** ✓（避免"刚投完就超时" ✓） */
+  queueReserveMs: number
+  /** 拿到答案后还要校验 + 发 order RPC，留一点余量 ✓ */
+  commitReserveMs: number
+  /** ★ 单发路径的**硬期限**（今天完全没有 ✗ —— 设计书点名的薄弱点 ✓） */
+  singleShotTimeoutMs: number
+  /** 会话第一次答不上来时，允许**再**投一次（同一批事实、只要求答案行 ✓）；0 = 不许重试 ✓ */
+  retryOnceMs: number
+}
+
+export const BUDGETS: Budgets = {
+  sessionDeadlineMs: 20_000,
+  queueReserveMs: 3_000,
+  commitReserveMs: 1_000,
+  singleShotTimeoutMs: 15_000,
+  retryOnceMs: 8_000,
+}
+
+// ---------------------------------------------------------------------------
+// 依赖（全部注入 → 可以完全离线测试 ✓✓）
+// ---------------------------------------------------------------------------
+
+/** 会话事件的**最小**结构（真事件比这富 ✓；我们只读这两个字段 ✓） */
+export interface SessionEventLike {
+  type: string
+  turn?: number
+  step?: number
+  reason?: { kind?: string }
+  message?: { role?: string; content?: Array<{ type?: string; text?: string }> }
+  usage?: unknown
+}
+
+/**
+ * 一个**活着的** Agent 的**最小**面（真面见 `dsh-agent/lib/types/runtime-types.d.ts` ✓）。
+ * ★ 只声明我们真的用的方法 ✓（`status` / `followup` / `whenIdle` / `cancel` ✓），
+ *   这样测试桩只需要实现这几个 ✓，而真 Agent 天然满足 ✓（结构类型 ✓）。
+ */
+export interface AgentLike {
+  id?: string
+  /** 'idle' | 'running' */
+  status?: string
+  followup(message: unknown): void
+  whenIdle(): Promise<void>
+  cancel(cause: unknown, options?: unknown): void
+}
+
+/** `ctx.agents` 的最小面 ✓ */
+export interface RegistryLike {
+  get(id: string): AgentLike | undefined
+  list(): AgentLike[]
+}
+
+/** 订阅某个会话的事件；返回退订函数 ✓ */
+export type Subscribe = (sessionId: string, fn: (event: SessionEventLike) => void) => () => void
+
+/** 单发路径的一次调用（真实现 = `ctx.llm.stream` + 今天的解析/重试 ✓） */
+export interface SingleShotResult {
+  text: string
+  failure?: string
+  truncated?: boolean
+  /** 'first' | 'retry' —— 让流水能说清"这是重试那次" ✓ */
+  attempt?: string
+}
+
+/** 阶梯的结论来源（**进 DecisionRecord.source ✓**） */
+export type DecisionSource =
+  | 'session'        // 指挥官会话定的 ✓
+  | 'single-shot'    // 单发定的 ✓
+  | 'shadow'         // ★ 影子模式：会话答了、但采纳的是单发 ✓
+  | 'asked-owner'    // 显式延期：指挥官在问主人 ✓
+  | 'none'           // 都没有 → action=None ✓
+
+/** 会话这一级的结果（**影子模式也要报出来** ✓ —— 主人要看她答了什么 ✓） */
+export interface SessionAttempt {
+  /** 会话到底有没有给出可用答案 ✓ */
+  answered: boolean
+  /** 会话的答案（答了才有 ✓） */
+  answer?: TaskAnswer
+  /** 没用上/没用成的**原因码** ✓（TASK_MISMATCH / TIMEOUT / …） */
+  code?: string
+  message?: string
+  /** 她问主人的问题（ASKED_OWNER ✓） */
+  question?: string
+  /** 这一轮她吐了几条 assistant 文本 ✓（>1 说明她用了工具 ✓） */
+  steps: number
+  /** 从投递到结束的真实耗时（ms ✓ —— 成本/延迟**实测**就靠它 ✓） */
+  tookMs: number
+  /** token 用量（事件带就给 ✓，没有就 undefined ✓ —— **不假造** ✗） */
+  usage?: unknown
+  /** 会话答案的原文（审计 ✓） */
+  raw?: string
+}
+
+export interface DispatchDeps {
+  registry: RegistryLike
+  /** 指挥官会话 id；undefined = 没指定 ✓（阶梯直接从②开始 ✓） */
+  commanderId?: string
+  /** 订阅会话事件（真实现 = `ctx.on('session/event', …)` 再按 sessionId 筛 ✓） */
+  subscribe?: Subscribe
+  /** 单发路径（**必给** ✓ —— 没有它阶梯就没有第二级 ✓）。`hint` 非空 = 那次"只要答案行"的重试 ✓ */
+  singleShot: (hint?: string) => Promise<SingleShotResult>
+  /**
+   * ★ 真正把任务块**投进会话** ✓（真实现 = `agent.followup(createUserMessage({...}))` ✓）。
+   *   单列成一个注入点，是为了让本模块**不 import `dsh-llm`** ✓ ——
+   *   于是整个阶梯可以在 Node 里**完全离线**测（`test/commander-dispatch.mjs` ✓✓）。
+   */
+  followup: (agent: AgentLike, block: string, req: TaskRequest) => void
+  /** 每艘船此刻允许的动作 ✓（校验用 ✓） */
+  allowedActions: string[]
+  /** 'live' = 会话答案算数 ✓；'shadow' = 只观察、单发算数 ✓（默认 'live' ✓） */
+  mode?: 'live' | 'shadow'
+  /** 忙会话要不要插队（默认 **false** ✓ —— 设计书：不插队，直接落单发 ✓） */
+  steerWhenBusy?: boolean
+  /** 舰队级串行：取不到就直接下② ✓（**不排队** ✗ —— 见文件头注释 ✓） */
+  lock?: { tryClaim(): (() => void) | undefined }
+  /** 会话那一级**答不上来时**要不要再投一次（同一批事实、只要求答案行 ✓）；默认 false = 只投一次 ✓ */
+  retrySessionOnce?: boolean
+  /** ★ 单发那一级**没有动作行**时要不要重试一次（与今天 index.ts 的重试同源 ✓）；默认 true ✓ */
+  retrySingleShotOnce?: boolean
+  budgets?: Partial<Budgets>
+  log?: (line: string) => void
+  /** 收答案时的**旁路**：每收到一条 assistant 文本就回调一次 ✓（主人能边看边说 ✓） */
+  onAssistantText?: (step: number, text: string) => void
+}
+
+/** 阶梯的完整结论 ✓ */
+export interface DispatchOutcome {
+  /** 最终要执行的动作（'None' = 不下单 ✓） */
+  action: string
+  params: Record<string, unknown>
+  reason?: string
+  /** ★ 这一单是**谁**定的 ✓（进 DecisionRecord.source ✓） */
+  source: DecisionSource
+  /** 单发那一路的原文（审计/落盘 ✓） */
+  text?: string
+  truncated?: boolean
+  /** 会话那一路的观察结果（影子模式也有 ✓） */
+  session?: SessionAttempt
+  /** 会话答案 vs 单发答案**是否一致**（影子模式下最有用的一个数 ✓；会话没答 = undefined ✓） */
+  agreement?: boolean
+}
+
+const nowMs = (): number => Date.now()
+
+/** 合并默认预算与调用方覆盖 ✓（一处算法，三处用 ✓） */
+function budgetOf(override?: Partial<Budgets>): Budgets {
+  return { ...BUDGETS, ...(override ?? {}) }
+}
+
+/**
+ * ★ 原型抓到的坑 ①：`whenIdle()` **没有返回值** ✗ → "跑完了"与"超时了"必须**显式区分** ✓。
+ * 返回 `{settled:true, value?}` / `{settled:false}`；**绝不**用 `value === undefined` 判超时 ✗✓。
+ */
+export function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ settled: boolean; value?: T; error?: unknown }> {
+  return new Promise((resolve) => {
+    let done = false
+    const timer = setTimeout(() => {
+      if (done) return
+      done = true
+      resolve({ settled: false })
+    }, Math.max(0, ms))
+    promise.then(
+      (value) => { if (!done) { done = true; clearTimeout(timer); resolve({ settled: true, value }) } },
+      (error) => { if (!done) { done = true; clearTimeout(timer); resolve({ settled: false, error }) } },
+    )
+  })
+}
+
+/** 两个答案的"实质是否一致"（只比 action + 关键参数 ✓ —— 不比理由文字 ✗） */
+function sameDecision(a: TaskAnswer | undefined, b: { action: string; params: Record<string, unknown> } | undefined): boolean | undefined {
+  if (a === undefined || b === undefined) return undefined
+  if (a.action !== b.action) return false
+  const keys = new Set([...Object.keys(a.params), ...Object.keys(b.params)])
+  for (const k of keys) {
+    const x = a.params[k]
+    const y = b.params[k]
+    if (typeof x === 'number' && typeof y === 'number') {
+      if (Math.abs(x - y) > 1e-6) return false
+      continue
+    }
+    if (JSON.stringify(x) !== JSON.stringify(y)) return false
+  }
+  return true
+}
+
+/**
+ * ★★ 主入口：为**一艘船**要一个决策 ✓。
+ *
+ * 保证（都在测试里断言过 ✓）：
+ *   · **永不抛** ✓（任何异常都变成"下一级"或 `action=None` ✓）
+ *   · **永不超总预算** ✓（会话硬闸 + 单发硬闸，各自独立 ✓）
+ *   · 忙/挂死/在聊天的会话，**绝不会**让这一轮没有决策 ✓
+ */
+export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Promise<DispatchOutcome> {
+  const B: Budgets = budgetOf(deps.budgets)
+  const say = deps.log ?? ((): void => {})
+  const mode = deps.mode ?? 'live'
+  const started = nowMs()
+  const elapsed = (): number => nowMs() - started
+
+  let sessionAttempt: SessionAttempt | undefined
+
+  // ---- 阶梯①：指挥官会话 --------------------------------------------------
+  const agent = deps.commanderId !== undefined ? deps.registry.get(deps.commanderId) : undefined
+  if (deps.commanderId !== undefined && agent === undefined) {
+    say(`  [ladder] 指挥官会话 ${deps.commanderId} **不在了** ✗（已关/已换）→ 下②单发 ✓`)
+  }
+  if (agent !== undefined) {
+    const remaining = B.sessionDeadlineMs - elapsed()
+    if (agent.status !== 'idle') {
+      // 主人在聊天 / 这一轮在做别的事 ✓ —— 设计书的默认是**不插队** ✓（插队会把任务块插到
+      // 别人的上下文里，正是"猜会话"那类风险的同源 ✓）。
+      say(`  [ladder] 指挥官**正忙**（主人在聊 / 在别的任务上）`)
+      if (deps.steerWhenBusy !== true) {
+        say('  [ladder] steerWhenBusy=false（默认）→ 不插队，直接下②单发 ✓')
+      } else if (remaining < B.queueReserveMs) {
+        say(`  [ladder] 只剩 ${remaining}ms（< 保留 ${B.queueReserveMs}ms）→ 不投递，直接下②单发 ✓`)
+      } else {
+        sessionAttempt = await runSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs), say)
+      }
+    } else if (remaining < B.queueReserveMs) {
+      say(`  [ladder] 剩余预算 ${remaining}ms < 保留 ${B.queueReserveMs}ms → 不投递，直接下②单发 ✓`)
+    } else {
+      sessionAttempt = await runSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs), say)
+    }
+  } else if (deps.commanderId === undefined) {
+    say('  [ladder] 没有指定指挥官会话 → 直接走②单发（**与今天逐字相同** ✓）')
+  }
+
+  // 会话那一路的结论先落进结果里 ✓（影子模式也照样带着走 ✓）
+  if (sessionAttempt !== undefined && mode === 'live') {
+    if (sessionAttempt.answered && sessionAttempt.answer !== undefined) {
+      say(`  [commit] 采用**指挥官会话**的答案：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
+        `（${sessionAttempt.steps} 步 / ${sessionAttempt.tookMs}ms ✓）`)
+      return {
+        action: sessionAttempt.answer.action,
+        params: sessionAttempt.answer.params,
+        reason: sessionAttempt.answer.reason,
+        source: 'session',
+        session: sessionAttempt,
+      }
+    }
+    if (sessionAttempt.code === 'ASKED_OWNER') {
+      // ★ 人在环里 = **显式延期** ✓（绝不是悬着的 promise ✗）
+      const q = String(sessionAttempt.question ?? '').slice(0, 300)
+      say(`  [commit] 指挥官**在问主人** ✓：${JSON.stringify(q.slice(0, 160))}`)
+      say('  [commit] → 本轮**明确延期**（不派单 ✓）；主人回答后，下一轮投递自然带上新信息 ✓')
+      return {
+        action: 'None',
+        params: {},
+        reason: `指挥官在问主人：${q}（本轮明确延期，未派单 ✓）`,
+        source: 'asked-owner',
+        session: sessionAttempt,
+      }
+    }
+    say(`  [ladder] 会话那一级没成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）→ 下②单发 ✓`)
+  }
+
+  // ---- 阶梯②：今天的单发事实调用（★ 现在有硬期限 ✓）-----------------------
+  if (sessionAttempt !== undefined && mode === 'shadow') {
+    if (sessionAttempt.answered && sessionAttempt.answer !== undefined) {
+      say(`  [shadow] 指挥官会话答了：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
+        `（${sessionAttempt.steps} 步 / ${sessionAttempt.tookMs}ms ✓）—— ★ **本轮不采纳** ✓，仍由单发决定 ✓`)
+    } else {
+      say(`  [shadow] 指挥官会话没答成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）✓`)
+    }
+  }
+  say(`  [ladder] → ② 单发模型调用（今天那条路 ✓；硬期限 ${B.singleShotTimeoutMs}ms ✓）`)
+
+  const single = await runSingleShot(deps, B.retryOnceMs, say)
+  if (!single.ok || single.action === undefined) {
+    say(`  [ladder] 单发也没成：${single.why ?? 'unknown'} → ③ action=None ✓`)
+    return {
+      action: 'None',
+      params: {},
+      reason: `没有可用的决策（指挥官未指定/未答成；单发：${single.why ?? 'unknown'}）`,
+      source: 'none',
+      session: sessionAttempt,
+    }
+  }
+
+  const sessionAnswer = sessionAttempt?.answer
+  const agreement = sameDecision(sessionAnswer, { action: single.action, params: single.params })
+  const viaSession = sessionAttempt?.answered === true
+  return {
+    action: single.action,
+    params: single.params,
+    reason: single.reason,
+    // ★ 影子模式：会话答了**也不算它决定的** ✗ —— 这一单是单发定的 ✓（source 说真话 ✓）
+    source: mode === 'shadow' && viaSession ? 'shadow' : 'single-shot',
+    text: single.text,
+    truncated: single.truncated,
+    session: sessionAttempt,
+    agreement,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 阶梯②的内部：单发 + 硬期限 + 一次"只要答案行"的重试
+// ---------------------------------------------------------------------------
+
+interface SingleShotOutcome {
+  /** ★ 只有**真的拿到了可用答案**才是 true ✓（绝不靠 `text === undefined` 判成败 ✗——
+   *  空字符串是"她一句话都没说"，是**失败** ✓，可它并不是 undefined ✓✓） */
+  ok: boolean
+  text?: string
+  action?: string
+  params: Record<string, unknown>
+  reason?: string
+  truncated?: boolean
+  why?: string
+}
+
+/**
+ * 跑单发路径，**带硬期限** ✓。
+ *
+ * ★ 为什么期限是"不管它了"而不是"掐掉" ✗：`ctx.llm.stream` 没有取消参数 ✗
+ *   （今天就没法掐 ✓）。所以超时后我们**不再等它**、直接返回 ✓ —— 那条流会自己在后台
+ *   收完（最多烧掉一份 maxTokens ✓），但这**不影响舰队** ✓✓。
+ *
+ * ★ 重试一次（可选）：与今天 `index.ts` 里的重试同源 ✓ —— 同一批事实、只要求答案行、
+ *   **只此一次** ✓、不重取数据 ✓。`hint` 交给调用方拼进提示词 ✓。
+ */
+async function runSingleShot(
+  deps: DispatchDeps,
+  retryBudgetMs: number,
+  say: (l: string) => void,
+): Promise<SingleShotOutcome> {
+  const B: Budgets = budgetOf(deps.budgets)
+  const attempt = async (hint?: string): Promise<{ settled: boolean; value?: SingleShotResult; error?: unknown }> =>
+    withTimeout(deps.singleShot(hint), B.singleShotTimeoutMs)
+
+  let first: { settled: boolean; value?: SingleShotResult; error?: unknown }
+  try {
+    first = await attempt()
+  } catch (error) {
+    return { ok: false, params: {}, why: `调用抛异常：${String(error)}` }
+  }
+  if (!first.settled) {
+    return { ok: false, params: {}, why: `超过硬期限 ${B.singleShotTimeoutMs}ms 没返回（★ 今天没有这道闸 ✗）` }
+  }
+  if (first.value === undefined) {
+    return { ok: false, params: {}, why: `调用抛异常：${String(first.error)}` }
+  }
+  if (first.value.failure !== undefined) {
+    return { ok: false, params: {}, why: `模型失败 ${first.value.failure}` }
+  }
+
+  const parsed = parseSingleShotText(first.value.text)
+  if (parsed.action !== undefined) {
+    return { ok: true, ...parsed, text: first.value.text, truncated: first.value.truncated }
+  }
+
+  // ---- 只有"完全没有动作行"才重试 ✓（其它问题重试也救不回来 ✗）------------
+  //   ★ 默认**允许**（= 今天 index.ts 里那条重试 ✓ —— 实机事故：她想太久、正文一个动作行都没吐 ✓）；
+  //     传 retrySingleShotOnce:false 可关掉 ✓。
+  const allowed = deps.retrySingleShotOnce !== false
+  const canRetry = allowed && retryBudgetMs > 0 && parsed.why === 'no action line'
+  if (!canRetry) {
+    return { ok: false, params: {}, why: parsed.why ?? '解析不出动作', text: first.value.text }
+  }
+  say('  [ladder] 单发首轮没有动作行 → 重试一次（同一批事实、**只要求答案行** ✓、只此一次 ✗）')
+  const second = await attempt(
+    '★ 你上一次没有输出任何 action 行 ✗。现在**只输出答案行** ✓：action 必须在**第一行** ✓；' +
+    '不要写任何推理或解释 ✗；reason 可以留空 ✓。一行一个字段，从 action= 开始。',
+  )
+  if (!second.settled || second.value === undefined || second.value.failure !== undefined) {
+    return {
+      ok: false, params: {},
+      why: `重试也没成（${!second.settled ? '超时' : String(second.value?.failure ?? second.error)}）`,
+      text: first.value.text,
+    }
+  }
+  const again = parseSingleShotText(second.value.text)
+  if (again.action === undefined) {
+    return { ok: false, params: {}, why: `重试后仍解析不出（${again.why ?? '?'}）`, text: second.value.text }
+  }
+  say('  [ladder] ✔ 单发重试成功（拿到动作行 ✓）')
+  return { ok: true, ...again, text: second.value.text, truncated: second.value.truncated }
+}
+
+/**
+ * 单发回复的**极小**解析：`action=` 那一行 + 那几个**跨路径共用**的字段 ✓。
+ *
+ * ★ 分工（避免两份规则漂移 ✗✓ —— 本仓库反复吃过这个亏）：
+ *   · **合法性**（动作在不在允许集合内、escort 候选过滤、goodsToSell 形状…）仍由**今天那套**
+ *     `parseDecision`/`toAnswer` 判 ✓（调用方在拿到 `text` 之后照样跑它 ✓）。
+ *   · 这里只把**两边都要看得懂**的那几个字段取出来 ✓（`x/y/shape/size/sizeX/sizeY/deposit/
+ *     duration/safeMode/goodName` ✓），好让"会话答案 vs 单发答案并排比较"（`agreement` ✓）
+ *     与 DecisionRecord 里的记录**有意义** ✓。字段口径与 `task.ts` 的校验器**逐字一致** ✓。
+ */
+function parseSingleShotText(text: string): { action?: string; params: Record<string, unknown>; reason?: string; why?: string } {
+  const raw = typeof text === 'string' ? text : ''
+  const m = /^\s*[*-]?\s*\**\s*action\s*[:=：]\s*(.*)$/im.exec(raw)
+  if (m === null) return { params: {}, why: 'no action line' }
+  const word = m[1].replace(/[`*"'。，,]/g, '').trim()
+  if (word === '') return { params: {}, why: 'no action line' }
+  const v = validateAnswer(raw, field(raw, 'task') ?? '', [word, 'None'])
+  const params = v.ok ? v.answer.params : {}
+  const reason = v.ok ? v.answer.reason : field(raw, 'reason')
+  return { action: word, params, reason, why: undefined }
+}
+
+// ---------------------------------------------------------------------------
+// 阶梯①的内部：投递 → 等这一轮结束 → 校验
+// ---------------------------------------------------------------------------
+
+/**
+ * 投一次任务并等它的结论 ✓。**本函数永不抛** ✓（所有失败都变成结果码 ✓）。
+ *
+ * ★ 舰队级串行：先用 `lock` 抢（拿不到 = 别的决策正占着这个会话 ✓ → 直接放弃这一级 ✓，
+ *   **不排队** ✗ —— 排队只会让这一轮白等到超时 ✓）。
+ */
+async function runSessionRung(
+  deps: DispatchDeps,
+  req: TaskRequest,
+  budgetMs: number,
+  say: (l: string) => void,
+  allowRetry = true,
+): Promise<SessionAttempt> {
+  const t0 = nowMs()
+  const fail = (code: string, message?: string): SessionAttempt =>
+    ({ answered: false, code, message, steps: 0, tookMs: nowMs() - t0 })
+
+  if (budgetMs <= 0) return fail('NO_BUDGET', '剩余预算为 0，不投递 ✓')
+
+  const release = deps.lock?.tryClaim()
+  if (deps.lock !== undefined && release === undefined) {
+    // ★ 设计书 §3.4「舰队级串行：1 艘/轮」✓ —— 一个会话同一刻只有一个 turn ✓。
+    //   抢不到就**不投**（下②单发 ✓）—— 绝不排队 ✗、绝不并发投 ✗✓。
+    return fail('SESSION_BUSY_ELSEWHERE', '同一时刻已经有一条决策在用这个会话 → 本轮不投递，直接落单发 ✓')
+  }
+
+  const agent = deps.registry.get(deps.commanderId ?? '')
+  if (agent === undefined) {
+    release?.()
+    return fail('SESSION_GONE', '指挥官会话不在了 ✓')
+  }
+
+  const texts: string[] = []
+  let usage: unknown
+  let resolveTurn: (() => void) | undefined
+  const turnPromise = new Promise<void>((resolve) => { resolveTurn = resolve })
+
+  const stop = deps.subscribe?.(deps.commanderId ?? '', (event) => {
+    if (event.type === 'assistant/message') {
+      const blocks = event.message?.content
+      const text = Array.isArray(blocks)
+        ? blocks.filter((b) => b?.type === 'text').map((b) => b?.text ?? '').join('')
+        : ''
+      if (text.trim() !== '') {
+        texts.push(text)
+        say(`  [session] 她的第 ${texts.length} 条输出（${text.length} 字 ✓）`)
+        try { deps.onAssistantText?.(texts.length, text) } catch { /* 旁路失败不影响决策 ✓ */ }
+      }
+      if (event.usage !== undefined) usage = event.usage
+      return
+    }
+    if (event.type === 'turn/end') {
+      // ★ 只认"我们发出去之后"这一轮的结束 ✓：本订阅是在**投递之前**建好的 ✓，
+      //   所以此前那一轮（主人自己的聊天）的 turn/end 不可能走到这里 ✓✓。
+      resolveTurn?.()
+      return
+    }
+  })
+
+  try {
+    const block = renderTaskBlock(req)
+    if (deps.subscribe === undefined) {
+      // 没有事件通道 = 收不到答案 ✗ → 别投（投了也是白投，还会污染那个会话 ✓）
+      return fail('NO_EVENT_CHANNEL', '拿不到 session/event 通道 → 不敢投递（会污染会话且收不到答案 ✓）')
+    }
+    say(`  [session] 投递任务 ${req.taskId} → 会话（预算 ${budgetMs}ms ✓）；她会在会话里留下一条可见的 user 消息 ✓`)
+    // ★ 真实现用 createUserMessage({content:[{type:'text',text}], source:{kind:'plugin',plugin:'dsh-avorion-copilot'}})
+    //   —— 由 index.ts 注入（本模块不 import dsh-llm，好让测试完全离线 ✓）。
+    deps.followup(agent, block, req)
+    // ★ 续期由调用方做（index.ts 确认这次真的投出去了之后 renewLease ✓）。
+
+    const waited = await withTimeout(turnPromise, budgetMs)
+    const tookMs = nowMs() - t0
+    if (!waited.settled) {
+      // ★ 硬闸到 → **掐掉这一轮** ✓（否则失控的一轮会一直占着会话 ✓）；
+      //   ★ 失败**绝不重投** ✗（重投 = 同一艘船两条矛盾命令 ✓ —— TAKEOVER.md 铁律 ✓）。
+      try { agent.cancel({ kind: 'timeout' }) } catch { /* 取消失败也不能让它抛上去 ✓ */ }
+      say(`  [session] ${budgetMs}ms 内没结束 → 已 cancel({kind:'timeout'}) ✓ 并放弃这一级（**不重投** ✗）`)
+      return { answered: false, code: 'TIMEOUT', message: `会话在 ${budgetMs}ms 内没有给出结论`, steps: texts.length, tookMs, usage }
+    }
+
+    const last = texts.length > 0 ? texts[texts.length - 1] : ''
+    const verdict = validateAnswer(last, req.taskId, deps.allowedActions)
+    if (verdict.ok) {
+      say(`  [session] ✔ 校验通过${verdict.echoed ? '（回显 task 对上了 ✓）' : '（她没回显 task，但内容合格 ✓）'}`)
+      return { answered: true, answer: verdict.answer, steps: texts.length, tookMs, usage, raw: last }
+    }
+    const code: string = verdict.code
+    if (code === 'ASKED_OWNER') {
+      return { answered: false, code, question: verdict.question, steps: texts.length, tookMs, usage, raw: last }
+    }
+    say(`  [session] ✘ 校验没过：${code}（${verdict.message ?? ''}）`)
+
+    // ---- 只对"完全没有动作行"再给一次机会 ✓（同 today 的重试 ✓，只此一次 ✓）----
+    const retryable = code === 'NO_ACTION_LINE' || code === 'EMPTY_REPLY'
+    if (allowRetry && deps.retrySessionOnce === true && retryable) {
+      const left = budgetMs - (nowMs() - t0)
+      const retryBudget = Math.min(left, deps.budgets?.retryOnceMs ?? BUDGETS.retryOnceMs ?? 0)
+      if (retryBudget > 500) {
+        // ★ 新任务 id：她上一轮可能已经在**同一轮里**回了一句别的（回显旧 id ✓）——
+        //   沿用旧 id 会让她"回显旧 id 而被判 TASK_MISMATCH"✗。换新 id 最干净 ✓。
+        const retryTaskId = makeTaskId()
+        say(`  [session] 再投一次（同一批事实、只要求答案行 ✓；新任务号 ${retryTaskId}；` +
+          `预算 ${Math.round(retryBudget)}ms，**只此一次** ✗）`)
+        const second = await runSessionRung(deps, { ...req, taskId: retryTaskId }, retryBudget, say, false)
+        return {
+          ...second,
+          steps: texts.length + second.steps,
+          tookMs: nowMs() - t0,
+          code: second.answered ? undefined : (second.code ?? code),
+          message: second.answered
+            ? undefined
+            : `第一次：${code}（${verdict.message ?? ''}）；重试：${second.message ?? second.code ?? ''}`,
+        }
+      }
+    }
+    return { answered: false, code, message: verdict.message, steps: texts.length, tookMs, usage, raw: last }
+  } catch (error) {
+    return fail('SESSION_ERROR', `投递/等待时异常：${String(error)}`)
+  } finally {
+    try { stop?.() } catch { /* 退订失败不影响结果 ✓ */ }
+    release?.()
+  }
+}
+
+export { makeTaskId, renderTaskBlock, validateAnswer }
+export type { TaskAnswer, TaskRequest }
