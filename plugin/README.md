@@ -117,7 +117,7 @@ node test/harness.mjs      # 8/8
 ```jsonc
 // ~/.dsh/profiles/desktop/package.json
 "dependencies": {
-  "@dsh-external/dsh-avorion-copilot": "link:D:/workbench/projects/dsh/dsh-avorion-copilot"
+  "@dsh-external/dsh-avorion-copilot": "link:D:/SteamLibrary/steamapps/common/Avorion/mods/copilot/plugin"
 },
 "dsh": { "profile": { "bundles": [ ..., "@dsh-external/dsh-avorion-copilot" ] } }
 ```

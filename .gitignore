@@ -37,3 +37,7 @@ desktop.ini
 
 # 存档备份（大文件，不入库 ✓）
 saves-backup*/
+
+# ---- DSH 插件（在 plugin/）：构建期临时依赖，不入库 ✓（lib/ 是产物但 DSH 要读它，故保留跟踪 ✓）----
+plugin/node_modules/
+plugin/.dsh-links/

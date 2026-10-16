@@ -474,3 +474,19 @@ data/scripts/player/background/simulation/simulationutility.lua
 （运行时读取 ✓，用户可用 `%AppData%\Avorion\moddata\copilot\prompt\system.md` 覆盖 ✓，
 改完**不用重启 DSH** ✓）。机制段仍以本仓库的 [`MECHANICS.md`](MECHANICS.md) 为**单一来源** ✓
 （插件脚本由它生成 ✓，`check-mechanics.mjs` 防漂移 ✓，并会拦住"照抄指令"与"策略措辞" ✗✓）。
+## ★ 布局：DSH 插件就住在 `plugin/`（2026-10-17 搬家，主人要求）
+
+```
+mods/copilot/
+├── modinfo.lua / data/ / native/    ← 游戏读的部分 ✓
+├── MECHANICS.md / AGENTS.md / …     ← 文档 ✓
+└── plugin/                          ← ★ 整个 DSH 插件（原本在 D:\workbench\projects\dsh\）
+      src/ lib/ prompt/ test/ scripts/ tools/ package.json tsconfig.json
+```
+**规矩**：
+* DSH 的装配是 `C:\Users\<你>\.dsh\profiles\desktop\package.json` 里的
+  `"@dsh-external/dsh-avorion-copilot": "link:.../mods/copilot/plugin"` ✓ —— **改路径要重启 DSH** ✓
+* 游戏**不读** `plugin/` ✓（只读 `modinfo.lua` + `data/` ✓）→ 放这儿对游戏是惰性的 ✓
+* 插件的提交历史已**并入本仓库** ✓（不再有自己的 .git ✓）；
+  旧目录 `D:\workbench\projects\dsh\dsh-avorion-copilot` **留作备份** ✓，确认新家能加载后再删 ✓
+* `plugin/lib/` 是**编译产物但必须入库** ✓（DSH 直接读它 ✓）；`node_modules/` 是构建期临时物 ✓ 已忽略 ✓
