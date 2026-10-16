@@ -143,10 +143,51 @@ function renderActions(d) {
     }
     return L;
 }
+/** 取一个"可能是 null 的坐标对象"的 x / y ✓ —— ★ null 与 undefined **一起判** ✗✓ */
+function coordOf(v) {
+    if (typeof v !== 'object' || v === null)
+        return {};
+    const o = v;
+    return { x: o.x, y: o.y };
+}
+/**
+ * 一行候选的**绝对框心** ✓ —— 三级来源，**绝不自己算** ✗（模型不做算术，插件也不该猜 ✓）：
+ *   ① 游戏侧早就算好的 `x` / `y` ✓（首选 —— 它连星系边界都夹好了 ✓）；
+ *   ② 退回 `area.lower/upper`（**同一对数字的另一种写法** ✓ —— 老替身/旧响应只有这个 ✓）；
+ *   ③ 再退回 `offset`（**相对**船的偏移 ✓ —— 那就**明说**是相对值 ✗，别让它看起来像绝对值 ✓）。
+ *
+ * ★★ 每一层都**必须先判 null** ✗✓（2026-10-17 实机崩溃抓到，与 index.ts 里那两处同源 ✓）：
+ *   JSON 里"没有"常常写成 **null** ✓ —— 而 `null !== undefined` 成立 ✗ →
+ *   直接点 `.x` 就抛 `Cannot read properties of null (reading 'x')` ✓✓。
+ *   本文件就在这次自检里**真的**被它崩过一次（单发那条路直接失败 ✗ → 舰队没有决策 ✓）。
+ */
+function centreOf(r) {
+    if (typeof r.x === 'number' && typeof r.y === 'number')
+        return { x: r.x, y: r.y, relative: false };
+    const area = (typeof r.area === 'object' && r.area !== null)
+        ? r.area
+        : undefined;
+    const lo = coordOf(area?.lower);
+    const up = coordOf(area?.upper);
+    if (typeof lo.x === 'number' && typeof up.x === 'number'
+        && typeof lo.y === 'number' && typeof up.y === 'number') {
+        return {
+            x: lo.x + Math.floor((up.x - lo.x + 1 - 1) / 2),
+            y: lo.y + Math.floor((up.y - lo.y + 1 - 1) / 2),
+            relative: false,
+        };
+    }
+    const off = coordOf(r.offset);
+    if (typeof off.x === 'number' && typeof off.y === 'number') {
+        return { x: off.x, y: off.y, relative: true };
+    }
+    return { relative: false };
+}
 /** 一行候选（**表**格式，与主人要的"并排比较"一致 ✓） */
 function renderRow(action, r) {
+    const centre = centreOf(r);
     const cells = [
-        `${num(r.x)},${num(r.y)}`,
+        `${num(centre.x)},${num(centre.y)}${centre.relative ? '(相对船的偏移 ✗不是绝对坐标)' : ''}`,
         r.shape === undefined || r.shape === null ? '?' : String(r.shape),
         r.origin === 'fine' ? '细扫' : '粗扫',
     ];
@@ -219,7 +260,12 @@ function renderPlan(action, p, o) {
         if (p.noCandidatesReasonKind !== undefined)
             L.push(`   原因类别：${String(p.noCandidatesReasonKind)}`);
     }
-    const rows = Array.isArray(p.areaRanking) ? p.areaRanking : [];
+    // ★★ 两种形状都吃 ✗✓（2026-10-17 自查抓到）：
+    //   游戏侧的计划里叫 `areaRanking` ✓，而插件侧 `facts.tradeRoutes` 是**投影过**的
+    //   （它把候选放在 `areas` 里 ✓，且只留了要用的字段 ✓）。少认一种 = 那张表**静默消失** ✗✓。
+    const rows = Array.isArray(p.areaRanking)
+        ? p.areaRanking
+        : (Array.isArray(p.areas) ? (p.areas ?? []) : []);
     const shown = rows.slice(0, Math.max(1, Math.min(o.rows, rows.length)));
     if (shown.length > 0) {
         L.push(`   候选框（共 ${rows.length} 个，这里列前 ${shown.length} 个 ✓；x/y 是**已经算好的绝对星区坐标**（框心）✓，`);
@@ -256,11 +302,11 @@ function renderPlan(action, p, o) {
         if (best.length > 0) {
             L.push('   · perGoodBest（**跨框**每种货期望收入最高的那个框 ✓）：');
             for (const g of best.slice(0, o.rows)) {
-                const off = g.offset;
+                const off = coordOf(g.offset);
                 L.push(`     - 货「${String(g.goodName ?? '?')}」` +
                     (g.expectedRevenue !== undefined ? ` expectedRevenue=${num(g.expectedRevenue)}` : '') +
-                    (off !== undefined ? ` offset=${num(off.x)},${num(off.y)}` : '') +
-                    (g.origin !== undefined ? ` origin=${String(g.origin)}` : ''));
+                    (typeof off.x === 'number' ? ` offset=${num(off.x)},${num(off.y)}` : '') +
+                    (g.origin !== undefined && g.origin !== null ? ` origin=${String(g.origin)}` : ''));
             }
         }
         const hold = p.hold;

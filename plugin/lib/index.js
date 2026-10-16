@@ -1490,30 +1490,33 @@ export function apply(ctx, config = {}) {
         //   ★ 两条路**共享数据**（同一批计划函数 / 同一份卡片 ✓），**不共享渲染** ✗✓
         //     —— "共享那一份'把所有东西都嵌进去'的渲染"**正是** 8.7 MB 的根因 ✓✓。
         //
-        //   ★ 惰性 + 记忆化：只在**真的要跑单发**时才去取 ✓（会话答了就不取 ✓，省一次 RPC ✓），
-        //     而且一次决策里最多取一次 ✓（重试那次**不重取** ✓ —— 与"重试不重取数据"的既有纪律一致 ✓）。
-        //   ★ 取不到**不许**让这一轮没有决策 ✗ → 兜底用 `facts.card` 渲染骨架 ✓（保证事实仍在 ✓）。
-        let dossierPromise;
-        const dossierOf = () => {
-            if (dossierPromise === undefined) {
-                dossierPromise = (async () => {
-                    try {
-                        const r = await ask(peer, 'query', { what: 'dossier', ship }, 120);
-                        if (r.ok && r.data !== undefined && r.data !== null) {
-                            const d = r.data;
-                            const plans = Array.isArray(d.plans) ? d.plans.length : 0;
-                            live(`  ├ 单发档案已取到（${plans} 个计划；运行时另有一道字节预算 ✓）`);
-                            return d;
-                        }
-                        live(`  ⚠ 单发档案取不到（${r.why ?? 'unknown'}）→ 用兜底卡渲染骨架 ✓（**绝不**让本轮没有决策 ✓）`);
-                    }
-                    catch (error) {
-                        live(`  ⚠ 单发档案取不到（${String(error)}）→ 用兜底卡渲染骨架 ✓`);
-                    }
-                    return undefined;
-                })();
-            }
-            return dossierPromise;
+        //   ★★ 关键取舍：档案**不再另发一次 RPC** ✗✓ ——
+        //     上面 facts 组装时已经把**同一批计划**取回来了（而且现在缺省就是 compact ✓，
+        //     体积与游戏侧 `query{what:"dossier"}` 是同一量级 ✓）。所以这里**组装字段**就行了 ✓：
+        //     省一次往返、也**绝不重取数据**（与"重试不重取"同一条纪律 ✓）。
+        //   ★ 游戏侧那个 `dossier` 入口仍然保留 ✓ —— 它是给**手动/诊断**用的深查询 ✓
+        //     （一次调用拿全套有界档案 ✓，也是对"工具能回答什么"的自我声明 ✓）。
+        const dossierInputOf = () => {
+            const empty = {};
+            // ★★ 每份计划都**必须带 action** ✗✓（2026-10-17 自查抓到）：
+            //   · `facts.jobPlans[i].plan` 里**已经有** action ✓（游戏侧 jobPlan 自己写的 ✓）；
+            //   · `tradeRoutes` / `sellPlan` / `scoutPlan` 在 index 侧被**包了一层**（投影字段 ✓），
+            //     所以 action 会丢 ✗ —— 缺了它，档案就渲染不出那张候选表（更糟：**静默**渲染成一条
+            //     没头的计划 ✓✓）。→ 这里显式补上 ✓（**绝不靠猜** ✗）。
+            const withAction = (p, action) => p === undefined ? [] : [{ action, ...p }];
+            const d = {
+                what: 'dossier', ship, gate: 0.1,
+                card: facts.card ?? empty,
+                goal: { ship, text: facts.goalText, options: facts.goalOptions, hasGoal: facts.goalOptions.length > 0 },
+                plans: [
+                    ...(facts.jobPlans ?? []).map((jp) => jp.plan),
+                    ...withAction(facts.tradeRoutes, 'Trade'),
+                    ...withAction(facts.sellPlan, 'Sell'),
+                    ...withAction(facts.scoutPlan, 'Scout'),
+                ],
+                planFetchFailures: facts.planFetchFailures ?? null,
+            };
+            return d;
         };
         // ★★ 护航 rendezvous（2026-10-17 ✓）--------------------------------------
         //   主人：「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
@@ -1626,8 +1629,9 @@ export function apply(ctx, config = {}) {
         //   （范围见 commander.ts 的文件头：没有分身、没有新建会话 ✓；
         //     没指定会话 / 会话在忙 / 超时 → 逐字回到今天那条单发 ✓✓）
         /**
-         * 今天那条路的**全部既有语义**都留在里面 ✓（同一份 `buildPrompt` ✓、同一条重试 ✓、
-         * 同一套 `parseDecision`/`toAnswer` ✓）—— 只是**加了一道硬期限**（今天没有 ✗ 见设计书 §3.4 ✓）。
+         * 今天那条路的**全部既有语义**都留在里面 ✓（同一条重试 ✓ 同一套 `parseDecision`/`toAnswer` ✓）——
+         * 提示词从"预取全塞的 `buildPrompt`"换成**有界档案**（`dossier.ts` ✓），
+         * 并**加了一道硬期限**（今天没有 ✗ 见设计书 §3.4 ✓）。
          * `hint` 非空 = 任务层要的那次"只要答案行"的重试 ✓。
          */
         const runSingleShot = async (hint) => {
@@ -1643,7 +1647,7 @@ export function apply(ctx, config = {}) {
                 //     并且**超预算就按固定顺序继续裁、把裁了什么记下来** ✓（绝不静默 ✓）。
                 //   ★ 两道渲染**彻底分开** ✓：agent 路径在 `task.ts`（一行通知 ✓），
                 //     单发路径在这里（有界档案 ✓）—— 共享的只有**数据** ✓✓。
-                const dossierPayload = await dossierOf();
+                const dossierPayload = dossierInputOf();
                 const dossier = renderDossier({
                     payload: dossierPayload,
                     fallbackCard: (facts.card ?? {}),

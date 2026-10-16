@@ -225,6 +225,56 @@ check('C. 兜底：dossier 取不到时仍有船 + 规则 + 能做什么 ✓',
   fb.text.includes('X-1') && fb.text.includes('挖矿') && /能做什么/.test(fb.text), fb.text.slice(0, 120))
 
 // ---------------------------------------------------------------------------
+// E. 真实形状（**不是理想形状** ✗✓）：插件侧的 `facts.tradeRoutes` 是**投影过**的
+//    （候选叫 `areas` 而不是 `areaRanking` ✓、没有 x/y 只有 area.lower/upper ✓、
+//     `offset` 可能是 **null** ✓）。这两种都**真的**把单发路径崩过一次 ✓✓：
+//      ① 只认 `areaRanking` → 那张候选表**静默消失** ✗；
+//      ② `null !== undefined` 成立 → 点 `.x` 抛 `Cannot read properties of null` ✗✓
+//         （整条单发失败 = 舰队这一轮**没有决策** ✓，实机日志原文就是这句 ✓）。
+//    → 所以这里用**最丑的那个形状**再验一遍 ✓（回归探针 ✓）。
+// ---------------------------------------------------------------------------
+function projectedTradeFacts() {
+  return {
+    recommendation: {
+      goodName: 'Antigrav Unit', x: -399, y: 81, deposit: 752000, sizeX: 17, sizeY: 17,
+      attackChance: 0.07, attackChanceBase: 0.07, netProfitLow: 761638, netProfitHigh: 800000,
+    },
+    riskWarning: null,
+    orderHint: { x: -399, y: 81, goodName: 'Antigrav Unit', deposit: 752000, sizeX: 17, sizeY: 17 },
+    areasScanned: 9, scanMs: 120,
+    areas: [
+      { x: -399, y: 81, shape: '17x17', origin: 'coarse', bestRouteName: 'Antigrav Unit',
+        attackChance: 0.07, netProfitLow: 761638, netProfitHigh: 800000, flights: 2, deposit: 752000,
+        acceptable: true, offset: null },                                   // ★ offset 是 null ✓
+      { area: { lower: { x: -403, y: 77 }, upper: { x: -375, y: 87 } },     // ★ 只有 area ✓
+        shape: '29x11', origin: 'fine', bestRouteName: 'Wide Good', attackChance: 0.04,
+        netProfitLow: 700000, netProfitHigh: 740000, flights: 2, deposit: 700000, acceptable: true,
+        offset: null },
+    ],
+  }
+}
+const projected = renderDossier({
+  payload: {
+    what: 'dossier', ship: 'Trader-1', gate: 0.1,
+    card: { name: 'Trader-1', sector: { x: -375, y: 78 }, actionNames: ['Trade'], actions: { Trade: { areaSize: [17, 17] } } },
+    goal: { text: '跑贸易', options: ['Trade'] },
+    plans: [{ action: 'Trade', ...projectedTradeFacts() }],
+  },
+  goalText: '跑贸易', goalOptions: ['Trade'],
+  escortCandidates: ['Combat-1'],
+})
+check('E. ★ 投影过的形状也能渲染出候选表（`areas` 而不是 `areaRanking` ✓）',
+  /17x17/.test(projected.text) && /29x11/.test(projected.text), projected.text.slice(0, 200))
+check('E. ★ 没有 x/y 时退回 area.lower/upper 算出框心（-389,82 ✓）',
+  projected.text.includes('-389,82'), '')
+check('E. ★ `offset: null` **不许**把这条路崩掉（null 与 undefined 一起判 ✓）',
+  projected.text.length > 0 && !/Cannot read/.test(projected.text), projected.text.slice(0, 120))
+check('E. ★ 绝对坐标那一行的措辞仍在（模型不做算术 ✓）',
+  projected.text.includes('绝对星区坐标') && projected.text.includes('不要再加 offset'), '')
+check('E. ★ 护航候选进了档案（Trade 那一单必需 ✓）',
+  projected.text.includes('Combat-1') && /一跳的航程/.test(projected.text), '')
+
+// ---------------------------------------------------------------------------
 // 汇总
 // ---------------------------------------------------------------------------
 const failed = checks.filter((c) => !c.pass)
