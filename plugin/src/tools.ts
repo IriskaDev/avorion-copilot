@@ -127,32 +127,41 @@ export function registerFleetTools(
     {
       name: 'fleet_query',
       description:
-        'Query Avorion game state. what=fleet returns a snapshot of every ship on the Copilot ' +
-        'roster (idle/busy, has captain, current progress). what=ship returns one ship capability ' +
-        'card (pass brief=true for the SHORT one -- it answers "what can this ship do right now" ' +
-        'in one call, which is usually all you need). what=goal returns that ship operating goal ' +
-        '(the player text intent and allowed actions). what=sectorFacts returns FACTS about any ' +
-        'sector (richness / material probability / centre-ring side / distance from the map centre, ' +
-        'plus the same numbers for sectors closer to the centre) -- pass x and y (and optionally ' +
-        'ship) -- it returns no verdict about whether to go there. what=dossier returns ONE bounded ' +
-        'pre-fetched bundle (ship + rules + plan candidates) -- that is the single-shot path helper; ' +
-        'an agent should prefer the individual queries below. The plan queries -- what=tradePlan | ' +
-        'minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- ' +
-        'are BOUNDED BY DEFAULT: you get the top few candidate boxes with their key numbers, not the ' +
-        'full multi-megabyte dump. Use top=N to change how many candidates come back, compact=false ' +
-        '(or full=true) only when you really need the complete raw answer, and brief=true on ' +
-        'what=fleet for a short roster. This is the ONLY proper way to look at the game -- do ' +
-        'not rely on screenshots.',
+        'Query Avorion game state with ATOMIC interfaces -- each call does ONE small thing and the ' +
+        'decision-maker composes them (list -> pick a ship -> ship -> goal -> predict/tradeRoutes). ' +
+        '★ what=list returns an INDEX-LEVEL roster: only name / idle / has captain / sector per ship ' +
+        '(NO per-ship full state, NO cargo detail, NO prediction) -- use it FIRST to pick which ship ' +
+        'to look at, then query that one. what=ship returns ONE ship capability card (brief=true for ' +
+        'the SHORT view). what=goal returns that ship operating goal. what=sectorFacts returns FACTS ' +
+        'about any sector (pass x,y). ★ what=predict is the CORE computation atom: ONE box (x,y,sizeX,' +
+        'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout) + that action minimal params -> the ' +
+        'prediction numbers (risk + value) for THAT box only; batch via boxes=[...] (N<=24, each box ' +
+        'independent). ★ what=tradeRoutes returns the trade routes inside ONE box + per-good numbers ' +
+        '(no sorting, no recommendation). The old plan queries -- tradePlan | minePlan | salvagePlan | ' +
+        'sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
+        'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
+        '(list -> ship -> predict/tradeRoutes) instead. what=dossier is the single-shot helper (no ' +
+        'tools / no file access). This is the ONLY proper way to look at the game -- do not rely on ' +
+        'screenshots.',
       parameters: {
         what: {
           type: 'string',
           required: true,
-          description: 'fleet | ship | goal | sectorFacts | dossier | tradePlan | minePlan | ' +
-            'salvagePlan | sellPlan | scoutPlan | jobPlan',
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | dossier | ' +
+            'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
-        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/any plan' },
-        x: { type: 'number', description: 'sector x; required for what=sectorFacts' },
-        y: { type: 'number', description: 'sector y; required for what=sectorFacts' },
+        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/any plan' },
+        x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre)' },
+        y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre)' },
+        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY)' },
+        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX)' },
+        goodName: { type: 'string', description: 'predict Trade only: WHICH route to evaluate (from tradeRoutes)' },
+        deposit: { type: 'number', description: 'predict Trade only: upfront budget (must be > 0)' },
+        duration: { type: 'number', description: 'predict Mine/Salvage only: task hours (optional)' },
+        safeMode: { type: 'boolean', description: 'predict Mine/Salvage only: safe mode (optional)' },
+        escorts: { type: 'array', items: { type: 'string' }, description: 'predict/plan: escort ship names (optional)' },
+        goodsToSell: { type: 'array', description: 'predict Sell only: goods to sell (optional; default = whole hold)' },
+        boxes: { type: 'array', description: 'predict batch: array of {x,y,sizeX,sizeY,...per-action params} (N<=24)' },
         compact: {
           type: 'boolean',
           description:
@@ -173,7 +182,7 @@ export function registerFleetTools(
             'ship/fleet: return the SHORT view (name/sector/captain/cargo/actions + current-sector ' +
             'numbers; no depth sampling, no long per-action prose). Answers "what can it do now".',
         },
-        action: { type: 'string', description: 'jobPlan only: Mine | Salvage (default Mine)' },
+        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout' },
       },
       output: {
         schema: { type: 'string' },
@@ -181,10 +190,12 @@ export function registerFleetTools(
       },
       async execute(args: {
         what: string; ship?: string; x?: number; y?: number
+        sizeX?: number; sizeY?: number; goodName?: string; deposit?: number
+        duration?: number; safeMode?: boolean; escorts?: string[]; goodsToSell?: unknown; boxes?: unknown[]
         compact?: boolean; top?: number; full?: boolean; brief?: boolean; action?: string
       }) {
-        // ★ sectorFacts 只需要坐标 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
-        const needsShip = args.what !== 'fleet' && args.what !== 'sectorFacts'
+        // ★ sectorFacts 只需坐标 ✓；list 什么都不用 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
+        const needsShip = args.what !== 'fleet' && args.what !== 'sectorFacts' && args.what !== 'list'
         if (needsShip && (args.ship === undefined || args.ship === '')) {
           return `what=${args.what} needs the ship parameter`
         }
@@ -200,6 +211,9 @@ export function registerFleetTools(
         //   ★ 但**必须**把参数名带过去（漏了它们 = 旋钮静默失效 ✓）。
         const r = await ask(peer, 'query', {
           what: args.what, ship: args.ship, x: args.x, y: args.y,
+          sizeX: args.sizeX, sizeY: args.sizeY, goodName: args.goodName, deposit: args.deposit,
+          duration: args.duration, safeMode: args.safeMode, escorts: args.escorts,
+          goodsToSell: args.goodsToSell, boxes: args.boxes,
           compact: args.compact, top: args.top, full: args.full, brief: args.brief,
           action: args.action,
         }, timeout)
@@ -228,17 +242,18 @@ export function registerFleetTools(
     {
       name: 'fleet_order',
       description:
-        'Give a background command to a ship on the Copilot roster. action is one of Mine, Salvage, ' +
-        'Trade, Travel; the remaining parameters depend on the action (Travel needs a target sector ' +
-        'x,y; work commands need an area centre and edge length). The command is ASYNCHRONOUS: the ' +
-        'captain takes the ship out of the player sector and is unreachable while working. ' +
-        'Call fleet_query with what=orderSchema first, then order.',
+        'Give ONE background command to ONE ship (atomic: one ship + one action + that action ' +
+        'minimal params -- NO auto box, NO auto params, NO auto retreat). action is one of Mine, ' +
+        'Salvage, Trade, Travel, Sell, Scout. You MUST provide the explicit box (x, y + size, or ' +
+        'sizeX+sizeY for Trade) and, for Trade, an explicit goodName (a route name from ' +
+        'fleet_query what=tradeRoutes) and deposit > 0. The command is ASYNCHRONOUS: the captain ' +
+        'takes the ship out of the player sector and is unreachable while working.',
       parameters: {
         ship: { type: 'string', required: true, description: 'ship name (must be on the Copilot roster)' },
-        action: { type: 'string', required: true, description: 'Mine | Salvage | Trade | Travel' },
-        x: { type: 'number', description: 'target sector x (required for Travel; area centre otherwise)' },
-        y: { type: 'number', description: 'target sector y' },
-        size: { type: 'number', description: 'area edge length (Mine/Salvage 15; Trade 17/29/11)' },
+        action: { type: 'string', required: true, description: 'Mine | Salvage | Trade | Travel | Sell | Scout' },
+        x: { type: 'number', description: 'target sector x (required; box centre for work actions)' },
+        y: { type: 'number', description: 'target sector y (required)' },
+        size: { type: 'number', description: 'area edge length (required for work actions unless sizeX+sizeY given)' },
         sizeX: {
           type: 'number',
           description:
@@ -252,7 +267,7 @@ export function registerFleetTools(
           type: 'string',
           description:
             'Trade only: WHICH trade route to fly. Must be a route name from ' +
-            'fleet_query what=tradePlan (e.g. "Drill", "Antigrav Unit"). Without it the ' +
+            'fleet_query what=tradeRoutes (e.g. "Drill", "Antigrav Unit"). Without it the ' +
             'game answers "No route selected."',
         },
         deposit: {

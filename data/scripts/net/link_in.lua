@@ -249,14 +249,13 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS }
 
     elseif what == "orderSchema" then
-        -- ★ 协议 §10 第 8 条：形状**不定死**，返回**不透明表**给 DSH 透传。
-        -- 但取参数的原版 API（getConfigurableValues）**本 agent 还没实测过** ✗，
-        -- 所以这一版**诚实地报未实现** ✓ —— 而不是编一个假形状出来 ✗✓
-        return false, "NOT_IMPLEMENTED",
-            "orderSchema not wired yet (needs a verified getConfigurableValues probe)"
+        -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），
+        --   参数形状由 `predict`/`tradeRoutes` 的结果直接决定 ✓，不再需要"不透明表透传" ✗。
+        return false, "DEPRECATED",
+            "orderSchema removed: order takes explicit params (see predict / tradeRoutes); no schema indirection"
 
     else
         return false, "UNSUPPORTED", "unknown what: " .. tostring(what)
@@ -3949,7 +3948,12 @@ local function trimNestedPlan(resp, top)
     return resp
 end
 
--- ★★★ 计划查询的**唯一出口** ✓
+-- ★★★ 计划查询的**唯一出口** ✓（★★ 已降级为 legacy，2026-10-17 ✓✓）
+--
+--   这 6 个计划（tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan）**自己在游戏侧
+--   扫 ~67 框 + 排序 + 推荐** ✗ —— 违背"接口原子化"原则 ✗。它们保留为 **legacy 便利口** ✓
+--   （一次性拿"游戏排好的榜 + 推荐"），但**不再是决策默认路径** ✗✓：
+--   ★ 决策默认走原子组合：`list` → `ship` → `goal` → `sectorFacts` → `predict` / `tradeRoutes` ✓。
 --
 --   契约：**总是** (true, payload) 或 (false, code, why) ✓ —— 与原来六个分支逐字一致 ✓
 --   （★ 绝不再写 `return true, informOnly(jobPlan(...))` ✗ —— 非末位参数只取第一个返回值 ✓）。
