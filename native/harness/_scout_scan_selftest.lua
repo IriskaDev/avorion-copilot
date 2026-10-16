@@ -36,10 +36,13 @@ local GATE = 0.10
 local nRun, nPred = 0, 0
 local SPEC = {}          -- 区域偏移 "ox,oy" → { reveals=…, chance=…, duration=…, noReveals=true }
 local CARD_SECTOR = { x = SHIP_X, y = SHIP_Y }
+local UNKNOWN = nil      -- ★ 未探索区布置（nil = 全部已知 ✓；"TOPSTRIPE" / "SHIPROW" ✓）
+local LAST_SHIP_Y = SHIP_Y
 
 local function resetAll()
     nRun, nPred, SPEC = 0, 0, {}
     CARD_SECTOR = { x = SHIP_X, y = SHIP_Y }
+    UNKNOWN = nil
 end
 
 local function offsetOfArea(area)
@@ -118,6 +121,7 @@ function include(name)
         return { makeCommand = function(ctype) return FAKE_COMMAND end }
     end
     if name == "copilot/card" then return FAKE_CARD end
+    if name == "copilot/scout" then return dofile("data/scripts/lib/copilot/scout.lua") end
     if name == "goods" then return {} end
     error("unexpected include: " .. tostring(name))
 end
@@ -127,6 +131,41 @@ function ShipDatabaseEntry(ownerIndex, name)
 end
 
 local player = { index = 1 }
+_G.player = player            -- ★ 全局同名一份 ✓：include("copilot/scout") 里的 `player.index` 取的是**全局** ✗✓
+player.getShipPosition = function(self, name)
+    LAST_SHIP_Y = SHIP_Y
+    return SHIP_X, SHIP_Y
+end
+-- ★ 「已探索」替身（原版判据：player:getKnownSector(x,y) ~= nil → 已知 ✓）
+--
+--   ★★ 2026-10-17 起，Scout 的**主口径**变成"框里还剩多少未探索星区" ✓✓，
+--      而"unknownCount = 0 的框**不许被推荐**"（主人要求 ✓ —— 那正是"她总 scout 同一块地方"的根 ✓）。
+--      → 所以替身的默认状态**不能**是"全部已知" ✗（那会让所有框都 = 0 → 一个候选都不达标 ✓）。
+--      → 默认给一个**围绕船的小未探索块**（3x3 = 9 个 ✓），这样：
+--          · 所有旧断言（reveals/风险/含船/orderHint）**照旧成立** ✓
+--          · 而且每个候选框的 unknownCount 都 ≥ 1 ✓（旧用例的语义不变 ✓）
+--      需要精确数字的用例（S8a/b/c）用 `UNKNOWN` 覆盖成确定形状 ✓。
+local KNOWN_OVERRIDE = false      -- 置 true 时：**全部已知** ✓（S8 之外的默认不走这条 ✓）
+player.getKnownSector = function(self, x, y)
+    KNOWN_CALLS = (KNOWN_CALLS or 0) + 1
+    local view = {}
+    if UNKNOWN == "TOPBAND" then
+        -- 未探索 = 船那一行**及以上**的 3 行（y ∈ [SHIP_Y-2, SHIP_Y] ✓）：
+        --   · 框心 y = -9/-10 的框，y 上界只有 74 → 吃到 0 个 ✓（"揭不出新地图"的框 ✓✓）
+        --   · 框心 y = 0 的框 → 吃到全部 3x21 = **63** 个 ✓
+        if y >= SHIP_Y - 2 and y <= SHIP_Y then view = nil end
+    elseif UNKNOWN == "SHIPROW" then
+        -- 未探索 = y = SHIP_Y+6（只有框心 y >= -4 的框才够得到它 → 心 -9/-10 的框吃到 0 ✓）
+        if y == SHIP_Y + 6 then view = nil end
+    elseif UNKNOWN == "STRIPE_LOW" then
+        -- 未探索 = y = SHIP_Y-9（**偏下**一行：心 +9/+10 的框够不到 → unknownCount = 0 ✓）
+        if y == SHIP_Y - 9 then view = nil end
+    elseif not KNOWN_OVERRIDE then
+        -- 默认：船周围的 3x3 未探索块 ✓（保证每个候选框都有 ≥1 个未探索 ✓）
+        if math.abs(x - SHIP_X) <= 1 and math.abs(y - SHIP_Y) <= 1 then view = nil end
+    end
+    return view
+end
 function Player() return player end
 function ShipAvailability() return { Available = 0 } end
 
@@ -144,6 +183,13 @@ SPEC = {
     ["4,0"]  = { reveals = 3, chance = 0.05, duration = 900 },   -- 多 ✓ → 应当胜出
 }
 local _, r1 = LinkIn.scoutPlan(player, { ship = SHIP, maxAreas = 9 })
+if r1 and r1.areaRanking and r1.areaRanking[1] then
+    local e = r1.areaRanking[1]
+    print("  [dbg S1] unknownCount=" .. tostring(e.unknownCount) .. " hasUnknown=" .. tostring(e.hasUnknown)
+        .. " reveals=" .. tostring(e.revealsLow) .. " chance=" .. tostring(e.attackChance)
+        .. " acceptable=" .. tostring(e.acceptable) .. " boxTotal=" .. tostring(e.totalSectors)
+        .. " unknownTable=" .. tostring(e.unknown and e.unknown.unknownCount))
+end
 check("S1 有推荐 ✓", type(r1) == "table" and r1.recommendation ~= nil, r1 and r1.note)
 check("S1 推荐的是 reveals=3 那个 ✓（偏移 4,0 → 绝对 x=" .. (SHIP_X + 4) .. "）",
     r1 and r1.recommendation and r1.recommendation.revealsLow == 3,
@@ -312,7 +358,161 @@ if fh then fh:close() end
 check("S7 源码里的 Scout UUID 与实读 commandtype.lua 一致 ✓✓",
     src:find("7619ca9c-3f26-4b89-a4a4-10fd9aca5c60", 1, true) ~= nil)
 check("S7 源码里 DEFAULT_SIZE.Scout = 21 ✓", src:find("Scout = 21", 1, true) ~= nil)
-check("S7 调用次数：run=" .. nRun .. " / calculatePrediction=" .. nPred .. "（有界 ✓）", nRun <= 9 and nPred <= 9 * 2)
+check("S7 调用次数：run=" .. nRun .. " / calculatePrediction=" .. nPred .. "（两阶段有界 ✓）",
+    nRun <= 142 and nPred <= 142 * 2)
+
+-- ---------------------------------------------------------------------------
+-- ★★ S8：未知星区计数（主人 2026-10-17 要求 ✓✓）
+--   "她总是 scout 同一块地方" —— 根因：原版只给 revealsOffgrid（**枚举 0/1/2** ✗，太粗），
+--   于是"这块地方已经没得揭了"在数字上看不出来 ✗。
+--   → 现在每个候选框都数 unknownCount（框内 player:getKnownSector(x,y)==nil 的个数 ✓），
+--     并且**主键换成它** ✓（枚举仍是次键 ✓，旧字段不删 ✓✓）。
+-- ---------------------------------------------------------------------------
+print("== S8: 逐框未探索数（unknownCount）是主口径 ✓ ==")
+
+-- (a) 其他都一样时：未探索多的框胜 ✓
+resetAll()
+UNKNOWN = "SHIPROW"             -- 未探索 = y = SHIP_Y+6 那一行 ✓（见下：谁能吃到它有讲究 ✓）
+DBG_LINKIN = true
+DBG_N = 0
+SPEC = {
+    ["0,0"]  = { reveals = 2, chance = 0.05, duration = 900 },   -- 吃到 3x21=63 个未探索 ✓
+    ["0,-9"] = { reveals = 2, chance = 0.05, duration = 900 },   -- 吃到 1x21=21 个 ✓
+    ["0,9"]  = { reveals = 2, chance = 0.05, duration = 900 },   -- 吃到 0 个 ✓
+}
+local _, r8a = LinkIn.scoutPlan(player, { ship = SHIP, maxAreas = 9 })
+check("S8a ok ✓", r8a ~= nil)
+if r8a ~= nil then
+    -- ★★ 结构性不变量（2026-10-17 加 ✓✓ —— 它当场抓出了"偏移加了两次"的 bug ✗→✓）：
+    --   每个候选框的**几何中心**必须等于 `centre`（= x/y 绝对坐标 ✓），
+    --   而且 `centre − 船的星区` 必须等于 `offset` ✓✓。
+    --   只靠"框含船"是**抓不到**偏移错位的 ✗（错位的框照样含船 ✓）。
+    check("S8a ★ 不变量：框心 = centre = (x,y)，且 centre − 船位 = offset ✓✓",
+        (function()
+            for _, e in ipairs(r8a.areaRanking or {}) do
+                local a = e.area
+                local w = a.upper.x - a.lower.x + 1
+                local h = a.upper.y - a.lower.y + 1
+                local cxx = a.lower.x + math.floor((w - 1) / 2)
+                local cyy = a.lower.y + math.floor((h - 1) / 2)
+                if cxx ~= e.centre.x or cyy ~= e.centre.y then return false end
+                if e.x ~= cxx or e.y ~= cyy then return false end
+                if e.offset.x ~= cxx - SHIP_X or e.offset.y ~= cyy - SHIP_Y then return false end
+            end
+            return true
+        end)())
+    local rec = r8a.recommendation
+    -- ★★ 主断言（不依赖任何"我以为"的手算 ✗）：推荐的那个框必须是**未探索最多**的 ✓✓
+    local maxU, zeroU, mine = -1, 0, nil
+    for _, e in ipairs(r8a.areaRanking or {}) do
+        local u = tonumber(e.unknownCount) or 0
+        if u > maxU then maxU, mine = u, e end
+        if u == 0 then zeroU = zeroU + 1 end
+    end
+    check("S8a 推荐框的 unknownCount **等于全场最大** ✓（就是未探索最多那个 ✓✓）",
+        rec ~= nil and rec.unknownCount == maxU, rec and (tostring(rec.unknownCount) .. " vs max " .. tostring(maxU)))
+    check("S8a 最大未探索数 > 0 ✓（真的数出东西了 ✓）", maxU > 0, maxU)
+    check("S8a 有框吃到 0 个未探索 ✓（说明这个测试真的在比数，不是在比常量 ✓✓）", zeroU > 0, zeroU)
+    check("S8a 每个候选框都带 unknownCount / knownCount / totalSectors ✓",
+        (function()
+            for _, e in ipairs(r8a.areaRanking or {}) do
+                if type(e.unknownCount) ~= "number" or type(e.knownCount) ~= "number"
+                    or e.totalSectors ~= 441
+                    or e.unknownCount + e.knownCount ~= 441 then return false end
+            end
+            return true
+        end)())
+    check("S8a unknownCount 与逐框 unknown 子表一致 ✓",
+        (function()
+            for _, e in ipairs(r8a.areaRanking or {}) do
+                if type(e.unknown) ~= "table" or e.unknown.unknownCount ~= e.unknownCount then
+                    return false
+                end
+            end
+            return true
+        end)())
+    -- ★ 推荐框必须真的够得到那个未探索点（y ∈ [SHIP_Y-2, SHIP_Y+6] 之内 ✓）—— 用坐标判 ✓
+    check("S8a 推荐框确实含那个未探索点 ✓（y 范围覆盖 SHIP_Y+6 ✓）",
+        rec ~= nil and rec.area.lower.y <= SHIP_Y + 6 and rec.area.upper.y >= SHIP_Y + 6,
+        rec and (tostring(rec.area.lower.y) .. ".." .. tostring(rec.area.upper.y)))
+    check("S8a 推荐的 x/y 是**绝对星区坐标**（= 框心 ✓，模型不做算术 ✓）",
+        rec ~= nil and rec.x ~= nil and rec.y ~= nil
+        and rec.x == rec.centre.x and rec.y == rec.centre.y,
+        rec and (tostring(rec.x) .. "," .. tostring(rec.y)))
+end
+
+-- (b) unknownCount = 0 的框**绝不**在还有 nonzero 框时被推荐 ✓
+resetAll()
+UNKNOWN = "STRIPE_LOW"          -- 未探索 = y = SHIP_Y-9 那一行 → 只有**偏下**的框够得到它 ✓
+SPEC = {
+    -- (0,-9)：y∈[54,74] 含 SHIP_Y-9=64 ✓ → 有未探索（1 个 ✓）
+    ["0,-9"]  = { reveals = 2, chance = 0.05, duration = 900 },
+    -- (0,9)：y∈[72,92] 不含 64 ✗ → unknownCount = 0，而且**风险一样低** ✓（正是要防的那种"看似最优" ✓）
+    ["0,9"]   = { reveals = 2, chance = 0.05, duration = 900 },
+}
+local _, r8b = LinkIn.scoutPlan(player, { ship = SHIP, maxAreas = 9 })
+check("S8b ok ✓", r8b ~= nil)
+if r8b ~= nil then
+    local rec = r8b.recommendation
+    check("S8b 推荐框的 unknownCount > 0 ✓（零未探索的框即使风险更低也不推荐 ✓✓）",
+        rec ~= nil and (rec.unknownCount or 0) > 0, rec and rec.unknownCount)
+    check("S8b 零未探索的框标了 revealsNothingNew / hasUnknown=false ✓",
+        (function()
+            local n = 0
+            for _, e in ipairs(r8b.areaRanking or {}) do
+                if e.unknownCount == 0 then
+                    n = n + 1
+                    if e.revealsNothingNew ~= true or e.hasUnknown ~= false then return false end
+                end
+            end
+            return n > 0
+        end)())
+    check("S8b 顶层给了 neighbourhood 事实（船邻域未探索数 + 候选框分布 ✓，**只是数字** ✓）",
+        r8b.neighbourhood ~= nil and type(r8b.neighbourhood.unknown) == "number"
+        and type(r8b.neighbourhood.candidateBoxesWithZeroUnknown) == "number",
+        r8b.neighbourhood and JSON.encode({ u = r8b.neighbourhood.unknown,
+            z = r8b.neighbourhood.candidateBoxesWithZeroUnknown }))
+end
+
+-- (c) 枚举不再是主键：**未探索多但枚举低**的框要赢过"未探索少但枚举高"的 ✓
+resetAll()
+UNKNOWN = "STRIPE_LOW"          -- 未探索 = y = SHIP_Y-9 那一行 → **偏上的框**够不到（unknownCount=0 ✓）
+SPEC = {
+    ["0,9"] = { reveals = 2, chance = 0.05, duration = 900 },     -- 枚举最高(2)，但 y∈[72,92] 吃不到 → 0 ✗
+    ["0,0"] = { reveals = 1, chance = 0.05, duration = 900 },     -- 枚举低(1)，但 y∈[63,83] 吃到那一行 = 21 ✓
+}
+local _, r8c = LinkIn.scoutPlan(player, { ship = SHIP, maxAreas = 9 })
+check("S8c ok ✓", r8c ~= nil)
+if r8c ~= nil then
+    local rec = r8c.recommendation
+    check("S8c 旧的枚举口径**再也藏不住**更该去的框 ✓（未探索多者胜 ✓✓）",
+        rec ~= nil and (rec.unknownCount or 0) > 0 and rec.revealsOffgridEnum == 1,
+        rec and (tostring(rec.unknownCount) .. " / enum " .. tostring(rec.revealsOffgridEnum)))
+    check("S8c 那个枚举最高但没得揭的框（revealsOffgridEnum=2）unknownCount = 0 ✓",
+        (function()
+            for _, e in ipairs(r8c.areaRanking or {}) do
+                if e.revealsOffgridEnum == 2 and e.unknownCount ~= 0 then return false end
+            end
+            return true
+        end)(), rec and rec.unknownCount)
+    check("S8c 枚举字段仍然保留并写明含义 ✓（旧字段不删 ✓）",
+        rec ~= nil and type(rec.revealsOffgridMeaning) == "string"
+        and rec.revealsOffgridMeaning:find("枚举", 1, true) ~= nil,
+        rec and rec.revealsOffgridMeaning)
+end
+
+-- (d) 时间预算 ✓（软预算：只在框之间检查 ✓）
+resetAll()
+UNKNOWN = "TOPSTRIPE"
+SPEC = { ["0,0"] = { reveals = 2, chance = 0.05, duration = 900 } }
+local _, r8d = LinkIn.scoutPlan(player, { ship = SHIP, maxScanMs = 1 })
+check("S8d ok=true（预算极小时也不炸 ✓）", r8d ~= nil)
+if r8d ~= nil then
+    check("S8d 报了 scan.budgetMs ✓", r8d.scan and r8d.scan.budgetMs == 1,
+        r8d.scan and r8d.scan.budgetMs)
+    check("S8d 报了 scanMs ✓", type(r8d.scanMs) == "number", r8d.scanMs)
+    check("S8d 至少还是粗扫了第一个框 ✓", r8d.areasScanned >= 1, r8d.areasScanned)
+end
 
 print("")
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))

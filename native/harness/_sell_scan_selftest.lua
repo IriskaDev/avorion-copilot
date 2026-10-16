@@ -98,8 +98,9 @@ function FAKE_COMMAND:calculatePrediction(ownerIndex, shipName, area, config)
         attackChance = { value = tonumber(s.chance) or 0 },
         duration = tonumber(s.duration) or 2000,
         yield = tonumber(s.yield) or 0,          -- 原版 getPredictableValues().yield ✓
-        percentages = {},
-        pricesPerGood = {},
+        -- 逐货数字（原版 sellcommand.lua:626 percentages / :629 pricesPerGood）
+        percentages = s.pcts or {},
+        pricesPerGood = s.prices or {},
     }
 end
 
@@ -235,7 +236,22 @@ SPEC = {
     ["0,0"] = { yield = 80000, chance = 0.05, duration = 2000 },
 }
 local ok5, r5 = LinkIn.sellPlan(player, { ship = SHIP, maxAreas = 3 })
-check("S5 扫了 3 个区域 ✓", r5 and r5.areasScanned == 3, r5 and r5.areasScanned)
+check("S5 粗扫 3 个区域 ✓（areasScanned = **粗扫**框数，语义不变 ✓）",
+    r5 and r5.areasScanned == 3, r5 and r5.areasScanned)
+check("S5 两阶段：细扫围绕最好的几个粗扫框又扫了一批 ✓（boxesEvaluated > 3 ✓）",
+    r5 and type(r5.boxesEvaluated) == "number" and r5.boxesEvaluated > r5.areasScanned,
+    r5 and r5.boxesEvaluated)
+check("S5 scan.phases.fineScanned > 0 ✓（细扫真的跑了 ✓）",
+    r5 and r5.scan and r5.scan.phases and (r5.scan.phases.fineScanned or 0) > 0,
+    r5 and r5.scan and r5.scan.phases and r5.scan.phases.fineScanned)
+check("S5 每个候选框都带**绝对坐标** x/y 与 origin ✓（模型不做算术 ✓）",
+    (function()
+        for _, e in ipairs(r5 and r5.areaRanking or {}) do
+            if type(e.x) ~= "number" or type(e.y) ~= "number" then return false end
+            if e.origin ~= "coarse" and e.origin ~= "fine" then return false end
+        end
+        return true
+    end)())
 local allInside = true
 for _, e in ipairs(r5 and r5.areaRanking or {}) do
     local a = e.area
@@ -265,7 +281,8 @@ resetAll()
 CARGO = { [mkGood("Oxygen")] = 100 }
 SPEC = { ["0,0"] = "ERROR" }        -- 必扫到的第一个区域炸掉 ✓；其余偏移走替身默认值 ✓
 local ok6, r6 = LinkIn.sellPlan(player, { ship = SHIP, maxAreas = 2 })
-check("S6 仍然扫完 2 个区域 ✓", r6 and r6.areasScanned == 2, r6 and r6.areasScanned)
+check("S6 仍然粗扫完 2 个区域 ✓（失败不中断 ✓）",
+    r6 and r6.areasScanned == 2, r6 and r6.areasScanned)
 local anyErr = false
 for _, e in ipairs(r6 and r6.areaRanking or {}) do
     if type(e.error) == "string" then anyErr = true end
@@ -313,6 +330,74 @@ if fh then fh:close() end
 check("S8 源码里的 Sell UUID 与实读的 commandtype.lua 一致 ✓",
     src:find("6bf2d9af-255b-4108-a1e1-dc83ace49819", 1, true) ~= nil)
 check("S8 onOrder 里确实装了 config.goodsToSell ✓", src:find("config.goodsToSell = hold", 1, true) ~= nil)
+
+-- ---------------------------------------------------------------------------
+-- 9) 逐货数字（主人 2026-10-17 要求）：每个候选框、每种货 --
+--    舱里有多少 / 预计卖多少 / 涨跌幅 百分比（来源：原版 pred.pricesPerGood / pred.percentages）
+-- ---------------------------------------------------------------------------
+print("== S9: 逐货数字（perGood）==")
+resetAll()
+CARGO = { [mkGood("Drill")] = 100, [mkGood("Oxygen")] = 50 }
+-- (0,0)：Drill 总价 2000（涨 10%）/ Oxygen 总价 4000（跌 20%）
+-- (-4,0)：Drill 总价 2500（涨 50%）-> 跨框比较时 Drill 应该选 (-4,0)
+--   ★ 偏移 (-4,0) 是**粗扫网格点**（half=7 时 0/±4 ✓），(-4,0) 也在前三近里 ✓
+SPEC = {
+    ["0,0"] = { yield = 50000, chance = 0.05, duration = 2000,
+                prices = { ["Drill"] = 2000, ["Oxygen"] = 4000 },
+                pcts = { ["Drill"] = 110, ["Oxygen"] = 80 } },
+    ["-4,0"] = { yield = 40000, chance = 0.05, duration = 2000,
+                 prices = { ["Drill"] = 2500, ["Oxygen"] = 3000 },
+                 pcts = { ["Drill"] = 150, ["Oxygen"] = 60 } },
+}
+local ok9, r9 = LinkIn.sellPlan(player, { ship = SHIP, maxAreas = 3 })
+check("S9 ok=true", ok9 == true, r9)
+if ok9 == true then
+    check("S9 顶层带 perGoodByArea（每个候选框一份）",
+        type(r9.perGoodByArea) == "table" and #r9.perGoodByArea >= 2, r9.perGoodByArea and #r9.perGoodByArea)
+    check("S9 顶层带 perGoodBest（跨框每种货最好的那个框）",
+        type(r9.perGoodBest) == "table" and #r9.perGoodBest == 2, r9.perGoodBest and #r9.perGoodBest)
+    local rec = r9.recommendation
+    check("S9 recommendation.perGood 存在", rec ~= nil and type(rec.perGood) == "table",
+        rec and rec.perGood)
+    if rec ~= nil and type(rec.perGood) == "table" then
+        local byName = {}
+        for _, g in ipairs(rec.perGood) do byName[g.goodName] = g end
+        check("S9 每种货都有 amount（舱里多少）",
+            byName["Drill"] ~= nil and byName["Drill"].amount == 100
+            and byName["Oxygen"] ~= nil and byName["Oxygen"].amount == 50,
+            JSON.encode(rec.perGood))
+        check("S9 每种货都有 expectedRevenue（这个框里预计卖多少）",
+            byName["Drill"] ~= nil and byName["Drill"].expectedRevenue == 2000
+            and byName["Oxygen"] ~= nil and byName["Oxygen"].expectedRevenue == 4000,
+            byName["Drill"] and byName["Drill"].expectedRevenue)
+        check("S9 每种货都有 priceDeltaPercent（+10% / -20%）",
+            byName["Drill"] ~= nil and byName["Drill"].priceDeltaPercent == 10
+            and byName["Oxygen"] ~= nil and byName["Oxygen"].priceDeltaPercent == -20,
+            tostring(byName["Drill"] and byName["Drill"].priceDeltaPercent) .. " / "
+                .. tostring(byName["Oxygen"] and byName["Oxygen"].priceDeltaPercent))
+        check("S9 单位价也算好了（expectedUnitPrice，模型不用除）",
+            byName["Drill"] ~= nil and math.abs((byName["Drill"].expectedUnitPrice or 0) - 20) < 1e-9,
+            byName["Drill"] and byName["Drill"].expectedUnitPrice)
+        check("S9 正常价总额也反推算好了（normalRevenueEstimate）",
+            byName["Drill"] ~= nil
+            and math.abs((byName["Drill"].normalRevenueEstimate or 0) - (2000 / 1.1)) < 0.5,
+            byName["Drill"] and byName["Drill"].normalRevenueEstimate)
+    end
+    local best = nil
+    for _, g in ipairs(r9.perGoodBest or {}) do if g.goodName == "Drill" then best = g end end
+    check("S9 perGoodBest 里 Drill 选的是 (-4,0)（2500 > 2000，跨框比较）",
+        best ~= nil and best.expectedRevenue == 2500
+        and best.offset.x == -4 and best.offset.y == 0,
+        best and JSON.encode(best))
+    check("S9 perGoodNote 说清了口径与来源",
+        type(r9.perGoodNote) == "string" and r9.perGoodNote:find("sellcommand", 1, true) ~= nil,
+        r9.perGoodNote)
+    local anyUnavailable = false
+    for _, a in ipairs(r9.perGoodByArea or {}) do
+        if a.goods and a.goods[1] and a.goods[1].priceUnavailable == true then anyUnavailable = true end
+    end
+    check("S9 拿不到原版价的框会标 priceUnavailable=true（绝不编价）", anyUnavailable)
+end
 
 print("")
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
