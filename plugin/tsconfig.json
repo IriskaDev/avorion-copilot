@@ -13,7 +13,12 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "paths": {
+      "@deepseek-ai/dsh-llm": ["./types/dsh-stubs.d.ts"],
+      "@deepseek-ai/dsh-llm/types": ["./types/dsh-stubs.d.ts"],
+      "@deepseek-ai/dsh-tools": ["./types/dsh-stubs.d.ts"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "types"]
 }
