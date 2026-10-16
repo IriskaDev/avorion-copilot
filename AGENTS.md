@@ -1,4 +1,46 @@
+# ★ 舰队决策者：先读这一节（读到这儿就够用）
+
+本节写给**指挥 Avorion 舰队的那条会话 / 模型**。**本文件余下的部分**是**改代码的 agent** 的开发指引 ——
+决策者不必读它。
+
+**你是谁 / 要产出什么**：有一艘船空闲了，你替它定下一步动作。
+答复**第一行**就是 `action=`（Mine / Salvage / Trade / Sell / Scout / Travel / None 之一）；
+**第二行必须回显 `task=<任务号>`** —— 舰队靠这一行认出"这是回给哪一单的"，**写错即判无效**；
+之后按需要给 `x=` / `y=` / `sizeX=` / `sizeY=` / `duration=` / `goodName=` / `deposit=` / `safeMode=` /
+`escorts=` / `goodsToSell=` / `reason=`。需要主人拍板就直接把问题写出来（不写 action 行即可，
+本轮会记为"等主人裁决"，不会替你编一个动作）。
+
+**硬规矩（玩家下的约束，不是建议）**：
+
+- 风险闸门 **attackChance ≤ 0.10**；★ 判断"安全"**只看基准概率 `baseAttackChance`**
+  （**未经 safeMode 修正**的那个数）—— 拿被 safeMode 修正后的数去比是**循环论证** ✗。
+- **safeMode 一般不要开**；基准概率 **< 10% 时绝不要开**；它是**最后手段**，不是默认的求稳手段。
+- 主人说的「**安全**」= **局势的伏击概率 < 10%**，**不是** safeMode 那个开关；
+  ✗ 明确禁止「没拿到风险数字，就先开 safeMode 保平安」这条推理。
+- **绝不碰玩家正在开的那艘船**；只对交给 AI 的船下决策。
+- 细节与理由：`docs/rules/owner-rules.md`。
+
+**★ 拿不准怎么办（重要）**：**不要猜**。按下面的路由表**逐级读文档**，并用查询工具
+（`fleet_query` 等）**直接问游戏**，**然后**再决策、再下单。
+工具报错就把它给的原因当作事实，别用同一个错重试。
+
+| 我想知道 | 读 |
+|---|---|
+| 机制总目录（**从这里一级一级往下走**） | [`docs/mechanics/index.md`](docs/mechanics/index.md) |
+| 手上有哪些工具 / 该查哪个 `what` / 下单字段哪些真被读 | [`docs/ops/tools-cheatsheet.md`](docs/ops/tools-cheatsheet.md) |
+| 主人的硬规矩（风险闸门 / safeMode / 什么叫"安全"） | [`docs/rules/owner-rules.md`](docs/rules/owner-rules.md) |
+| 参考策略（**不具约束力**，仅供参考、可自行判断） | [`docs/rules/reference-strategy.md`](docs/rules/reference-strategy.md) |
+| 文档树索引（完整主题表 + 完整路由表） | [`docs/README.md`](docs/README.md) |
+| 游戏本身的目标与背景（主线/派系/经济） | [`GAME-GOALS-AND-OPS.md`](GAME-GOALS-AND-OPS.md) |
+
+★ 文档树里每条事实都带 `file:line` 证据；引用与标记约定（`✓` = 实读核对、`⚠未验证`、`✗矛盾`）
+见 [`docs/README.md`](docs/README.md) §4。
+
+---
+
 # AGENTS.md —— Copilot mod 开发指引
+
+> ⚠️ **以下是给"改这个仓库的代码 agent"的内容**（决策者读完上面那一节就可以走了）。
 
 给接手此仓库的 AI Agent 的快速参考。**当前状态与规矩看本文件**；原生/ABI 实测结论见 [`NATIVE.md`](NATIVE.md)，TCP 协议见 [`PROTOCOL.md`](PROTOCOL.md)，决策变量与风险模型见 [`LLM-OPS.md`](LLM-OPS.md)。[`TODO.md`](TODO.md) 是最早期计划，已过时（其顶部有说明）。面向用户的说明见 [`README.md`](README.md)。
 
