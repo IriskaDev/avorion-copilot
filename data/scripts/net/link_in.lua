@@ -325,7 +325,7 @@ function CopilotLinkIn.onOrder(data)
     -- ★ tradecommand 只认这三个字段（源码核实 ✓）：
     --     config.goodName  = 选哪条贸易路线（routes 里的 name ✓）
     --     config.deposit   = 预付金（**必须 > 0**，否则 "Error starting command." ✓）
-    --     config.escorts   = 护航舰艇（★ 必须与行动船同星系 ✓）
+    --     config.escorts   = 护航舰艇（★ 原版判据：与行动船距离 ≤ **护卫自己一跳航程** ✓，不要求同星系 ✓）
     local config = {
         duration = tonumber(data.duration) or 1,
         safeMode = data.safeMode == true,
@@ -1305,7 +1305,7 @@ function CopilotLinkIn.tradePlan(player, data)
     --
     -- 病因：原来 `escorts = {}` 永远为空 ✗ → 模型看到"加护航能降风险"这句话 ✓，
     --   却**无法验证加完能不能压到 10% 以下** ✗ → 它只能保守拒绝 ✓✓（实测连续答 None ✓）。
-    -- 修法：把 DSH 传来的**同星系护航候选**代入 ✓：
+    -- 修法：把 DSH 传来的**护航候选**代入 ✓（判据见上：一跳航程 ✓，不要求同星系 ✓）：
     --   ① 扫描阶段已经给"过不了闸门"的路线各算过一次带护航预测 ✓
     --      （rec.predictionsWithEscorts ✓）→ 这里**不再重算**，省一整轮 calculatePrediction ✓✓
     --   ② 基础预测全超标但加护航达标 → 用护航版**重算计划** ✓✓
@@ -1471,7 +1471,7 @@ local JOB_PARAM_TAG = {
     longest  = "最长时长档（原版允许的 duration 上限 ✓：产量最高、风险也最高）",
     shortest = "最短时长档（原版允许的 duration 下限 ✓：风险最低、产量也最低）",
     safeMode = "安全模式档（★ 原版把伏击概率 ×0.1 ✓，代价是只统计安全星区 → 产量下降）",
-    escorts  = "护航档（★ 同星系护航：降风险，且护航自己也出产量 ✓）",
+    escorts  = "护航档（★ 原版判据：一跳航程内即可护航：降风险，且护航自己也出产量 ✓）",
 }
 
 -- 材料表：★ 只用**已核实**的三样东西（NumMaterials / Material / goods ✓），绝不发明 API ✗

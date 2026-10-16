@@ -249,6 +249,25 @@ function M.shipCard(player, name)
         end
     end
 
+    -- ★★ 跳跃航程 + "能否穿裂隙"（2026-10-17 补 ✓✓ —— **护航规则要用它** ✓）
+    --
+    --   原版护航判据（**实读** simulationutility.lua:145-176 ✓）：
+    --     :157   local reach, canPassRifts, cooldown = databaseEntry:getHyperspaceProperties()
+    --     :161   if distance2(护航坐标, 行动船坐标) > reach * reach then → TooFarAway ✗
+    --     :165-168  不能穿裂隙的护航，必须与行动船**同处屏障环的一侧**（Balancing_InsideRing ✓）
+    --   → ★ 所以「护航必须同星系」是**错的** ✗✓ —— 同星系只是它的一个**子集** ✓：
+    --     原版允许"在护航**自己一跳之内**"的船 ✓（+ 不能穿裂隙者须同环侧 ✓）。
+    --   ⚠️ 全部走 pcall ✓：拿不到就只是缺字段，绝不崩 ✗✓
+    local okH, hReach, hRifts = pcall(function() return entry:getHyperspaceProperties() end)
+    if okH then
+        card.hyperspace = {
+            reach = tonumber(hReach),
+            canPassRifts = hRifts,
+        }
+    else
+        probeNotes.hyperspace = "getHyperspaceProperties() failed: " .. tostring(hReach)
+    end
+
     -- ① 船当前所在星区 ✓（决策的第一步：先知道它在哪 ✓）
     local okPos, px, py = pcall(function() return player:getShipPosition(name) end)
     if okPos and px ~= nil and py ~= nil then
