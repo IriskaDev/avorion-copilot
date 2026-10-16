@@ -257,11 +257,11 @@ try {
   //   记忆块现在排在**第一条** ✓，事实块（含护航候选）在后面 ✓。
   //   所以断言必须扫**全部**消息 ✓（原来只看 seenPrompts[0] ✗ → 误报失败 ✓✓）
   const seenAll = (seenPrompts ?? []).join('\n')
-  check('③ 模型看到的同星系护航候选里有 Combat-00001',
-    /同星系护航候选.*Combat-00001/.test(seenAll), seenAll.slice(0, 300))
+  check('③ 模型看到的护航候选里有 Combat-00001（判据=原版一跳航程 ✓）',
+    /护航候选.*Combat-00001/.test(seenAll), seenAll.slice(0, 300))
   check('③ action=Trade（真的出海了）', r3.data?.action === 'Trade', r3.data?.action)
   check('③ 第二张单是 Trade', game.orders[1]?.action === 'Trade', game.orders[1])
-  check('③ 带上同星系护航', JSON.stringify(game.orders[1]?.escorts) === JSON.stringify(['Combat-00001']),
+  check('③ 带上护航', JSON.stringify(game.orders[1]?.escorts) === JSON.stringify(['Combat-00001']),
     game.orders[1]?.escorts)
   check('③ 一共只下了两张单（Travel + Trade）', game.orders.length === 2, game.orders.length)
 } catch (error) {
