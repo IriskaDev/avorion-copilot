@@ -581,6 +581,26 @@ function renderCandidateTables(f) {
     return out;
 }
 /** 组一份给模型看的请求：目标 + 边界 + 事实 ✓ */
+/**
+ * ★★ 体积闸门（2026-10-17 实测事故 ✗✗）
+ *
+ * 一份 Scout 计划 JSON 曾经长到 **8,761,847 字符（≈8.7 MB，6.5 万个对象）** ✓ ——
+ * 它经这里原样塞进任务块，然后：
+ *   ① 会话被灌进一条 9.6 MB 的 user 消息 → 客户端渲染不动（对话栏空白 ✗）；
+ *   ② 模型侧直接超上下文（requested 3,068,511 tokens > 上限 1,048,576 ✗）。
+ *
+ * 所以**任何进提示词的 JSON 都必须有硬上限** ✓✓ —— 超了就截断并在原处写明
+ * "要细节请用工具查" ✓（模型有 fleet_query / fleet_decisions 可以按需取 ✓）。
+ */
+const PROMPT_JSON_MAX_CHARS = 200_000;
+function boundedJson(value, label) {
+    const text = JSON.stringify(value, null, 2);
+    if (text.length <= PROMPT_JSON_MAX_CHARS)
+        return text;
+    return `${text.slice(0, PROMPT_JSON_MAX_CHARS)}\n` +
+        `…【已截断：${label} 原始 ${text.length} 字符，超过上限 ${PROMPT_JSON_MAX_CHARS} ✓；` +
+        `后面省略的内容请用 fleet_query / fleet_decisions 等工具按需查询 ✓】`;
+}
 function buildPrompt(f) {
     const lines = [];
     lines.push(`船：${f.ship}`);
@@ -592,7 +612,7 @@ function buildPrompt(f) {
     lines.push(f.goalOptions.length > 0 ? f.goalOptions.join(', ') : '(玩家没有限制 —— 你可以从 Mine / Salvage / Trade / Sell / Travel / Scout 里选)');
     lines.push('');
     lines.push('这艘船的现状（能力卡）：');
-    lines.push(JSON.stringify(f.card ?? {}, null, 2));
+    lines.push(boundedJson(f.card ?? {}, '能力卡'));
     lines.push('');
     if (f.planFetchFailures !== undefined && f.planFetchFailures.length > 0) {
         // ★★ 「没取到」必须与「没有候选」分开说 ✗✓（2026-10-17 实测血案 ✓）
@@ -634,7 +654,7 @@ function buildPrompt(f) {
         //   注意让模型按 **profitPerSize（每体积绝对利润 ✓）** 比较，而不是百分比 ✓。
         lines.push('本区域的贸易候选（★ 按 profitPerSize = 每体积绝对利润 比较，越大越好；');
         lines.push('  同时看 attackChance 伏击概率，必须低于 10%）：');
-        lines.push(JSON.stringify(f.tradeRoutes, null, 2));
+        lines.push(boundedJson(f.tradeRoutes, '贸易路线'));
         lines.push('');
         if (f.escortCandidates !== undefined && f.escortCandidates.length > 0) {
             lines.push(`护航候选（★ 只能从这些里选；原版规则是"与行动船的距离不超过护航自己的一个跳跃航程" ✓，并不要求同一星系 ✓）：${f.escortCandidates.join(', ')}`);
@@ -656,7 +676,7 @@ function buildPrompt(f) {
     if (f.scoutPlan !== undefined) {
         lines.push('Scout 计划（游戏侧算出的**事实**）：候选区域、每个区域原版预测的数（revealsOffgrid / 时长 / 伏击概率）、' +
             '以及船所在邻域还剩多少**未探索**星区（coverage）、离地图中心多远（centre）、旅行与侦察的机制约束（travelFacts）');
-        lines.push(JSON.stringify(f.scoutPlan, null, 2));
+        lines.push(boundedJson(f.scoutPlan, 'Scout 计划'));
         lines.push('★ 侦察的机制（事实，不是指令）：侦察 = 开地图，区域 21x21 且**船必须已经在区域内**；');
         lines.push('  旅行（Travel）要求目的地**至少 2 跳远**；因此一艘船把所在邻域开完之后，那里就**没有可揭开的了** ——');
         lines.push('  该不该换位置、往哪换、还是先干别的，由你根据上面的事实自己判断 ✓。');
@@ -664,7 +684,7 @@ function buildPrompt(f) {
     }
     if (f.sellPlan !== undefined) {
         lines.push('★★ 游戏侧算好的 Sell（卖货）计划（船上有货时才会给 ✓）：');
-        lines.push(JSON.stringify(f.sellPlan, null, 2));
+        lines.push(boundedJson(f.sellPlan, 'Sell 计划'));
         lines.push('');
         lines.push('★ 读法：netProfitLow/High = **风险调整后的期望**（被伏击可能只卖掉一部分 ✓）；');
         lines.push('  bestCaseLow/High = 最好情况；两者都标了 profitBasis ✓。');
@@ -1677,6 +1697,9 @@ export function apply(ctx, config = {}) {
         const deliverToSession = (agent, block, _req) => {
             agent.followup(createUserMessage({
                 content: [{ type: 'text', text: block }],
+                // ★ 官方结构是 { kind:'plugin', plugin:'<包名>' } ✓ —— 之前这里把包名直接
+                //   塞进了 kind（'plugin:@dsh-external/...' ✗），宿主没校验所以一直能跑，
+                //   但类型对不上、也让 tsc 过不去 ✗（2026-10-17 修正为官方形状 ✓）。
                 source: { kind: 'plugin', plugin: '@dsh-external/dsh-avorion-copilot' },
             }));
             // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）

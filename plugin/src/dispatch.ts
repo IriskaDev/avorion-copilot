@@ -546,8 +546,14 @@ async function runSessionRung(
     if (!waited.settled) {
       // ★ 硬闸到 → **掐掉这一轮** ✓（否则失控的一轮会一直占着会话 ✓）；
       //   ★ 失败**绝不重投** ✗（重投 = 同一艘船两条矛盾命令 ✓ —— TAKEOVER.md 铁律 ✓）。
-      try { agent.cancel({ kind: 'timeout' }) } catch { /* 取消失败也不能让它抛上去 ✓ */ }
-      say(`  [session] ${budgetMs}ms 内没结束 → 已 cancel({kind:'timeout'}) ✓ 并放弃这一级（**不重投** ✗）`)
+      // ★★ cancel 的 cause 必须是宿主认得的 kind（user | parent | disposed | hook ✓）。
+      //    乱传 kind（原先传的是 'timeout' ✗）会让宿主的 abortedCancelCause 落到
+      //    assertNever 抛错 → 那一轮的 turn/end 被写成 **reason: null** ✗ →
+      //    客户端回放轨迹时 `reason.kind` 直接 TypeError → 整个会话界面空白 ✗✗
+      //    （2026-10-17 实测事故 ✓）。官方支持的语义里，"插件/钩子让这一轮停下"
+      //    就是 hook ✓，所以带上 reason 走 hook ✓。
+      try { agent.cancel({ kind: 'hook', reason: 'avorion-copilot: decision budget expired (timeout)' }) } catch { /* 取消失败也不能让它抛上去 ✓ */ }
+      say(`  [session] ${budgetMs}ms 内没结束 → 已 cancel({kind:'hook'}) ✓ 并放弃这一级（**不重投** ✗）`)
       return { answered: false, code: 'TIMEOUT', message: `会话在 ${budgetMs}ms 内没有给出结论`, steps: texts.length, tookMs, usage }
     }
 
