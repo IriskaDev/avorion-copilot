@@ -1,3 +1,9 @@
+-- ★★ 这个目录名和这个文件名都是引擎约定，不许改名 ✗✓
+--   · 目录必须是 data/scripts/commands/ ✓ —— 引擎只扫这一个目录 ✓
+--   · 文件名就是聊天命令名 ✓：copilot.lua → /copilot ✓
+--   · 改任一个 = 命令直接消失 ✗（引擎根本不会注册它 ✓）
+--   · 原版 addcrew / echo / knowledge / say 用的是同一个目录 ✓
+--   · lib 私货在 data/scripts/lib/copilot/ ✓，引用写 include(copilot/card) ✓
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 
@@ -451,7 +457,7 @@ function execute(sender, commandName, arg, ...)
         --   /copilot goal <船名> options Mine,Salvage  设选项目标
         --   /copilot goal <船名> clear                 清掉
         local player2 = player
-        local Goal = include("copilotgoal")
+        local Goal = include("copilot/goal")
 
         local ship = tostring(rest[1] or "")
         local verb = tostring(rest[2] or ""):lower()

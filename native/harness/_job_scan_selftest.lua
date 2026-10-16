@@ -182,7 +182,7 @@ function include(name)
     if name == "commandfactory" then
         return { makeCommand = function(ctype) return FAKE_COMMAND end }
     end
-    if name == "copilotjob" then return dofile("data/scripts/lib/copilotjob.lua") end
+    if name == "copilot/job" then return dofile("data/scripts/lib/copilot/job.lua") end
     if name == "goods" then return GOODS end
     error("unexpected include: " .. tostring(name))
 end
@@ -197,7 +197,7 @@ local player = {
 }
 
 local LinkIn = dofile("data/scripts/net/link_in.lua")
-local JSON = dofile("data/scripts/lib/copilotjson.lua")
+local JSON = dofile("data/scripts/lib/copilot/json.lua")
 
 -- ---------------------------------------------------------------------------
 -- 小工具

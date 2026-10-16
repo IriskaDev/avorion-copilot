@@ -31,8 +31,8 @@ function CopilotIn.decode(text)
     -- 从而**触发 Lua 的 GC** ✓；而游戏从多个 worker 线程并发跑我们的脚本 ✗，
     -- 我们的锁保护不了那个 lua_State ✓ → 两个线程同时 GC = 堆损坏 ✗✓ →
     -- 约 80 秒后 X_X + lua::WorkerPool 崩溃（实测：跳过 decode 就 5 分钟不崩 ✓）。
-    -- 详情见 lib/copilotjson.lua 顶部。
-    local Json = include("copilotjson")
+    -- 详情见 lib/copilot/json.lua 顶部。
+    local Json = include("copilot/json")
     local msg = Json.decode(text)
     if type(msg) ~= "table" then
         return nil, "not a JSON object"

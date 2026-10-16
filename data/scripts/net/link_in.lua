@@ -47,9 +47,9 @@ function CopilotLinkIn.onQuery(data)
     local player = Player()
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
-    CopilotRpc.trace("  include copilotcard…")
-    local Card = include("copilotcard")     -- 与 ops.lua 共用同一份读取逻辑 ✓（跨 VM 的唯一办法 ✓）
-    CopilotRpc.trace("  copilotcard 就绪，开始读舰队…")
+    CopilotRpc.trace("  include copilot/card…")
+    local Card = include("copilot/card")     -- 与 ops.lua 共用同一份读取逻辑 ✓（跨 VM 的唯一办法 ✓）
+    CopilotRpc.trace("  copilot/card 就绪，开始读舰队…")
 
     if what == "fleet" then
         CopilotRpc.trace("  调 fleetSnapshot…")
@@ -70,7 +70,7 @@ function CopilotLinkIn.onQuery(data)
         -- 走的路线（全部由本 mod 自己完成 ✓，不需要原版开洞 ✗✓）：
         --   ① include("areaanalysis") → run(…) **同步**返回 results（含 results.routes ✓✓）
         --   ② include("commandfactory") → makeCommand(Trade) → calculatePrediction(…, config) ✓
-        --   ③ lib/copilottrade.lua 的纯函数 → 挑路线 + 定预付金 + 挑护卫 ✓
+        --   ③ lib/copilot/trade.lua 的纯函数 → 挑路线 + 定预付金 + 挑护卫 ✓
         --
         -- 为什么可行 ✗✓：areaanalysis.run 的末尾是
         --     return shipName, type, area, results, callingPlayer
@@ -111,7 +111,7 @@ return CopilotLinkIn.tradePlan(player, data)
         if type(name) ~= "string" or name == "" then
             return false, "BAD_REQUEST", "query goal needs data.ship"
         end
-        local Goal = include("copilotgoal")
+        local Goal = include("copilot/goal")
         return true, Goal.describe(player, name)
 
     elseif what == "caps" then
@@ -702,7 +702,7 @@ local function basisRank(c)
 end
 
 -- 风险：未知概率按**最差**参与排序（9 ✓）；但**闸门**对未知是放行的 ✓
--- （与 lib/copilottrade.lua 里 `chance == nil or chance <= maxChance` 一致 ✓✓）
+-- （与 lib/copilot/trade.lua 里 `chance == nil or chance <= maxChance` 一致 ✓✓）
 local function chanceOf(c)
     local v = tonumber(c.attackChanceEffective)
     if v == nil then v = tonumber(c.attackChance) end
@@ -1040,7 +1040,7 @@ function CopilotLinkIn.tradePlan(player, data)
         return false, "NO_COMMAND", tostring(command)
     end
 
-    local Trade = include("copilottrade")
+    local Trade = include("copilot/trade")
     local okGoods, goodsLib = pcall(function() return include("goods") end)
     if not okGoods then goodsLib = nil end
 
@@ -1081,7 +1081,7 @@ function CopilotLinkIn.tradePlan(player, data)
         return false, "NO_AREAS", "no candidate area contains the ship"
     end
 
-    -- 货舱剩余空间（预付金要用 ✓ —— 与 copilotcard 用的是同一套已验证 API ✓）
+    -- 货舱剩余空间（预付金要用 ✓ —— 与 lib/copilot/card 用的是同一套已验证 API ✓）
     local freeCargoSpace = nil
     do
         local okC, cs = pcall(function()
@@ -1288,7 +1288,7 @@ function CopilotLinkIn.tradePlan(player, data)
         orderHint.escorts = recommendation.escorts
     end
 
-    -- ★ ④ 纯函数决策（lib/copilottrade.lua ✓ —— 有离线自检 ✓✓）
+    -- ★ ④ 纯函数决策（lib/copilot/trade.lua ✓ —— 有离线自检 ✓✓）
     --   每个区域在 summariseArea 里已经各算过一份 ✓ → 这里取**选中区域**那份 ✓
     local facts = {}
     for k, v in pairs(factsBase) do facts[k] = v end
@@ -1694,7 +1694,7 @@ local function scanJobArea(command, Job, player, ship, ctype, area, params, opts
         --      / "There are no sectors to salvage in in this area!" ✓），
         --      但那是 error 不是 "推荐" ✓ —— 不把"啥也采不到的区域"当成合法答案，
         --      否则**空产出 + 0% 风险**会一路排到最前面 ✗✓（自检 M3 / S1b 当场抓到过 ✓）
-        --   ② 风险：**未知风险放行** ✓（与 lib/copilottrade 的 `chance == nil or <= max` 一致 ✓）
+        --   ② 风险：**未知风险放行** ✓（与 lib/copilot/trade 的 `chance == nil or <= max` 一致 ✓）
         local hasOutput = (tonumber(cand.valueHigh) or 0) > 0
         cand.hasOutput = hasOutput
         if not hasOutput then cand.noOutput = true end
@@ -1877,7 +1877,7 @@ function CopilotLinkIn.sellPlan(player, data)
     local startMs = os.clock()
     local gate = tonumber(data.maxAttackChance) or 0.10
     local _, Ship = nil, nil
-    local Card = include("copilotcard")
+    local Card = include("copilot/card")
     local card = Card.shipCard(player, ship)
 
     -- ① 船上有货吗？（没有 → **明说**"不用卖"，而不是编一个计划 ✗✓）
@@ -2155,8 +2155,8 @@ function CopilotLinkIn.jobPlan(player, data, action)
     if ctype == nil then return false, "BAD_ACTION", "no command type for " .. tostring(action) end
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
-    local Job = include("copilotjob")
-    if type(Job) ~= "table" then return false, "NO_LIB", "copilotjob did not load" end
+    local Job = include("copilot/job")
+    if type(Job) ~= "table" then return false, "NO_LIB", "copilot/job did not load" end
 
     -- ★ ① 船在哪 —— 所有候选区域**必须含船** ✓✓（原版硬约束，见 collectAreaList ✓）
     local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
@@ -2259,7 +2259,7 @@ function CopilotLinkIn.jobPlan(player, data, action)
     if action == "Salvage" then
         lootBasis = string.format(
             "主键 = 装备件数(prediction.items) × E[稀有度层级] = %.3f（混合表：%s；层级取自 %s ✓）；" ..
-            "次键 = 残骸场材料层级均值 fieldTier（★ 只是**代理指标**，见 copilotjob.lua 的说明 ✓）；" ..
+            "次键 = 残骸场材料层级均值 fieldTier（★ 只是**代理指标**，见 copilot/job.lua 的说明 ✓）；" ..
             "废铁价值口径 = %s（**只作审计** ✓ —— 主人说战利品才是主角 ✓）",
             rarityTier, Job.RARITY_MIX_SOURCE, rarityTierFrom, scoreBasis)
         scoreBasisEff = lootBasis
@@ -2607,7 +2607,7 @@ function CopilotLinkIn.tickOrders()
     end
 end
 
--- setGoal：DSH 设定/清除某船的运营目标（真实现 ✓，用 lib/copilotgoal）
+-- setGoal：DSH 设定/清除某船的运营目标（真实现 ✓，用 lib/copilot/goal）
 function CopilotLinkIn.onSetGoal(data)
     data = data or {}
     local ship = data.ship
@@ -2618,7 +2618,7 @@ function CopilotLinkIn.onSetGoal(data)
     local player = Player()
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
-    local Goal = include("copilotgoal")
+    local Goal = include("copilot/goal")
 
     if data.clear == true then
         Goal.clear(player, ship)
@@ -2762,7 +2762,7 @@ function CopilotLinkIn.scoutPlan(player, data)
 
     local startMs = os.clock()
     local gate = tonumber(data.maxAttackChance) or 0.10
-    local Card = include("copilotcard")
+    local Card = include("copilot/card")
     local card = Card.shipCard(player, ship)
     local sx = card.sector and card.sector.x or nil
     local sy = card.sector and card.sector.y or nil

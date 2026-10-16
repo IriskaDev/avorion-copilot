@@ -352,7 +352,7 @@ Error cleaning up lua::WorkerPool: shutdown() not called!
 
 ### 处置
 
-* JSON **编解码全部移到纯 Lua**：`data/scripts/lib/copilotjson.lua` ✓✓
+* JSON **编解码全部移到纯 Lua**：`data/scripts/lib/copilot/json.lua` ✓✓
 * DLL 只保留 `connect/connected/state/send/recv/close` 等 **socket + 标量压栈** ✓
 * `cp.encode` / `cp.decode` 仍在 DLL 里（留作参考 ✓），但**游戏侧不再调用** ✗
 * 顺带修掉的真 bug：`extract()` 曾把**已被 `memmove` 搬移过的内部指针**交给调用方，

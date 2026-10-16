@@ -126,7 +126,7 @@ function include(name)
     if name == "commandfactory" then
         return { makeCommand = function(ctype) return FAKE_COMMAND end }
     end
-    if name == "copilottrade" then return dofile("data/scripts/lib/copilottrade.lua") end
+    if name == "copilot/trade" then return dofile("data/scripts/lib/copilot/trade.lua") end
     if name == "goods" then return GOODS end
     error("unexpected include: " .. tostring(name))
 end
@@ -293,7 +293,7 @@ else
         rA.area ~= nil and rA.area.analysis ~= nil)
 
     -- ★ JSON 必须编得出来（证明没有环、没有怪值 ✓）
-    local JSON = dofile("data/scripts/lib/copilotjson.lua")
+    local JSON = dofile("data/scripts/lib/copilot/json.lua")
     local okEnc, txt = pcall(JSON.encode, rA)
     check("A 响应可 JSON 编码", okEnc and type(txt) == "string" and #txt > 200,
         okEnc and #tostring(txt) or txt)

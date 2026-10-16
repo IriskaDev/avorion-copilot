@@ -1,5 +1,5 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
-local T = dofile("data/scripts/lib/copilottrade.lua")
+local T = dofile("data/scripts/lib/copilot/trade.lua")
 local ok, err = T.selfTest()
 if ok then
   print("selfTest: OK")

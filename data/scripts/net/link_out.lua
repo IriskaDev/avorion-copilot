@@ -56,7 +56,7 @@ function CopilotLinkOut.pushState()
     local player = Player()
     if player == nil then return false, "no player" end
 
-    local Card = include("copilotcard")
+    local Card = include("copilot/card")
     local snap = Card.fleetSnapshot(player)
 
     -- 推送也走 RPC ✓（§2 铁律 3：每个 request 都要有 response ✓）

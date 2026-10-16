@@ -59,8 +59,8 @@ function CopilotFleet.scan()
     if player == nil then return end
     if not CopilotNet.isConnected() then return end      -- 没连上就不发 ✓（省得白等超时）
 
-    local Card = include("copilotcard")
-    local Goal = include("copilotgoal")
+    local Card = include("copilot/card")
+    local Goal = include("copilot/goal")
 
     -- 玩家自己开的那条船**永不**参与 ✓（主人明确要求过 ✓）
     local piloted = player.craft
