@@ -230,6 +230,8 @@ interface Decision {
   action?: string
   /** ★ Trade 专用：模型选中的货物名（2026-10-16 补 ✓） */
   goodName?: string
+  /** ★ Trade 专用：预付金（2026-10-17 补 ✓ —— 不传就由游戏自己猜 ✗，见 orderHint.deposit ✓） */
+  deposit?: number
   x?: number
   y?: number
   duration?: number
@@ -265,6 +267,12 @@ function parseNumberField(raw: string): number | undefined {
 /** 表示"没有"的几种写法，别当成船名。★ 原样保留 ✓ */
 const NONE_WORDS = new Set(['', '-', 'none', 'null', 'n/a', 'na', '无', '没有', '否'])
 
+/** ★ 单一来源：模型可以选的**全部**行动 ✓
+ *  提示词（prompt/system.md 的输出格式）、这里（解析器）、以及 toAnswer 的默认白名单
+ *  三处**必须一致** ✗ —— 2026-10-17 的 pro 审查抓到 `Scout` / `Sell` 漏在解析器与白名单之外 ✓，
+ *  于是"计划里算得出来、却永远下不了单" ✗✓。test/actions-consistency.mjs 会守住这条 ✓。 */
+export const ALL_ACTIONS = ['Mine', 'Salvage', 'Trade', 'Travel', 'Sell', 'Scout'] as const
+
 /** 解析模型回复。解析不出 action 就算失败，交给游戏按错误处理 ✓ */
 function parseDecision(text: string): Decision {
   const decision: Decision = {}
@@ -273,7 +281,7 @@ function parseDecision(text: string): Decision {
   if (rawAction !== undefined) {
     // 容忍 `action=Mine` / `action: mine` / `**action = Mine**` ✓
     const word = rawAction.replace(/[`*"'。，,]/g, '').trim()
-    const known = ['Mine', 'Salvage', 'Trade', 'Travel', 'None']
+    const known = [...ALL_ACTIONS, 'None']
     const hit = known.find((k) => k.toLowerCase() === word.toLowerCase())
     if (hit !== undefined) decision.action = hit
     else if (word.length > 0) decision.action = word          // 原样带出，由 toAnswer 判合法性 ✓
@@ -290,6 +298,11 @@ function parseDecision(text: string): Decision {
   if (x !== undefined) { const v = parseNumberField(x); if (v !== undefined) decision.x = v }
   const y = field(text, 'y')
   if (y !== undefined) { const v = parseNumberField(y); if (v !== undefined) decision.y = v }
+
+  // ★ Trade 的预付金（2026-10-17 补 ✗→✓）：tradePlan 已经算好了最优预付金 ✓，
+  //   但此前**根本没人把它读出来转发** ✗，于是游戏只能自己猜 ✓。
+  const deposit = field(text, 'deposit')
+  if (deposit !== undefined) { const v = parseNumberField(deposit); if (v !== undefined && v > 0) decision.deposit = v }
 
   const duration = field(text, 'duration')
   if (duration !== undefined) {
@@ -439,6 +452,11 @@ function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
   const areas = rank.map((e) => ({
     offset: (e.area as Record<string, unknown> | undefined)?.offset,
     acceptable: e.acceptable,
+    // ★★ 风险判定必须活到模型眼前（2026-10-17 修 ✗）：游戏侧经 informOnly 算了这三个字段 ✓，
+    //    而这里以前**只挑数字、把结论丢掉** ✗ → 模型看不到"谁越了玩家的闸门" ✓✓。
+    riskLimit: e.riskLimit,
+    exceedsRiskLimit: e.exceedsRiskLimit,
+    satisfiesPlayerRiskRule: e.satisfiesPlayerRiskRule,
     bestTag: e.bestTag,
     valueLow: e.valueLow,
     valueHigh: e.valueHigh,
@@ -460,6 +478,7 @@ function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
     durationChoices: p.durationChoices, // 原版 duration 合法区间 ✓
     recommendation: p.recommendation,   // null/缺省 = 没有档位过闸门 ✗ → 看 riskWarning ✓
     riskWarning: p.riskWarning,
+    decisionNote: p.decisionNote,       // ★ informOnly 的说明（"这是事实与选项，选哪个由你定" ✓）
     orderHint: p.orderHint,             // ★ 其中一组的下单参数（x/y 绝对坐标 ✓）—— 是参考，不是必须照抄 ✓
     areasScanned: p.areasScanned,
     scanMs: p.scanMs,
@@ -557,7 +576,7 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
   if (decision.error !== undefined) return decision.error
 
   const action = decision.action ?? 'None'
-  const allowed = f.goalOptions.length > 0 ? f.goalOptions : ['Mine', 'Salvage', 'Trade', 'Travel']
+  const allowed = f.goalOptions.length > 0 ? f.goalOptions : [...ALL_ACTIONS]
 
   // "None" 永远合法（什么都不做 ✓）
   if (action !== 'None' && !allowed.includes(action)) {
@@ -566,6 +585,7 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
 
   const params: Record<string, unknown> = {}
   if (decision.goodName !== undefined) params.goodName = decision.goodName   // ★ Trade 的选货 ✓
+  if (decision.deposit !== undefined) params.deposit = decision.deposit      // ★ Trade 的预付金 ✓
   if (decision.x !== undefined) params.x = decision.x
   if (decision.y !== undefined) params.y = decision.y
   if (decision.duration !== undefined) params.duration = decision.duration
@@ -591,7 +611,9 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
 // 主人的原话：
 //   「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
 //
-// 游戏规则（硬）：护航**只有和行动船在同一星系**才算数 ✗ —— 所以"先把船调过去"是唯一办法 ✓。
+// 游戏规则（硬，2026-10-17 更正 ✗→✓）：护航只要求**在自己一跳航程之内** ✓（**不要求同星区** ✓，
+//   不能穿裂隙的还要与行动船同处屏障环一侧 ✓）。所以"把船调到同一星区/附近"仍是最稳的做法 ✓，
+//   但**不是唯一**可行的 ✓ —— 别再把"必须同星系"当硬规则 ✗。
 // 但 Travel 是**异步**的：船离开后要好一阵才到 ✓，而"目标星系没有护航"这个条件
 // 在它到达前**一直成立** ✗ → 每轮 decide 都会想再派一艘 ✓。
 // 所以下面留了一张**记忆表**：同一艘行动船，30 分钟内只派一次 ✓（无论成功在途还是被游戏拒 ✓）。
@@ -600,6 +622,9 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
 const ESCORT_RISK_GATE = 0.10
 
 /** 一艘"自身够硬"的护航大约把伏击概率乘这个系数（与 SYSTEM_PROMPT 的说法一致 ✓） */
+// ★ 这是**我们自己的估计** ✗，不是原版机制 ✓（2026-10-17 pro 审查 #4 指出 ✓）。
+//   优先用原版：候选里若带 attackChanceWithEscorts（游戏侧按护航的 dps/hp 算的 ✓），就用它 ✓；
+//   只有它缺失时才退到这个经验系数 ✓（流水里会说明是估计 ✓）。
 const ESCORT_RISK_FACTOR = 0.75
 
 /** 船名像不像战斗舰（主人点名的例子：Combat / Raven ✓；实测名单里就有 Combat-00001 ✓） */
@@ -669,7 +694,7 @@ export function escortNeedOf(plan: unknown, sameSectorEscorts: string[]): Escort
   const gate = toNum(scan.maxAttackChance) ?? ESCORT_RISK_GATE
 
   // 收集"有路线、但过不了闸门"的候选 ✓（新形状优先，老形状兜底 ✓）
-  const risky: { name: string; risk: number; profit: number }[] = []
+  const risky: { name: string; risk: number; profit: number; withEscorts?: number }[] = []
   const ranking = Array.isArray(p.areaRanking) ? (p.areaRanking as Record<string, unknown>[]) : []
   for (const entry of ranking) {
     const route = typeof entry.bestRouteName === 'string' ? entry.bestRouteName : ''
@@ -685,7 +710,7 @@ export function escortNeedOf(plan: unknown, sameSectorEscorts: string[]): Escort
       const route = typeof c.name === 'string' ? c.name : ''
       const risk = toNum(c.attackChanceEffective) ?? toNum(c.attackChance)
       if (route === '' || risk === undefined) continue
-      risky.push({ name: route, risk, profit: toNum(c.netProfitLow) ?? 0 })
+      risky.push({ name: route, risk, profit: toNum(c.netProfitLow) ?? 0, withEscorts: toNum(c.attackChanceWithEscorts) })
     }
   }
   if (risky.length === 0) {
@@ -699,7 +724,8 @@ export function escortNeedOf(plan: unknown, sameSectorEscorts: string[]): Escort
 
   risky.sort((a, b) => b.profit - a.profit)
   const best = risky[0]
-  const withEscort = best.risk * ESCORT_RISK_FACTOR
+  // ★ 优先用**游戏侧**算好的带护航概率 ✓（那是原版机制 ✓）；它缺失时才退到经验系数 ✓
+  const withEscort = best.withEscorts ?? (best.risk * ESCORT_RISK_FACTOR)
   if (best.risk <= gate) {
     return { needed: false, why: `最好候选「${best.name}」本来就在门槛内（${fmtPct(best.risk)}）`, gate }
   }

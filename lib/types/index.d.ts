@@ -91,6 +91,11 @@ export declare function live(msg: string): void;
 export declare function liveRaw(kind: 'reasoning' | 'text', delta: string): void;
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export declare function readDecisionFile(limit: number): DecisionRecord[];
+/** ★ 单一来源：模型可以选的**全部**行动 ✓
+ *  提示词（prompt/system.md 的输出格式）、这里（解析器）、以及 toAnswer 的默认白名单
+ *  三处**必须一致** ✗ —— 2026-10-17 的 pro 审查抓到 `Scout` / `Sell` 漏在解析器与白名单之外 ✓，
+ *  于是"计划里算得出来、却永远下不了单" ✗✓。test/actions-consistency.mjs 会守住这条 ✓。 */
+export declare const ALL_ACTIONS: readonly ["Mine", "Salvage", "Trade", "Travel", "Sell", "Scout"];
 /** `escortNeedOf` 的结论 ✓ */
 export interface EscortNeed {
     needed: boolean;

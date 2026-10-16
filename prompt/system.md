@@ -39,8 +39,9 @@
 要不要走、什么时候走、走多远，由你判断。
 
 只回复下面这几行，不要任何多余文字：
-action=<Mine | Salvage | Trade | Sell | Travel | None，只写这一个词>
+action=<Mine | Salvage | Trade | Sell | Scout | Travel | None，只写这一个词>
 goodName=<必填，仅 action=Trade：原样取自候选表/recommendation 的 name；漏了游戏会自动选本区域排第一的路线>
+deposit=<仅 action=Trade 时给：预付金（点数）；tradePlan 已算好每档该给多少（见候选的 orderHint.deposit / recommendation.deposit）；不给就由游戏自己猜，多半猜不准>
 x=<目标区域中心的绝对星区 x 坐标，整数；action 非 None 时必填；不要用计划里的相对 offset>
 y=<目标区域中心的绝对星区 y 坐标，整数；action 非 None 时必填；不要用计划里的相对 offset>
 escorts=<可选：护航舰船名，逗号分隔；只能从上面给出的护航候选里选>
