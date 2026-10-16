@@ -223,12 +223,12 @@
 风险(所有命令共用)：attackChance 是整段任务期间的被伏击概率。被伏击 = 强制召回 + 只按已完成进度部分结算。
 - safeMode(Mine/Salvage) 会把概率改成：<0.1 则 0，否则 ×0.1，但只走友方星区、产量下降。
 - 时长与风险：伏击概率随任务时长上升 —— **超过 1 小时后，每多 1 小时在基准概率上再 +40%**
-  （原版 `attackProbability = attackProbability + attackProbability * (hours - 1) * 0.4`，
-  `simulationutility.lua:818-821` ✓）；短于 1 小时则低于基准 ✓；最后还会取 `max(baseProbability, …)` ✓。
+  （原版 'attackProbability = attackProbability + attackProbability * (hours - 1) * 0.4'，
+  'simulationutility.lua:818-821' ✓）；短于 1 小时则低于基准 ✓；最后还会取 'max(baseProbability, …)' ✓。
 - 护航既降风险也加产量；护航资格=不忙 + 与行动船距离不超过**护航自己的一个跳跃航程**（同环限制），
   **不要求同星区**；把护航调过来要花一次 Travel 的时间。
   ★ **强到"在那个星区不会被袭击"的护航会把基准概率 ×0.75**（每个这样的护航各乘一次），
-  判据是它在采样星区里"不会挨打"的比例 <50%（`simulationutility.lua:810-816` ✓）。
+  判据是它在采样星区里"不会挨打"的比例 <50%（'simulationutility.lua:810-816' ✓）。
 
 能力(会随升级变化)：炮塔数量与类型、跳跃航程、货舱容量/货物、船长职业与专长，决定它能不能采某种矿、能带多少货、能承受多少风险。
 
