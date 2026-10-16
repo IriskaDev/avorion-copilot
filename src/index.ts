@@ -1023,7 +1023,22 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
             const hs = (s.hyperspace ?? {}) as { reach?: unknown; canPassRifts?: unknown }
             const reach = typeof hs.reach === 'number' ? hs.reach : undefined
             if (reach === undefined) { conservative.push(nm + '(航程未知)'); continue }
-            if (hs.canPassRifts === false) { conservative.push(nm + '(不能穿裂隙,环侧判不准)'); continue }
+            if (hs.canPassRifts === false) {
+              // ★ 2026-10-17 主人实机反馈「她尝试护航但失败」✗ —— 查到根在这里：
+              //   此处**一律保守排除**✗，把**原版允许**的护航白白漏掉 ✓。
+              //   而环侧**游戏侧一直算着** ✓（card.lua:298 用原版 Balancing_InsideRing ✓
+              //   写在卡片的 depth.insideCentreRing ✓）。
+              //   → 两边都拿得到就**按原版判** ✓✓：同环侧=可用 ✓；不同环侧=真不可用 ✓；
+              //     只有**真拿不到**时才退回"保守同星系" ✓（只会多收合法的 ✓，不会错收 ✗）。
+              const ringHere = ((facts.card as Record<string, unknown> | undefined)?.depth as
+                { insideCentreRing?: unknown } | undefined)?.insideCentreRing
+              const ringThere = ((s.depth ?? {}) as { insideCentreRing?: unknown }).insideCentreRing
+              if (typeof ringHere === 'boolean' && typeof ringThere === 'boolean') {
+                if (ringHere !== ringThere) { conservative.push(nm + '(不同环侧)'); continue }
+              } else {
+                conservative.push(nm + '(环侧未知)'); continue
+              }
+            }
             const dx = (sec.x ?? 0) - (shipSector.x ?? 0)
             const dy = (sec.y ?? 0) - (shipSector.y ?? 0)
             if (Math.sqrt(dx * dx + dy * dy) <= reach) cands.push(nm)   // ★ 原版判据 ✓
