@@ -126,3 +126,35 @@ node test/harness.mjs      # 8/8
 
 **脱离游戏验证**：往 `%APPDATA%/Avorion/moddata/copilot/` 放一个 `req_test.txt`，
 几秒后应出现 `res_test.txt` 与 `log_test.txt`。
+
+## ★ 提示词是**文件**，运行时读取（2026-10-17）
+
+提示词**不在代码里**，而是普通 Markdown —— 所以**改字不用重新编译、不用重启 DSH**：
+
+```
+① %APPDATA%/Avorion/moddata/copilot/prompt/system.md   ← 用户覆盖（放这儿就优先用它 ✓）
+② <插件目录>/prompt/system.md                            ← 插件自带（随仓库走 ✓ 默认值 ✓）
+③ 编译兜底（src/prompt-default.ts，由 ① ② 的默认文件生成 ✓）
+```
+
+- 每次决策前**重新读**（按 mtime+size 缓存 ✓）→ **存盘即生效** ✓。
+  流水（`decisions.live.log`）里会写一行「提示词已更新」✓；若用的是覆盖文件或兜底，也会说明 ✓；
+  启动时还会把这三个路径各写一行，省得找 ✓。
+- 文件里写 `{{MECHANICS}}` 的那一行会被**机制段**替换 ✓ —— 机制仍只有一份来源：
+  mod 仓库的 `MECHANICS.md`（`scripts/render-mechanics.mjs` 生成 `src/mechanics.ts`）✓。
+- 提示词**只放大目标 + 游戏机制（事实）** ✗ 不放策略/时机建议 ——
+  「要不要走、什么时候走、走多远」由模型自己判断 ✓。
+  `scripts/check-mechanics.mjs` 会**拦住**漂回来的照抄指令与策略措辞 ✓。
+- 顺带：正文不再是 TS 模板字符串，**反引号再也不会把提示词提前截断** ✓（那个坑踩过两次 ✗）。
+- 想生成/校验：`node scripts/render-prompt.mjs`（+ `render-mechanics.mjs`）、`node scripts/check-mechanics.mjs`。
+- 自测：`node test/prompt-file.mjs`（读文件 / 覆盖优先 / 兜底不抛异常 / 占位符替换 / 存盘即生效 ✓）。
+
+## 任意星区的事实：`fleet_query what=sectorFacts`
+
+`fleet_query({what:'sectorFacts', x, y, ship?})` 返回**只有事实**的星区资料：
+富饶度、材料概率（前 4）、是否在中心屏障环内、离地图中心的距离，
+以及**朝中心方向三个取样点**的同类数字（好做横向比较 ✓），还会带上该船的能力事实
+（含 `hyperspace.reach` / `canPassRifts` —— 护航判据要用 ✓）。
+它**不给任何"该不该去"的结论** ✓；该星区的产量/伏击预测**算不出来**（原版要求船已在区内 ✓），
+这一点在返回里**明确写出** ✓。
+

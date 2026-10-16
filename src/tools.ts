@@ -91,23 +91,35 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
         'roster (idle/busy, has captain, current progress). what=ship returns one ship capability ' +
         'card. what=goal returns that ship operating goal (the player text intent and allowed ' +
         'actions). what=orderSchema returns the currently legal commands and their parameters for ' +
-        'that ship. This is the ONLY proper way to look at the game -- do not rely on screenshots.',
+        'that ship. what=sectorFacts returns FACTS about any sector (richness / material ' +
+        'probability / centre-ring side / distance from the map centre, plus the same numbers for ' +
+        'sectors closer to the centre) -- pass x and y (and optionally ship) -- it returns no ' +
+        'verdict about whether to go there. This is the ONLY proper way to look at the game -- do ' +
+        'not rely on screenshots.',
       parameters: {
-        what: { type: 'string', required: true, description: 'fleet | ship | goal | orderSchema' },
+        what: { type: 'string', required: true, description: 'fleet | ship | goal | orderSchema | sectorFacts' },
         ship: { type: 'string', description: 'ship name; required when what is ship/goal/orderSchema' },
+        x: { type: 'number', description: 'sector x; required for what=sectorFacts' },
+        y: { type: 'number', description: 'sector y; required for what=sectorFacts' },
       },
       output: {
         schema: { type: 'string' },
         render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
       },
-      async execute(args: { what: string; ship?: string }) {
-        if (args.what !== 'fleet' && (args.ship === undefined || args.ship === '')) {
+      async execute(args: { what: string; ship?: string; x?: number; y?: number }) {
+        // ★ sectorFacts 只需要坐标 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
+        const needsShip = args.what !== 'fleet' && args.what !== 'sectorFacts'
+        if (needsShip && (args.ship === undefined || args.ship === '')) {
           return `what=${args.what} needs the ship parameter`
+        }
+        if (args.what === 'sectorFacts' && (args.x === undefined || args.y === undefined)) {
+          return 'what=sectorFacts needs the x and y parameters'
         }
         // tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
         // which takes far longer than a plain query -- give it room (2026-10-16).
         const timeout = args.what === 'tradePlan' ? 120 : 10
-        const r = await ask(peer, 'query', { what: args.what, ship: args.ship }, timeout)
+        const r = await ask(peer, 'query',
+          { what: args.what, ship: args.ship, x: args.x, y: args.y }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`
         return text(r.data)
       },
