@@ -1079,6 +1079,10 @@ export function apply(ctx, config = {}) {
             }
             catch { /* 拿不到护航候选不影响决策 ✓ */ }
         }
+        // 下面这几段 legacy 计划预取**只服务单发路径**（dossierInputOf 组合成有界档案 ✓）与
+        // 护航 rendezvous（escortNeedOf 读 tradePlan ✓）✗✓ —— **不是**给会话路径用的 ✗：
+        // 会话路径在 task.ts 是"只告知、自己用工具查"（原子接口 list→ship→predict/tradeRoutes ✓），
+        // 一个计划的字节都不进投递块 ✓（delivery-size.mjs 钉住这条 ✓）。
         // ★★ Mine / Salvage：拉游戏侧算好的真实计划 ✓✓（多区域 × 参数 × 层级加权 ✓）
         if (jobWants.length > 0) {
             const planned = [];
