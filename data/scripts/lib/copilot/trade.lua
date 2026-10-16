@@ -132,7 +132,10 @@ end
 -- 护卫
 -- ===========================================================================
 
--- ★ 主人的硬限制：**护航舰艇必须与行动舰艇在同一个星系** ✓✓
+-- ★ 护航规则（2026-10-17 按原版更正 ✗→✓）：原版判据是「与行动船距离 ≤ **护航自己一跳航程**」
+--   （simulationutility.lua:145-176），**不要求同星系/同星区**；不能穿裂隙的护航还须与行动船同处屏障环一侧。
+--   ★ 本函数仍**只收同星区**的 ✓ —— 那是原版规则的**子集** ✓：只会少收、不会错收 ✓（保守 ✓）。
+--   要放宽就得在**游戏侧**用 Balancing_InsideRing 判环侧 ✓，光靠这里的数据判不准 ✗。
 --   另外本 mod 自己加两条务实的约束 ✓：
 --     * 不能是行动船自己 ✓
 --     * 不能是玩家正在开的那条 ✓（绝不碰 player.craft ✓）
@@ -150,7 +153,7 @@ function M.pickEscorts(candidates, shipSector, actionShip, pilotedName, limit)
         if n ~= nil and n ~= actionShip and n ~= pilotedName then
             local s = c.sector
             if type(s) == "table" and s.x == shipSector.x and s.y == shipSector.y then
-                picked[#picked + 1] = n            -- ★ 同星系才算 ✓✓
+                picked[#picked + 1] = n            -- ★ 保守：只收同星区（原版允许一跳航程内 ✓）
             end
         end
     end
@@ -238,7 +241,7 @@ function M.plan(routes, facts, opts)
         facts.freeCargoSpace, facts.unitSize, facts.unitBuyPrice,
         facts.budget, facts.maxDeposit)
 
-    -- ④ 挑护卫（★ 必须同星系 ✓✓）
+    -- ④ 挑护卫（★ 保守：只收同星区；原版允许"一跳航程内" ✓ 见文件顶部的更正 ✓）
     local escorts = M.pickEscorts(
         facts.escorts, facts.shipSector, facts.actionShip, facts.pilotedName,
         opts.escortLimit or 1)
