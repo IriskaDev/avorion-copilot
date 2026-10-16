@@ -1690,17 +1690,11 @@ export function apply(ctx, config = {}) {
             live('  ├ ✔ 重试成功（拿到动作行 ✓）');
             return retry;
         };
-        // ★ 会话那一级的两条注入点（投递 + 收答案 ✓）：
-        //   · `followup` 用**现成的** `createUserMessage` + `source.kind='plugin'` ✓
-        //     —— 所以她在会话里看到的是"插件投递"，不是主人在说话 ✓；
-        //   · `subscribe` 走上面那个**唯一**的 session/event 监听器 ✓。
+        const copilotSource = () => ({ kind: 'plugin:@dsh-external/dsh-avorion-copilot' });
         const deliverToSession = (agent, block, _req) => {
             agent.followup(createUserMessage({
                 content: [{ type: 'text', text: block }],
-                // ★ 官方结构是 { kind:'plugin', plugin:'<包名>' } ✓ —— 之前这里把包名直接
-                //   塞进了 kind（'plugin:@dsh-external/...' ✗），宿主没校验所以一直能跑，
-                //   但类型对不上、也让 tsc 过不去 ✗（2026-10-17 修正为官方形状 ✓）。
-                source: { kind: 'plugin:@dsh-external/dsh-avorion-copilot' },
+                source: copilotSource(),
             }));
             // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）
             try {

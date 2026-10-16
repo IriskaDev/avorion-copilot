@@ -1977,13 +1977,22 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     //   · `followup` 用**现成的** `createUserMessage` + `source.kind='plugin'` ✓
     //     —— 所以她在会话里看到的是"插件投递"，不是主人在说话 ✓；
     //   · `subscribe` 走上面那个**唯一**的 session/event 监听器 ✓。
+    // ★ v4 会话格式的 producer-owned source = `plugin:<插件名>` ✓
+    //   （**不是** v3 的 `{ kind: 'plugin', plugin: '<包名>' }` 包裹形态 ✗ ——
+    //   那个形态在会话格式 v4 下会被**原生准入**直接拒绝：
+    //   "format v4 message requires a producer-owned source kind"，整个会话那一轮
+    //   直接失败 ✗；v3→v4 迁移也正是把它提升成 `plugin:<包名>` ✓）。
+    //   ★ 已发布的 npm 版 dsh-llm 的 MessageSourceMap 仍停在 v3 的那个联合 ✗，
+    //   所以只在**构造处**断言一次（与 dsh-global-memory 同款做法 ✓）；
+    //   运行时按 v4 原生准入走 ✓。
+    type UserMessageSource = Parameters<typeof createUserMessage>[0]['source']
+    const copilotSource = (): UserMessageSource =>
+      ({ kind: 'plugin:@dsh-external/dsh-avorion-copilot' } as unknown as UserMessageSource)
+
     const deliverToSession = (agent: AgentLike, block: string, _req?: unknown): void => {
       agent.followup(createUserMessage({
         content: [{ type: 'text', text: block }],
-        // ★ 官方结构是 { kind:'plugin', plugin:'<包名>' } ✓ —— 之前这里把包名直接
-        //   塞进了 kind（'plugin:@dsh-external/...' ✗），宿主没校验所以一直能跑，
-        //   但类型对不上、也让 tsc 过不去 ✗（2026-10-17 修正为官方形状 ✓）。
-        source: { kind: 'plugin:@dsh-external/dsh-avorion-copilot' },
+        source: copilotSource(),
       }))
       // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）
       try { renewLease() } catch { /* 续租失败不影响本轮 ✓ */ }

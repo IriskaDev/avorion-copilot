@@ -314,11 +314,24 @@ async function runSessionRung(deps, req, budgetMs, say, allowRetry = true) {
     }
     const texts = [];
     let usage;
+    let endReason;
     let resolveTurn;
     const turnPromise = new Promise((resolve) => { resolveTurn = resolve; });
     const stop = deps.subscribe?.(deps.commanderId ?? '', (event) => {
+        // ★★ 宿主派发的 `session/event` 把载荷放在 `event.data` 里 ✓（同宿主的
+        //    `dsh-mode-boost` 读的正是 `event.data.source` / `extractText(event.data)` ✓）。
+        //
+        //    ★ 2026-10-17 实机事故（铁证）：这里原先读的是**顶层** `event.message` ✗ ——
+        //    它永远是 `undefined`，于是"她答的每一个字"都没被收进来 ✗：
+        //    会话那边明明已经吐出 assistant 文本（会话日志里看得见 ✓），
+        //    这里 `texts` 依然是空 → 一轮结束就判 `EMPTY_REPLY`（"这一轮没有任何文本"）✗✗，
+        //    整条"投递进会话"的路**从来没有成功过一次**（`decisions.live.log` 里
+        //    "她的第 N 条输出" / "校验通过" 一次都没出现过 ✓）。
+        //    顶层形态同时保留，两种派发形状都能吃 ✓。
+        const payload = (event?.data ?? {});
         if (event.type === 'assistant/message') {
-            const blocks = event.message?.content;
+            const message = payload.message ?? event.message;
+            const blocks = message?.content;
             const text = Array.isArray(blocks)
                 ? blocks.filter((b) => b?.type === 'text').map((b) => b?.text ?? '').join('')
                 : '';
@@ -330,13 +343,27 @@ async function runSessionRung(deps, req, budgetMs, say, allowRetry = true) {
                 }
                 catch { /* 旁路失败不影响决策 ✓ */ }
             }
-            if (event.usage !== undefined)
+            if (payload.usage !== undefined)
+                usage = payload.usage;
+            else if (event.usage !== undefined)
                 usage = event.usage;
             return;
         }
         if (event.type === 'turn/end') {
             // ★ 只认"我们发出去之后"这一轮的结束 ✓：本订阅是在**投递之前**建好的 ✓，
             //   所以此前那一轮（主人自己的聊天）的 turn/end 不可能走到这里 ✓✓。
+            //
+            // ★★ 但**宿主自己把这一轮判死**是另一回事 ✗：那种情况下它同样会发一个
+            //    turn/end（reason 不是 completed），于是一个字都没有就"结束"了 ✓。
+            //    把它的原话留下来 ✓ —— 否则错误会被吞成 EMPTY_REPLY，排查只能从
+            //    "没有文本"倒推（2026-10-17 的 v4 source kind 事故就是这么被吞掉的 ✗）。
+            const reason = payload.reason ?? event.reason;
+            if (reason !== undefined && reason !== null) {
+                const kind = typeof reason === 'object' ? reason.kind : reason;
+                if (kind !== undefined && kind !== 'completed' && kind !== 'user') {
+                    endReason = typeof reason === 'string' ? reason : JSON.stringify(reason);
+                }
+            }
             resolveTurn?.();
             return;
         }
@@ -371,6 +398,20 @@ async function runSessionRung(deps, req, budgetMs, say, allowRetry = true) {
             return { answered: false, code: 'TIMEOUT', message: `会话在 ${budgetMs}ms 内没有给出结论`, steps: texts.length, tookMs, usage };
         }
         const last = texts.length > 0 ? texts[texts.length - 1] : '';
+        // ★ 一个字都没收到、而宿主又**不是**正常收起这一轮 → 把宿主的原因原样报出来 ✓
+        //   （这样 decisions.live.log 里出现的是真因，而不是含糊的"这一轮没有任何文本" ✓；
+        //    2026-10-17 的 v4 source kind 事故就是被 EMPTY_REPLY 吞掉、白查了一小时的 ✓）
+        if (last.trim() === '' && endReason !== undefined) {
+            say(`  [session] ✘ 宿主结束了这一轮且没有 assistant 文本：${endReason}`);
+            return {
+                answered: false,
+                code: 'HOST_TURN_FAILED',
+                message: `宿主结束了这一轮（无 assistant 文本）：${endReason}`,
+                steps: 0,
+                tookMs,
+                usage,
+            };
+        }
         const verdict = validateAnswer(last, req.taskId, deps.allowedActions);
         if (verdict.ok) {
             say(`  [session] ✔ 校验通过${verdict.echoed ? '（回显 task 对上了 ✓）' : '（她没回显 task，但内容合格 ✓）'}`);
