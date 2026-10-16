@@ -42,6 +42,39 @@
 
 ---
 
+## 1.1 ★★ 框选区域（所有"用框"的命令共用）—— 位置是自由变量，Trade 连形状都能变
+
+**这一节全是事实** ✓：它只说明"框是什么、能怎么变、变了会怎样"，
+**不说**"该选哪个框 / 该不该换位置" ✗ —— 那是决策模型自己的判断 ✓。
+
+| 事实 | 证据 / 来源 |
+|---|---|
+| 每条命令的区域是一个**方块/矩形**，**必须包含船**（Travel 例外 ✓） | `simulation.lua:546` `isShipRequiredInArea`；Mine `minecommand.lua:502`、Salvage `salvagecommand.lua:584`、Sell `sellcommand.lua:430`、Trade `tradecommand.lua:596`、Scout `scoutcommand.lua:428`；Travel `travelcommand.lua:472`（`return false` ✗ 不要求 ✓） |
+| ★ **框的位置是自由变量**：框心可以在"仍含船"的约束内平移 ✓（船**不用动** ✓） | 由上一条直接推出：框心与船的星区距离 ≤ half 时框必含船 ✓（15×15 → half=7；17×17 → 8；21×21 → 10 ✓） |
+| ★★ **风险与产出随框变化** —— 挪框就会变 ✓ | 实机（2026-10-17）：**同船同星区**，Salvage 偏移 `(0,0)` 显示伏击概率 **0.04**、`(0,-4)` 显示 **0.02** ✓；机制上伏击概率来自 `SimulationUtility.calculateAttackProbability(ownerIndex, shipName, area, ...)`（吃的是**框里**的星区 ✓），而产出/路线/材料/需求都来自 `areaanalysis.run(..., area, ...)` 对**框里**星区的统计 ✓ |
+| ★ **Trade 的框形状也能变**：合法形状只有 **17×17 / 29×11 / 11×29** | `tradecommand.lua:584-585` `return {x=17,y=17}, {x=29,y=11}, {x=11,y=29}` ✓（★ 两种**不是正方形** ✗） |
+| 形状会影响"哪些星区落在框里" → 路线/需求/价格/风险随之不同 | 同"风险与产出随框变化"✓（`getAreaSize` 决定 `numSectors` ✓，`sellcommand.lua:471`、`tradecommand` 的路线来自 `area.analysis` ✓） |
+| 我们扫的是**两阶段**：粗扫（步长 4）→ 在最好的 3 个粗扫框周围**步长 1 细扫**（5×5 窗口） | `data/scripts/net/link_in.lua` 的 `runTwoPhaseScan` / `SCAN_FINE_*` ✓（离线自检 `_trade_scan_selftest.lua` 的 G 段：细扫找到 2% 风险的框，粗扫只能给 5% ✓） |
+| 计划里每条候选都带**绝对星区坐标**（`x`/`y` = 框心 ✓）与 `offset`（相对船的偏移 ✓） | 同上（决策模型是**单次、无工具**的调用 → 不指望它做加法 ✓） |
+
+**★ 事实推论（不是建议）**：同一艘船、同一个星区里，"换个框"是一个**真实可用的选项** ✓，
+它不需要 Travel ✓、不改变船的位置 ✓，但会改变风险与产出 ✓。
+
+---
+
+## 1.2 ★★ 货舱状态（Sell / Trade 共用）—— 数字口径写在这里，免得误读
+
+| 事实 | 证据 |
+|---|---|
+| 货舱的**货物表**与**总容量**：`entry:getCargo()` 返回**两个值** ✓ | `minecommand.lua:137` `local cargo, cargoBaySize = entry:getCargo()` ✓；`expeditioncommand.lua:393` ✓ |
+| **剩余空间**：`entry:getFreeCargoSpace()` | `minecommand.lua:598` ✓ |
+| 货舱**满了会挡住 Trade 装货** | 我们自己的确认（`onOrder` 在 Trade 且船上有货时直接拒绝 `HOLD_HAS_GOODS` ✓ —— 依据原版 `tradecommand.lua:773-797`：每航班运量受剩余空间限制 ✓） |
+| **Sell 是腾出舱位的命令** | 原版 `sellcommand.lua`（`config.goodsToSell` 卖货、`finishSellCommand` 结算 ✓，见 §5） |
+| ★ **"有货" ≠ "满舱"** ✗ | 实机：主人以为那条 Salvager"舱库装满了" ✗，实际数据是 **1110 单位 / 11 种 / 44%** ✓（`cargoUsed` vs `cargoCapacity` ✓） |
+
+---
+
+
 ## 2. Mine（采矿）
 
 | 项 | 值 | 证据 |
@@ -236,6 +269,8 @@
 - Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；原版不允许"一跳就能到"的目的地(该检查在客户端，经 RPC 可能不生效)。到达后可在那儿接新命令。
 - Scout   侦察/开图：区域 21x21，船须在区内；配置只有 addCaptainsNote；时长由原版按 reachable/25 自算。产出 revealsOffgrid = 隐藏质量星区的**枚举档位**(0=none / 1=some / 2=all；不是计数 ✗)；真实揭图由原版按运行时间调 revealSectors(ratio) 完成(scoutcommand.lua:157/162/179)，可达星区数在 area.analysis.reachable。
 
+框选区域(所有用框的命令共用)：区域是**必须包含船**的方块，框心可以在这个约束内平移(船不用动)；框选位置不同 → 落在框里的星区不同 → 那里的收益与伏击概率也不同(实机：同船同星区，Salvage 偏移 (0,0)=0.04、(0,-4)=0.02)。Trade 的框形状也能变，合法形状只有 17x17 / 29x11 / 11x29(tradecommand.lua:584-585)。我们的扫描是两阶段的：粗扫(步长 4) + 在最好的几个粗扫框周围步长 1 细扫。计划里每条候选都带绝对星区坐标 x/y(= 框心)与 offset(= 相对船的偏移)。Scout 的候选框另外带**框内未探索星区数**(unknownCount / knownCount / totalSectors，判据 player:getKnownSector(x,y)==nil)；框内一个未探索星区都没有的框，侦察它揭不出新地图。
+
 风险(所有命令共用)：attackChance 是整段任务期间的被伏击概率。被伏击 = 强制召回 + 只按已完成进度部分结算。
 - safeMode(Mine/Salvage) 会把概率改成：<0.1 则 0，否则 ×0.1，但只走友方星区、产量下降。
   · ★ **为什么收益低**（原版证据 ✓）：原版提示「The captain avoids dangerous sectors, such as those with
@@ -258,10 +293,43 @@
 深度：越靠地图中心，矿层级越高(Iron<Titanium<Naonite<Trinium<Xanion<Ogonite<Avorion)、装备越好、也越危险。
 游戏可直接查询某坐标的富饶度 Balancing_GetSectorRichnessFactor(x,y) 与材料概率 Balancing_GetMaterialProbability(x,y)；Balancing_InsideRing(x,y) 表示中心屏障环内。
 
-计划(plan)给的是事实与选项：多区域 × 多参数档的原版预测数字(伏击概率、风险折算后的期望收益、时长、口径 scoreBasis)。
+框选区域(所有用框的命令共用)：区域是**必须包含船**的方块，**框心可以在这个约束内平移**(船不用动)；
+框选位置不同 → 落在框里的星区不同 → 那里的收益与伏击概率也不同(实机：同船同星区，Salvage 偏移 (0,0)=0.04、(0,-4)=0.02)。
+Trade 的框**形状**也能变，合法形状只有 17x17 / 29x11 / 11x29(tradecommand.lua:584-585)。
+我们的扫描是两阶段的：粗扫(步长 4) + 在最好的几个粗扫框周围步长 1 细扫。
+计划里每条候选都带绝对星区坐标 x/y(= 框心)与 offset(= 相对船的偏移)。
+Scout 的候选框另外带**框内未探索星区数**(unknownCount / knownCount / totalSectors)：判据是
+player:getKnownSector(x,y)==nil 视为未探索(orderchain.lua:887)；框内一个未探索星区都没有的框，侦察它揭不出新地图。
+
+风险(所有命令共用)：attackChance 是整段任务期间的被伏击概率。被伏击 = 强制召回 + 只按已完成进度部分结算。
+- safeMode(Mine/Salvage) 会把概率改成：<0.1 则 0，否则 ×0.1，但只走友方星区、产量下降。
+  · ★ **为什么收益低**（原版证据 ✓）：原版提示「The captain avoids dangerous sectors, such as those with
+    pirate activity. **However, these contain more resources.**」(minecommand.lua:1260)；
+    且 safeMode 会**主动把选择权重从更肥的派系星区挪开**（outerFactionSectorWeight/3、
+    centralFactionSectorWeight/1.5，minecommand.lua:1180 附近）—— 字面上把船长赶去更贫瘠的地面。
+  · ★★ **主人的规矩（玩家约束）**：「安全模式**一般不要开**；我们说的**安全**是指
+    **遭遇伏击概率 < 10%**（是**局势**，不是这个开关）；概率 < 10% 时**绝不要开**；
+    它是**最后手段**，不是默认的求稳手段。」✗ 也不许用"没拿到风险数字 → 先开 safeMode 保平安"这条推理 ✗。
+  · ★ 比较口径：判断「概率 < 10% 吗」只看 **baseAttackChance**(= 不开 safeMode 的基准概率，计划里显式给了)；开了 safeMode 之后被修正出的 attackChance 是**结果**不是局势，拿它去比是循环论证 ✗。
+- 时长与风险：伏击概率随任务时长上升 —— **超过 1 小时后，每多 1 小时在基准概率上再 +40%**
+  （原版 'attackProbability = attackProbability + attackProbability * (hours - 1) * 0.4'，
+  'simulationutility.lua:818-821' ✓）；短于 1 小时则低于基准 ✓；最后还会取 'max(baseProbability, …)' ✓。
+- 护航既降风险也加产量；护航资格=不忙 + 与行动船距离不超过**护航自己的一个跳跃航程**（同环限制），
+  **不要求同星区**；把护航调过来要花一次 Travel 的时间。
+  ★ **强到"在那个星区不会被袭击"的护航会把基准概率 ×0.75**（每个这样的护航各乘一次），
+  判据是它在采样星区里"不会挨打"的比例 <50%（'simulationutility.lua:810-816' ✓）。
+
+货舱：entry:getCargo() 返回(货物表, 总容量)，entry:getFreeCargoSpace() 是剩余空间。货舱满了(或货占着舱位)会挡住 Trade 装货，Sell 是腾出舱位的命令。★「有货」不等于「满舱」。
+
+能力(会随升级变化)：炮塔数量与类型、跳跃航程、货舱容量/货物、船长职业与专长，决定它能不能采某种矿、能带多少货、能承受多少风险。
+
+深度：越靠地图中心，矿层级越高(Iron<Titanium<Naonite<Trinium<Xanion<Ogonite<Avorion)、装备越好、也越危险。
+游戏可直接查询某坐标的富饶度 Balancing_GetSectorRichnessFactor(x,y) 与材料概率 Balancing_GetMaterialProbability(x,y)；Balancing_InsideRing(x,y) 表示中心屏障环内。
+
+计划(plan)给的是事实与选项：多区域 × 多参数档的原版预测数字(伏击概率、风险折算后的期望收益、时长、口径 scoreBasis)。每条候选都带绝对星区坐标 x/y(= 框心)与 offset；每条命令的概率都带 riskKind 标签(Sell/Salvage/Trade 的概率不是一回事，比较前先看标签)。
 玩家的风险闸门默认 attackChance<=0.10：超闸门的候选也会列出并标 exceedsRiskLimit=true，不静默丢弃。
 recommendation/orderHint 只是其中一个选项，供人审计，不是必须照抄的答案。
-已知缺口：计划只在船当前星区周围扫描，没有扫描别处的数字(可直接查上面的富饶度/材料函数，或先 Travel/Scout)；经 RPC 的 Travel 可能不受"不能太近"限制。
+已知缺口：计划只在船当前星区周围扫描(框心可在船周围 half 格内平移，但不会跑到别的星区)；可直接查上面的富饶度/材料函数，或先 Travel/Scout 过去；经 RPC 的 Travel 可能不受"不能太近"限制。
 <!-- END MECHANICS_BRIEF -->
 
 ---

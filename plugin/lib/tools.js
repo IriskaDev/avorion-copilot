@@ -115,6 +115,13 @@ export function registerFleetTools(ctx, peer, decisionLog) {
             x: { type: 'number', description: 'target sector x (required for Travel; area centre otherwise)' },
             y: { type: 'number', description: 'target sector y' },
             size: { type: 'number', description: 'area edge length (Mine/Salvage 15; Trade 17/29/11)' },
+            sizeX: {
+                type: 'number',
+                description: 'Trade only: the box WIDTH. Vanilla legal Trade shapes are 17x17 / 29x11 / 11x29 ' +
+                    '(two of them are NOT squares), so pass sizeX and sizeY together with the x/y of the ' +
+                    'candidate you picked (each tradePlan candidate carries shape / sizeX / sizeY).',
+            },
+            sizeY: { type: 'number', description: 'Trade only: the box HEIGHT (see sizeX).' },
             duration: { type: 'number', description: 'task duration in hours, optional' },
             goodName: {
                 type: 'string',

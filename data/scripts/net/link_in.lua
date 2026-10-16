@@ -1180,25 +1180,10 @@ end
 
 -- ★★ 扫描阶段的**统计**（两阶段扫描的副产品 ✓✓）—— tradePlan / jobPlan 共用 ✓
 --   `areasScanned` 语义**不变** = 粗扫评估的框数 ✓✓（旧断言/旧消费方不受影响 ✓）；
---   细扫单独报：fineScanned（细扫评估的框数 ✓）、fineCandidates（细扫进入**榜单**的框数 ✓）、
---   phases（各阶段耗时 ms ✓）、bestFine（**细扫**里最好的那个框及其为什么好 ✓✓）。★ 主人要的就是这个：
---   「发现高危，她应该**再框选别的位置看看**」→ 细扫发现的框必须**看得见** ✓✓。
-local function scanPhaseSummary(res, extra)
-    local out = {
-        coarseScanned = res.coarseCount,
-        fineScanned = res.fineCount,
-        fineParents = res.fineParents,
-        fineCandidates = 0,
-        coarseStoppedEarly = res.coarseStoppedEarly,
-        fineStoppedEarly = res.fineStoppedEarly,
-        phaseMs = res.phaseMs,
-    }
-    if type(extra) == "table" then
-        for k, v in pairs(extra) do out[k] = v end
-    end
-    return out
-end
-
+--   细扫单独报：fineScanned（细扫评估的框数 ✓）、fineParents（围绕了几个粗扫框 ✓）、
+--   phaseMs（各阶段耗时 ms ✓）、bestFineArea（**细扫**里最好的那个框 ✓✓）。
+--   ★ 主人要的就是这个：「发现高危，她应该**再框选别的位置看看**」
+--     → 细扫发现的框必须**看得见** ✓✓（就是各 plan 响应里的 scan.phases / scan.bestFineArea ✓）。
 -- 细扫里最好的那个框（**用粗/细都能用的统一口径** ✓：风险最低优先，其次风险调整净收益最高 ✓）
 -- ★ 这段只**报告事实**（哪个偏移、风险多少、收益多少 ✓），不说"该选它" ✗（策略由模型定 ✓）。
 local function bestFineArea(recs)

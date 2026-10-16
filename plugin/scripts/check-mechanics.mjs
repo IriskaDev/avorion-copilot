@@ -80,13 +80,15 @@ if (!fs.existsSync(PROMPT_MD)) {
   if (copyOffenders.length > 0) { fail('提示词里仍有"照抄"指令 ✗'); copyOffenders.forEach((b) => console.error('  ' + b)) }
   else ok('提示词里没有"叫模型照抄"的指令 ✓')
 
-  // ── ④ ★ 不许有策略/时机建议 ✗✓（主人原则：只给大目标 + 机制 ✓）──────────
-  //   这些都是**已经删掉过的原话**，列出来防它漂回来 ✓（本会话删了两次 ✗✓）
+  // ── ④ ★ 策略措辞：**只有标了「参考策略」的段落里才允许** ✓✓ ─────────────────
+  //   2026-10-17 主人把口径**细化**（不是放弃 ✗）：
+  //     · 「硬约束」= 玩家下的规矩（风险闸门、safeMode 规矩 ✓）—— 不是建议 ✓；
+  //     · 「参考策略」= 主人自己的偏好/经验（例如 Scout 的"尽量侦察未发现的地方"✓）——
+  //       **只允许**出现在**明确标注**的段里，而且那段必须写明
+  //       「供参考 / 不是硬规则 / 具体由你自己判断」✓✓；
+  //     · **别处**出现策略措辞 → 一律**大声失败** ✗（防止有人偷偷把建议塞进事实段 ✓）。
+  //   → 本检查就是干这三件事 ✓（删规则、或改措辞躲检查 ✗ 都不允许 ✓）。
   const STRATEGY_PATTERNS = [
-    // ★ 2026-10-17 从 `/不是默认/` 收窄成 `/原地继续干活/` ✓：
-    //   原模式**误报**了主人的约束句「它是最后手段，不是默认的求稳手段」✗✓
-    //   （`不是默认` 这个词组本身不是罪 ✗ —— 被删掉的原句是「原地继续干活…不是默认」✓）。
-    //   → 模式要盯**内容** ✓，不要盯**词形** ✗（否则逼着人改措辞躲检查 ✗✗）。
     /原地继续干活/,
     /往往更好/,
     /不要硬下单/,
@@ -99,6 +101,32 @@ if (!fs.existsSync(PROMPT_MD)) {
     /应该转移/,
     /先转移位置/,
   ]
+  const REF_HEAD = /^\s*(?:>\s*)?\**\s*(?:★+\s*)?\**参考策略\**/
+  const REF_END = /^\s*(?:>\s*)?\**\s*(?:★+\s*)?\**(?:每次都值得|先输出|判断依据|游戏机制|大目标)/
+  const NOT_BINDING = /不是硬规则|不是必须遵守|不是指令|由你自己判断|由你判断|供.?参考|参考策略/
+  const lines = md.split(/\r?\n/)
+  let refStart = -1, refEnd = -1
+  for (let i = 0; i < lines.length; i++) {
+    if (refStart < 0 && REF_HEAD.test(lines[i])) refStart = i
+    else if (refStart >= 0 && refEnd < 0 && REF_END.test(lines[i])) refEnd = i
+  }
+  if (refStart < 0) {
+    // ★ 缺失也要**明说** ✓ —— 主人点名要这一段（参考策略块）✓；
+    //   没有它并不算"漂移"，但会在输出里标出来 ✓（下面 ④ 的宽松豁免也就不生效 ✓）。
+    console.log('· 提示词里没有「参考策略」段落（主人给的参考偏好无处安放 ✓ —— 现在没有也不算错 ✓）')
+  } else {
+    const endIdx = refEnd >= 0 ? refEnd : lines.length
+    const body = lines.slice(refStart, endIdx).join('\n')
+    if (!NOT_BINDING.test(body)) {
+      fail('「参考策略」段落里**没有**"不具约束力 / 由你自己判断 / 供参考"的说明 ✗✓ ' +
+        `（第 ${refStart + 1}-${endIdx} 行）—— 主人要求：参考策略必须**明说**它不是硬规则 ✓`)
+    } else {
+      ok(`「参考策略」段落存在且写明了"不具约束力、由你自己判断" ✓（第 ${refStart + 1}-${endIdx} 行，` +
+        `${endIdx - refStart} 行）`)
+    }
+  }
+
+  const inRef = (lineNo) => refStart >= 0 && lineNo > refStart && (refEnd < 0 || lineNo <= refEnd)
   const strategyOffenders = []
   md.split(/\r?\n/).forEach((l, i) => {
     // ★★ 玩家约束豁免（2026-10-17 ✓）：
@@ -108,14 +136,18 @@ if (!fs.existsSync(PROMPT_MD)) {
     //   → 带「玩家 / 主人」字样的行视为**约束** ✓，跳过策略措辞检查 ✓。
     //   ★ 这是**豁免约束**，不是放宽原则 ✗：删规则、或把规则改写成不被识别的措辞，都不允许 ✗。
     if (/玩家|主人/.test(l)) return
+    // ★★ 参考策略段落**整体豁免** ✓✓（主人 2026-10-17 明确要求 ✓）——
+    //   但**只有**那一段豁免 ✗：别处一律照查 ✓（见上 ✓）。
+    if (inRef(i + 1)) return
     for (const re of STRATEGY_PATTERNS) {
       if (re.test(l)) { strategyOffenders.push(`${i + 1}: ${l.trim()}  ← 命中 ${String(re)}`); break }
     }
   })
   if (strategyOffenders.length > 0) {
-    fail('提示词里出现了**策略/时机建议** ✗（主人明确要求：只给大目标 + 机制，让她自己判断）')
+    fail('提示词里出现了**未标注来源的策略/时机建议** ✗（主人要求：只给大目标 + 机制 + 事实；' +
+      '真要写参考策略，就必须放进标了「参考策略」并写明"不具约束力、由你自己判断"的段落里 ✓）')
     strategyOffenders.forEach((b) => console.error('  ' + b))
-  } else ok('提示词里没有策略/时机建议 ✓（只有大目标 + 机制 + 事实）')
+  } else ok('提示词里没有**未标注**的策略/时机建议 ✓（事实段干净 ✓）')
 }
 
 // ── ⑤ 机制段仍然只有一处来源 ✓ ───────────────────────────────────────────

@@ -234,6 +234,11 @@ interface Decision {
   deposit?: number
   x?: number
   y?: number
+  /** ★ Trade 的框**形状**（2026-10-17 加 ✓）：原版合法形状只有 17x17 / 29x11 / 11x29 ✓，
+   *  29x11 与 11x29 **不是正方形** ✗ → 必须能把两个边长分别传下去 ✓✓。
+   *  tradePlan 的每个候选框都带 shape / sizeX / sizeY ✓（缺省则游戏侧按 size 取正方形 ✓）。 */
+  sizeX?: number
+  sizeY?: number
   duration?: number
   /** ★ Mine/Salvage 专用：安全模式（原版把伏击概率 ×0.1 ✓）—— 2026-10-17 补 ✓ */
   safeMode?: boolean
@@ -305,6 +310,21 @@ function parseDecision(text: string): Decision {
   if (x !== undefined) { const v = parseNumberField(x); if (v !== undefined) decision.x = v }
   const y = field(text, 'y')
   if (y !== undefined) { const v = parseNumberField(y); if (v !== undefined) decision.y = v }
+
+  // ★★ Trade 的框形状（2026-10-17 补 ✓✓）：29x11 / 11x29 **不是正方形** ✗ →
+  //   两个边长必须分别解析并转发 ✓（游戏侧 onOrder 认 data.sizeX/data.sizeY ✓）。
+  const rawShape = field(text, 'shape')
+  if (rawShape !== undefined) {
+    const m = /(\d+)\s*[x×*]\s*(\d+)/i.exec(rawShape.replace(/[`*"']/g, ''))
+    if (m !== null) {
+      decision.sizeX = Number(m[1])
+      decision.sizeY = Number(m[2])
+    }
+  }
+  const sizeX = field(text, 'sizeX')
+  if (sizeX !== undefined) { const v = parseNumberField(sizeX); if (v !== undefined && v > 0) decision.sizeX = v }
+  const sizeY = field(text, 'sizeY')
+  if (sizeY !== undefined) { const v = parseNumberField(sizeY); if (v !== undefined && v > 0) decision.sizeY = v }
 
   // ★ Trade 的预付金（2026-10-17 补 ✗→✓）：tradePlan 已经算好了最优预付金 ✓，
   //   但此前**根本没人把它读出来转发** ✗，于是游戏只能自己猜 ✓。
@@ -490,7 +510,15 @@ interface DecideFacts {
 function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
   const rank = Array.isArray(p.areaRanking) ? (p.areaRanking as Record<string, unknown>[]) : []
   const areas = rank.map((e) => ({
-    offset: (e.area as Record<string, unknown> | undefined)?.offset,
+    // ★★ 2026-10-17：并排比较表要用的字段 ✓
+    //   x/y = **绝对框心**（游戏侧算好的 ✓）、origin = 粗扫还是细扫、shape/sizeX/sizeY = 形状
+    x: e.x ?? null,
+    y: e.y ?? null,
+    origin: e.origin ?? null,
+    shape: e.shape ?? null,
+    sizeX: e.sizeX ?? null,
+    sizeY: e.sizeY ?? null,
+    offset: (e.area as Record<string, unknown> | undefined)?.offset ?? e.offset ?? null,
     acceptable: e.acceptable,
     // ★★ 风险判定必须活到模型眼前（2026-10-17 修 ✗）：游戏侧经 informOnly 算了这三个字段 ✓，
     //    而这里以前**只挑数字、把结论丢掉** ✗ → 模型看不到"谁越了玩家的闸门" ✓✓。
@@ -528,9 +556,129 @@ function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
+/**
+ * ★★ 把候选框**并排画成表**（主人 2026-10-17 要求 ✓✓）
+ *
+ * 主人的顾虑：模型只看到一个"赢家 + 一段说明"就把框当成了**唯一选择** ✗。
+ * 要的是「她应该总是框选几块不同区域，看看情况再做决策」✓ —— 所以必须在提示词里
+ * 把**多个候选**并排列出来，每个都带它自己的比较口径（风险 / 收益或产出 / Scout 的未探索数 /
+ * Sell 的逐货数字 ✓），而且像"框可以平移、Trade 形状可变"这种**事实**也要写清楚 ✓。
+ *
+ * ★ 这一层是**纯渲染**：只读游戏侧已经算好的数字 ✓，**不做任何计算**（模型是无工具的单次调用 ✓），
+ *   也**不给建议** ✗（连一句"该选哪个"都不写 ✓ —— 那正是主人不要的 ✗）。
+ */
+function fmtNum(v: unknown): string {
+  const n = toNum(v)
+  if (n === undefined) return '?'
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 1000) / 1000)
+}
+
+function fmtInt(v: unknown): string {
+  const n = toNum(v)
+  return n === undefined ? '?' : String(Math.round(n))
+}
+
+function renderCandidateTables(f: DecideFacts): string[] {
+  const out: string[] = []
+
+  // ---- Trade：形状 × 位置 的候选框 ✓ ----
+  const trade = f.tradeRoutes as Record<string, unknown> | undefined
+  const tradeAreas = Array.isArray(trade?.areas) ? (trade?.areas as Record<string, unknown>[]) : []
+  if (trade !== undefined && tradeAreas.length > 0) {
+    out.push(`★★ Trade 候选框（${tradeAreas.length} 个，**并排比较**用）—— 每行一个框 ✓：`)
+    out.push('| # | 框心 x,y（绝对值✓） | 形状 | 偏移 | 最优路线 | 风险 | 期望净收益 | 最好情况 | 航班 | 预付金 | 达标 |')
+    out.push('|---|---|---|---|---|---|---|---|---|---|---|')
+    tradeAreas.forEach((a, i) => {
+      const off = a.offset as { x?: unknown; y?: unknown } | null | undefined
+      out.push('| ' + [
+        String(i + 1) + (i === 0 ? '(榜首)' : ''),
+        `${fmtInt(a.x)},${fmtInt(a.y)}`,
+        a.shape === undefined || a.shape === null ? '?' : String(a.shape),
+        off === undefined || off === null ? '?' : `${fmtInt(off.x)},${fmtInt(off.y)}`,
+        a.bestRouteName === undefined || a.bestRouteName === null ? '(无路线)' : String(a.bestRouteName),
+        fmtPct(toNum(a.attackChance)),
+        `${fmtInt(a.netProfitLow)}~${fmtInt(a.netProfitHigh)}`,
+        `${fmtInt(a.bestCaseLow)}~${fmtInt(a.bestCaseHigh)}`,
+        fmtNum(a.flights),
+        fmtInt(a.deposit),
+        a.acceptable === true ? '是' : '否',
+      ].join(' | ') + ' |')
+    })
+    out.push('（上面每行的 x,y 都是**绝对星区坐标**=已算好的框心 ✓；"形状"就是下单时要一起回传的 sizeX x sizeY ✓）')
+    out.push('')
+  }
+
+  // ---- Mine / Salvage：框 × 参数档 ✓ ----
+  if (f.jobPlans !== undefined && f.jobPlans.length > 0) {
+    for (const jp of f.jobPlans) {
+      const areas = Array.isArray(jp.plan.areaRanking)
+        ? (jp.plan.areaRanking as Record<string, unknown>[]) : []
+      if (areas.length === 0) continue
+      out.push(`★★ ${jp.action} 候选框（${areas.length} 个，**并排比较**用）✓：`)
+      out.push('| # | 框心 x,y（绝对值✓） | 来源 | 最优档 | 时长 | safeMode | 基准风险(未修正✓) | 本次概率 | 产出(低~高) | 最高层级/材料 | 达标 |')
+      out.push('|---|---|---|---|---|---|---|---|---|---|---|')
+      areas.forEach((a, i) => {
+        out.push('| ' + [
+          String(i + 1) + (i === 0 ? '(榜首)' : ''),
+          `${fmtInt(a.x)},${fmtInt(a.y)}`,
+          a.origin === 'fine' ? '细扫' : '粗扫',
+          a.bestTag === undefined ? '?' : String(a.bestTag),
+          fmtNum(a.duration),
+          a.safeMode === true ? '开' : '关',
+          fmtPct(toNum(a.baseAttackChance)),
+          fmtPct(toNum(a.attackChance)),
+          `${fmtNum(a.valueLow)}~${fmtNum(a.valueHigh)}`,
+          `${fmtNum(a.topTier)}/${a.topMaterial === undefined ? '?' : String(a.topMaterial)}`,
+          a.acceptable === true ? '是' : '否',
+        ].join(' | ') + ' |')
+      })
+      out.push('（"基准风险(未修正)"就是**不开 safeMode 时的概率** ✓ —— 判断"<10% 吗"只看它 ✓；' +
+        '"本次概率"是这一档实际会用的那个（开了 safeMode 就是被修正过的）✓）')
+      out.push('')
+    }
+  }
+
+  // ---- Scout：框 × 未探索数 ✓ ----
+  const scout = f.scoutPlan
+  if (scout !== undefined && Array.isArray(scout.areaRanking)) {
+    const areas = scout.areaRanking as Record<string, unknown>[]
+    if (areas.length > 0) {
+      out.push(`★★ Scout 候选框（${areas.length} 个，**并排比较**用）—— 按"框里还剩多少未探索星区"排 ✓：`)
+      out.push('| # | 框心 x,y（绝对值✓） | 来源 | 框内未探索 | 框内已知 | 框内总星区 | 未探索占比 | revealsOffgrid(枚举) | 风险 | 离中心 | 达标 |')
+      out.push('|---|---|---|---|---|---|---|---|---|---|---|')
+      areas.forEach((a, i) => {
+        const share = toNum(a.unknown && (a.unknown as Record<string, unknown>).share)
+        out.push('| ' + [
+          String(i + 1) + (i === 0 ? '(榜首)' : ''),
+          `${fmtInt(a.x)},${fmtInt(a.y)}`,
+          a.origin === 'fine' ? '细扫' : '粗扫',
+          fmtInt(a.unknownCount),
+          fmtInt(a.knownCount),
+          fmtInt(a.totalSectors),
+          share === undefined ? '?' : `${Math.round(share * 100)}%`,
+          fmtInt(a.revealsOffgridEnum),
+          fmtPct(toNum(a.attackChanceEffective ?? a.attackChance)),
+          fmtInt(a.distance),
+          a.acceptable === true ? '是' : '否',
+        ].join(' | ') + ' |')
+      })
+      out.push('（★ "框内未探索"是**数字** ✓ —— 0 表示这个框里没有未探索星区、侦察它揭不出新地图 ✗；' +
+        'revealsOffgrid 只是原版的 0/1/2 **枚举** ✗，太粗 ✓）')
+      const nb = scout.neighbourhood as Record<string, unknown> | undefined
+      if (nb !== undefined) {
+        out.push(`船所在邻域（21x21）：未探索 ${fmtInt(nb.unknown)} / ${fmtInt(nb.total)}` +
+          `；候选框里"还有未探索"的 ${fmtInt(nb.candidateBoxesWithUnknown)} 个` +
+          `、"已经没得揭"的 ${fmtInt(nb.candidateBoxesWithZeroUnknown)} 个 ✓（都是数字 ✓）`)
+      }
+      out.push('')
+    }
+  }
+
+  return out
+}
+
 /** 组一份给模型看的请求：目标 + 边界 + 事实 ✓ */
-function buildPrompt(f: DecideFacts): string {
-  const lines: string[] = []
+function buildPrompt(f: DecideFacts): string {  const lines: string[] = []
   lines.push(`船：${f.ship}`)
   lines.push('')
   lines.push('玩家给这艘船设定的运营目标：')
@@ -620,6 +768,19 @@ function buildPrompt(f: DecideFacts): string {
     lines.push('    要卖就 action=Sell，x/y 从上面的候选表 / orderHint 里挑一个达标的绝对坐标 ✓（不需要 goodName ✓）。')
     lines.push('')
   }
+  // ★★ 主人 2026-10-17：「她应该总是框选几块不同区域，看看情况再做决策」
+  //   → 把**多个候选框并排列成表**放在最显眼的位置 ✓✓（纯渲染：数字全部来自游戏侧 ✓，
+  //     不在这里做任何计算 ✓ —— 模型是单次、无工具、不能算数的调用 ✓）。
+  const tables = renderCandidateTables(f)
+  if (tables.length > 0) {
+    lines.push('')
+    lines.push('★★ 下面是**并排的候选表**（本轮的选项清单 ✓）：')
+    for (const t of tables) lines.push(t)
+    lines.push('★ 表里每一行都是一个**独立的候选框** ✓ —— 每个框的 x/y 都是**算好的绝对星区坐标** ✓；')
+    lines.push('  要改框就换一行（或按上面的说明把框心往别处平移几格 ✓）；Trade 记得把形状一起回传 ✓。')
+    lines.push('  选哪个（或都不选）由你自己判断 ✓ —— 表只是把数字摆在一起，绝不是"必须选第一行" ✗。')
+    lines.push('')
+  }
   lines.push('请按系统提示的格式回复。')
   return lines.join('\n')
 }
@@ -641,6 +802,9 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
   if (decision.deposit !== undefined) params.deposit = decision.deposit      // ★ Trade 的预付金 ✓
   if (decision.x !== undefined) params.x = decision.x
   if (decision.y !== undefined) params.y = decision.y
+  // ★ Trade 的框形状（两个边长分别传 ✓ —— 29x11 / 11x29 不是正方形 ✗）
+  if (decision.sizeX !== undefined && decision.sizeX > 0) params.sizeX = decision.sizeX
+  if (decision.sizeY !== undefined && decision.sizeY > 0) params.sizeY = decision.sizeY
   if (decision.duration !== undefined) params.duration = decision.duration
   if (decision.safeMode !== undefined) params.safeMode = decision.safeMode    // ★ Mine/Salvage ✓
   // ★ Sell 的选货（2026-10-17 补 ✓）：游戏侧读 data.goodsToSell ✓（link_in.lua:483-516 ✓）。
@@ -1192,10 +1356,21 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           scanMs: pd.scanMs ?? null,
           areasScanned: pd.areasScanned ?? null,
           areas: rank.slice(0, 9).map((a) => ({
-            offset: (a.area as Record<string, unknown> | undefined)?.offset,
+            // ★★ 2026-10-17：并排比较表要用的字段**一个都不能少** ✓✓
+            //   （x/y = 绝对框心 ✓、shape/sizeX/sizeY = 形状 ✓、origin = 粗扫还是细扫 ✓、
+            //    bestCase* = 最好情况 ✓ —— 之前只挑了几个数字，模型看不到它们 ✗）
+            x: a.x ?? null,
+            y: a.y ?? null,
+            shape: a.shape ?? null,
+            sizeX: a.sizeX ?? null,
+            sizeY: a.sizeY ?? null,
+            origin: a.origin ?? null,
+            offset: (a.area as Record<string, unknown> | undefined)?.offset ?? a.offset ?? null,
             bestRouteName: a.bestRouteName,
             netProfitLow: a.netProfitLow,
             netProfitHigh: a.netProfitHigh,
+            bestCaseLow: a.bestCaseLow ?? null,
+            bestCaseHigh: a.bestCaseHigh ?? null,
             attackChance: a.attackChance,
             attackChanceWithEscorts: a.attackChanceWithEscorts ?? null,
             profitPerSize: a.profitPerSize,

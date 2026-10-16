@@ -81,24 +81,37 @@ function minePlan() {
   }
 }
 
-/** Trade 的计划：带上原版算好的最优预付金 deposit ✓（用例 c 要断言它传下去 ✓） */
+/** Trade 计划：★ 带**多个候选框**（含两种合法形状 ✓）—— 用来验"并排画出来"的渲染 ✓ */
 function tradePlan() {
   return {
     ship: SHIP,
     recommendation: {
-      goodName: 'Antigrav Unit', x: HERE.x, y: HERE.y, deposit: 752000,
+      goodName: 'Antigrav Unit', x: HERE.x, y: HERE.y, deposit: 752000, sizeX: 17, sizeY: 17,
       attackChance: 0.07, attackChanceBase: 0.07, acceptable: true, netProfitLow: 761638,
     },
     riskWarning: null,
-    areasScanned: 1,
+    areasScanned: 9,
+    boxesEvaluated: 33,
     scanMs: 120,
-    orderHint: { x: HERE.x, y: HERE.y, goodName: 'Antigrav Unit', deposit: 752000, escorts: [] },
+    orderHint: { x: HERE.x, y: HERE.y, goodName: 'Antigrav Unit', deposit: 752000, sizeX: 17, sizeY: 17, escorts: [] },
+    // ★★ 形状与游戏侧一致：候选框在 **areaRanking** 里 ✓（插件从它映射成喂模型的 areas ✓）
+    areaRanking: [
+      { area: area({ x: 0, y: 0 }), x: HERE.x, y: HERE.y, shape: '17x17', sizeX: 17, sizeY: 17,
+        origin: 'coarse', bestRouteName: 'Antigrav Unit', attackChance: 0.07,
+        netProfitLow: 761638, netProfitHigh: 800000, bestCaseLow: 900000, bestCaseHigh: 950000,
+        flights: 2, deposit: 752000, acceptable: true },
+      { area: area({ x: 4, y: 0 }), x: HERE.x + 4, y: HERE.y, shape: '29x11', sizeX: 29, sizeY: 11,
+        origin: 'fine', bestRouteName: 'Wide Good', attackChance: 0.04,
+        netProfitLow: 700000, netProfitHigh: 740000, bestCaseLow: 820000, bestCaseHigh: 860000,
+        flights: 2, deposit: 700000, acceptable: true },
+    ],
+    candidates: [{ name: 'Antigrav Unit' }],
+    moveHint: { listIsOptions: true, statement: '多个候选框、框可以平移、Trade 形状可变 ✓' },
   }
 }
 
 const game = {
-  goal: { text: '在附近挖矿', options: [], hasGoal: true },
-  shipCard: {
+  goal: { text: '在附近挖矿', options: [], hasGoal: true },  shipCard: {
     name: SHIP,
     sector: { ...HERE },
     busy: false,
@@ -130,6 +143,66 @@ const game = {
     ],
   },
   orders: [],
+  queries: [],
+}
+
+/**
+ * ★★ Sell 计划（2026-10-17 加 ✓）：主人的要求 —— **逐货数字**（舱里多少 / 预计卖多少 / 涨跌幅 ±%）
+ *   必须真的送到模型眼前 ✓✓；这里就是"送到模型眼前"的那条链的**消费端**证明 ✓：
+ *   插件把它**原样**塞进 facts.sellPlan ✓ → buildPrompt 会 JSON 出来 ✓。
+ *   ★ 形状与游戏侧 sellPlan 的返回一致（recommendation.perGood / perGoodBest / hold ✓）。
+ */
+function sellPlan() {
+  return {
+    ship: SHIP,
+    action: 'Sell',
+    goodsToSell: [
+      { goodName: 'Drill', amount: 100, stolen: false },
+      { goodName: 'Oxygen', amount: 50, stolen: false },
+    ],
+    holdUsed: 150,
+    holdKinds: 2,
+    hold: {
+      used: 150, kinds: 2, capacity: 5000, free: 4850, usedPercent: 3,
+      isHoldFull: false, holdHasGoods: true, blocksTradeLoading: false,
+    },
+    recommendation: {
+      x: HERE.x, y: HERE.y, size: 15, action: 'Sell',
+      attackChance: 0.05, riskKind: 'sellAmbushChance(whole task, this box)',
+      netProfitLow: 90000, netProfitHigh: 95000, profitBasis: 'sellYield(riskAdjusted)',
+      duration: 2000,
+      perGood: [
+        { goodName: 'Drill', amount: 100, expectedRevenue: 2500, priceDeltaPercent: 50,
+          expectedUnitPrice: 25, normalRevenueEstimate: 1666.7 },
+        { goodName: 'Oxygen', amount: 50, expectedRevenue: 3000, priceDeltaPercent: -20,
+          expectedUnitPrice: 60, normalRevenueEstimate: 3750 },
+      ],
+    },
+    perGoodBest: [
+      { goodName: 'Drill', amount: 100, expectedRevenue: 2500, priceDeltaPercent: 50,
+        offset: { x: -4, y: 0 }, origin: 'coarse' },
+      { goodName: 'Oxygen', amount: 50, expectedRevenue: 3000, priceDeltaPercent: -20,
+        offset: { x: 0, y: 0 }, origin: 'coarse' },
+    ],
+    perGoodByArea: [
+      { offset: { x: 0, y: 0 }, origin: 'coarse', goods: [
+        { goodName: 'Drill', amount: 100, expectedRevenue: 2000, priceDeltaPercent: 10 },
+      ] },
+    ],
+    areaRanking: [
+      { area: area({ x: 0, y: 0 }), x: HERE.x, y: HERE.y, origin: 'coarse', shape: '15x15',
+        netProfitLow: 90000, attackChance: 0.05, acceptable: true,
+        perGood: [{ goodName: 'Drill', amount: 100, expectedRevenue: 2000, priceDeltaPercent: 10 }] },
+      { area: area({ x: -4, y: 0 }), x: HERE.x - 4, y: HERE.y, origin: 'fine', shape: '15x15',
+        netProfitLow: 85000, attackChance: 0.02, acceptable: true,
+        perGood: [{ goodName: 'Drill', amount: 100, expectedRevenue: 2500, priceDeltaPercent: 50 }] },
+    ],
+    areasScanned: 9, boxesEvaluated: 33, scanMs: 400,
+    orderHint: { ship: SHIP, action: 'Sell', x: HERE.x, y: HERE.y, size: 15,
+      goodsToSell: [{ goodName: 'Drill', amount: 100 }], duration: 2000 },
+    moveHint: { listIsOptions: true, statement: '框可以平移 ✓（多个候选 ✓）' },
+    riskWarning: null,
+  }
 }
 
 function reply(cmd, data) {
@@ -140,12 +213,14 @@ function reply(cmd, data) {
   }
   if (cmd !== 'query') return {}
   const what = data?.what
+  game.queries.push(String(what))            // ★ 每轮"取了多少次数"可审计 ✓（重试不许重取 ✓）
   if (what === 'goal') return game.goal
   if (what === 'ship') return game.shipCard
   if (what === 'fleet') return game.fleet
   if (what === 'minePlan' || what === 'jobPlan') return minePlan()
   if (what === 'tradePlan') return tradePlan()
-  if (what === 'sellPlan' || what === 'salvagePlan' || what === 'scoutPlan') return {}
+  if (what === 'sellPlan') return sellPlan()
+  if (what === 'salvagePlan' || what === 'scoutPlan') return {}
   return {}
 }
 
@@ -164,6 +239,9 @@ function encode(msg) {
 const disposers = []
 let modelCalls = 0
 let modelReply = ''
+let retryReply = null                  // ★ 非 null → **第二次**调用用这一段（驱动重试路径 ✓）
+const prompts = []                     // ★ 每次模型调用收到的**全部消息**（用来断言"数字真的送到眼前" ✓）
+let queriesAtFirstModelCall = -1       // ★ 第一次调模型时已经取过多少事实（用来证明**重试不重取** ✓）
 
 const ctx = {
   logger: { info: () => {}, warn: (m) => console.log(`   [plugin warn] ${m}`) },
@@ -173,10 +251,15 @@ const ctx = {
   },
   tools: { register: () => {} },
   llm: {
-    async *stream() {
+    async *stream(options) {
       modelCalls += 1
-      yield { type: 'reasoning-delta', index: 0, text: '（假模型）' }
-      yield { type: 'text-delta', index: 1, text: modelReply }
+      if (modelCalls === 1) queriesAtFirstModelCall = game.queries.length
+      prompts.push(
+        (options?.messages ?? []).map((m) => (m.content?.[0]?.text ?? '')).join('\n'),
+      )
+      const text = (modelCalls === 2 && retryReply !== null) ? retryReply : modelReply
+      yield { type: 'reasoning-delta', index: 0, text: '（假模型）推理……' }
+      yield { type: 'text-delta', index: 1, text }
       yield { type: 'finish', reason: { kind: 'stop' } }
     },
   },
@@ -255,6 +338,18 @@ async function decideOnce(replyText, goalOptions) {
   const r = await call('decide', { ship: SHIP, hasGoal: true })
   const order = game.orders.length > before ? game.orders[game.orders.length - 1] : null
   return { rpc: r, order }
+}
+
+/** 跑一轮 decide，但让第一轮回复是 `first`、重试那一轮是 `retry`（用来驱动"重试恰好一次"✓） */
+async function decideWithRetry(first, retry, goalOptions) {
+  modelReply = first
+  retryReply = retry
+  game.goal = { ...game.goal, options: goalOptions ?? [] }
+  const before = game.orders.length
+  const qBefore = game.queries.length
+  const r = await call('decide', { ship: SHIP, hasGoal: true })
+  const order = game.orders.length > before ? game.orders[game.orders.length - 1] : null
+  return { rpc: r, order, queriesDuring: game.queries.length - qBefore }
 }
 
 try {
@@ -346,6 +441,128 @@ try {
     console.log(`\n[e2] 目标只允许 Mine，模型答 Mine → order: ${show(order)}`)
     check('e2. 目标只允许 Mine 时，Mine **放行**', order !== null && order?.action === 'Mine', order?.action)
     check('e2. Mine 放行的 rpc 也 ok', rpc.ok === true, rpc)
+  }
+  // ---- e3. Trade + sizeX/sizeY（★ 29x11 / 11x29 **不是正方形** ✗ →
+  //          两个边长必须能分别透传下去 ✓✓）-------------------------------------
+  {
+    const { rpc, order } = await decideOnce(
+      `action=Trade\ngoodName=Wide Good\nx=${HERE.x}\ny=${HERE.y}\nshape=29x11\ndeposit=752000\nreason=宽框\n`)
+    console.log(`\n[e3] order 载荷: ${show(order)}`)
+    check('e3. Trade 形状: decide 成功', rpc.ok === true, rpc)
+    check('e3. Trade 形状: ★ 载荷带 sizeX/sizeY（29x11 ✓ 不是正方形 ✓）',
+      order?.sizeX === 29 && order?.sizeY === 11, JSON.stringify({ x: order?.sizeX, y: order?.sizeY }))
+    check('e3. Trade 形状: x/y 也带上了', order?.x === HERE.x && order?.y === HERE.y,
+      `${order?.x},${order?.y}`)
+  }
+  {
+    const { rpc, order } = await decideOnce(
+      `action=Trade\ngoodName=Tall Good\nx=${HERE.x}\ny=${HERE.y}\nsizeX=11\nsizeY=29\nreason=高框\n`)
+    console.log(`\n[e4] order 载荷: ${show(order)}`)
+    check('e4. Trade 形状: 分开写 sizeX/sizeY 也能透传（11x29 ✓）',
+      rpc.ok === true && order?.sizeX === 11 && order?.sizeY === 29,
+      JSON.stringify({ x: order?.sizeX, y: order?.sizeY }))
+  }
+
+  // ---- f. ★★ Sell 的**逐货数字**必须真的送到模型眼前（主人 2026-10-17 要求 ✓✓）----
+  //   "送到眼前"= facts.sellPlan → buildPrompt 的 JSON 里**逐字**出现 ✓。
+  //   （游戏侧 _sell_scan_selftest 的 S9 段证明这些数字**会被算出来** ✓；
+  //     这里证明它们**不会被插件丢掉** ✓✓ —— 两边合起来才是完整的一条链 ✓。）
+  {
+    game.shipCard.holdHasGoods = true     // ★ 有货才会拉 Sell 计划 ✓（与游戏侧同一触发条件 ✓）
+    modelCalls = 0
+    prompts.length = 0
+    const { rpc, order } = await decideOnce(`action=Sell\nx=${HERE.x}\ny=${HERE.y}\nreason=卖货\n`)
+    const seen = prompts.join('\n')
+    console.log(`\n[f] 模型看到的 Sell 计划片段: ${seen.includes('expectedRevenue') ? '含 expectedRevenue ✓' : '缺失 ✗'}`)
+    check('f. Sell 逐货: decide 成功', rpc.ok === true, rpc)
+    check('f. Sell 逐货: ★ 模型提示里出现 expectedRevenue ✓（预计卖多少 ✓✓）',
+      seen.includes('expectedRevenue'), seen.slice(0, 200))
+    check('f. Sell 逐货: ★ 出现 priceDeltaPercent ✓（涨跌幅 ±% ✓）',
+      seen.includes('priceDeltaPercent'), '')
+    check('f. Sell 逐货: ★ 出现 expectedUnitPrice / normalRevenueEstimate ✓（单位价与正常价都算好了 ✓）',
+      seen.includes('expectedUnitPrice') && seen.includes('normalRevenueEstimate'), '')
+    check('f. Sell 逐货: ★ 出现 perGoodBest ✓（跨框每种货最好的那个框 ✓）',
+      seen.includes('perGoodBest'), '')
+    check('f. Sell 逐货: ★ 出现"涨跌幅"两个方向的值（+50% / −20%，都是数字 ✓）',
+      seen.includes('"priceDeltaPercent":50') || seen.includes('"priceDeltaPercent": 50'),
+      '')
+    check('f. Sell 逐货: ★ 出现"跨框最好"那条的数字（2500 ✓）',
+      seen.includes('2500'), '')
+    check('f. Sell 逐货: ★ 货舱状态 hold{} 也在（used/capacity/free/usedPercent/isHoldFull ✓）',
+      seen.includes('isHoldFull') && seen.includes('usedPercent') && seen.includes('blocksTradeLoading'), '')
+    check('f. Sell 逐货: ★ 每个候选框都带**绝对坐标** x/y 与 origin（模型不做算术 ✓）',
+      seen.includes('"origin"'), '')
+    check('f. Sell 逐货: 卖单照旧下得出去（x/y + goodsToSell ✓）',
+      order !== null && order.action === 'Sell' && order.x === HERE.x && order.y === HERE.y,
+      show(order))
+  }
+
+  // ---- g. ★★ 重试路径**驱动式**断言（2026-10-17 补 ✓✓ —— 之前只有静态断言 ✗）----
+  //   规矩：首轮没有可用动作行 → **同一批事实**重试**恰好一次** ✓、**不重取数据** ✗、
+  //         再失败就照旧失败（**不许有第三次** ✓）。
+  {
+    modelCalls = 0
+    const before = game.orders.length
+    // ★ "不重取数据"的**正确测法**：先自己发一个 query 做预检（把共享连接预热 ✓），
+    //   然后看 decide 那一轮**自己**有没有额外的 query ✗✓。
+    //   （直接数 query 总数会把"decide 一开始就该取的那批事实"也算进去 ✓ —— 那不是重取 ✓。）
+    await call('query', { what: 'fleet' })
+    const qBefore = game.queries.length
+    const { order, rpc } = await decideWithRetry(
+      '我先想了想，这艘船其实可以……（只有推理，没有 action 行）',
+      `action=Scout\nx=${HERE.x}\ny=${HERE.y}\nreason=重试后给答案\n`,
+    )
+    const qDuring = game.queries.length - qBefore
+    console.log(`\n[g] 重试：模型调用 ${modelCalls} 次；decide 轮内 query ${qDuring} 次；order=${show(order)}`)
+    check('g. 重试: ★ 首轮无动作行 → **恰好重试一次**（模型共调用 2 次 ✓✓）',
+      modelCalls === 2, modelCalls)
+    check('g. 重试: ★ 没有第三次调用（不循环 ✓）', modelCalls < 3, modelCalls)
+    check('g. 重试: ★ 重试**不重取数据**（模型两次调用之间 query 次数没变 ✓）',
+      queriesAtFirstModelCall >= 0 && game.queries.length === queriesAtFirstModelCall,
+      `first=${queriesAtFirstModelCall} now=${game.queries.length}`)
+    check('g. 重试: 重试拿到动作行后**真的下单了** ✓',
+      order !== null && order.action === 'Scout' && order.x === HERE.x && order.y === HERE.y,
+      show(order))
+    check('g. 重试: rpc 成功 ✓', rpc.ok === true, rpc)
+  }
+  {
+    // ★ 两轮都不行 → 必须**失败**，而且**不许有第三次**（错误里要带两轮原因 ✓）
+    modelCalls = 0
+    await call('query', { what: 'fleet' })
+    const qBefore = game.queries.length
+    retryReply = '还是没有动作行，只有推理。'
+    const r = await call('decide', { ship: SHIP, hasGoal: true })
+    retryReply = null
+    const qDuring = game.queries.length - qBefore
+    console.log(`\n[g2] 两轮都无动作行 → ${JSON.stringify(r)}`)
+    check('g2. 重试失败: 仍然**恰好两次**模型调用 ✓（不循环 ✓）', modelCalls === 2, modelCalls)
+    check('g2. 重试失败: 不重取数据 ✓（两次调用之间没取新事实 ✓）',
+      queriesAtFirstModelCall >= 0 && game.queries.length === queriesAtFirstModelCall,
+      `first=${queriesAtFirstModelCall} now=${game.queries.length}`)
+    check('g2. 重试失败: rpc 明确失败，且理由里带两轮信息 ✓',
+      r.ok === false && /retry also failed/.test(String(r.message ?? '')),
+      String(r.message ?? '').slice(0, 200))
+  }
+  // ---- h. ★★ 提示词里必须**看得见多个候选**（主人 2026-10-17 要求 ✓✓）----
+  //   "她应该总是框选几块不同区域，看看情况再做决策" →
+  //   所以提示词里要有**并排的候选表**（不是"一个赢家 + 一句说明" ✗）。
+  {
+    modelCalls = 0
+    prompts.length = 0
+    const { rpc } = await decideOnce(`action=Mine\nx=${HERE.x}\ny=${HERE.y}\nduration=1\nreason=挖矿\n`, [])
+    const seen = prompts.join('\n')
+    console.log(`\n[h] 提示词里的表：${['Trade 候选框', 'Mine 候选框', '并排'].filter((k) => seen.includes(k)).join(' / ') || '(无 ✗)'}`)
+    check('h. 候选表: decide 成功', rpc.ok === true, rpc)
+    check('h. 候选表: ★ 提示词里有 Trade 的**并排候选表**（多个框 ✓✓）',
+      seen.includes('Trade 候选框') && /并排/.test(seen), '')
+    check('h. 候选表: ★ 表里能看到**两种合法形状**（17x17 与 29x11 ✓）',
+      seen.includes('17x17') && seen.includes('29x11'), '')
+    check('h. 候选表: ★ 说明里写明"框的位置可以变"（事实 ✓，不是建议 ✗）',
+      seen.includes('框的位置是') || seen.includes('框可以平移'), '')
+    check('h. 候选表: ★ 说明里写明"x/y 是算好的绝对值、不要再加 offset" ✓',
+      seen.includes('绝对星区坐标') && seen.includes('offset'), '')
+    check('h. 候选表: ★ 没有"照抄第一行"之类的指令 ✗',
+      !/照抄第一行|直接照抄/.test(seen), '')
   }
 } catch (err) {
   console.log(`\n✗ 测试抛异常: ${err?.stack ?? err}`)
