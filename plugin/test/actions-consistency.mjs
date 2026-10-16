@@ -27,6 +27,7 @@ function check(name, ok, detail) {
 
 // ── ① 单一来源：src/index.ts 的 ALL_ACTIONS ✓
 const idx = readFileSync(join(plg, 'src', 'index.ts'), 'utf8')
+const dossier = readFileSync(join(plg, 'src', 'dossier.ts'), 'utf8')
 const m = /export const ALL_ACTIONS = \[([^\]]+)\]/.exec(idx)
 check('src/index.ts 定义了 ALL_ACTIONS', m !== null)
 const allActions = m ? m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean) : []
@@ -144,7 +145,7 @@ check(
 // ── ⑩ 插件侧：「没取到」必须与「没有候选」分开 ✓✓
 check('DecideFacts 有 planFetchFailures', /planFetchFailures\?/.test(idx))
 check('空载荷被当成取失败', /emptyPayload/.test(idx))
-check('提示词里明说"没取到 ≠ 没有候选"', /并不代表那里没有候选/.test(idx))
+check('提示词里明说"没取到 ≠ 没有候选"', /并不代表那里没有候选/.test(dossier))
 check('取失败会重试一次', /重试一次/.test(idx))
 
 // 输出

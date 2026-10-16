@@ -414,12 +414,18 @@ function render(
   planList: Array<{ action: string; plan: DossierPlan }>,
   o: RenderOpts,
   escorts: string[],
+  missing: string[],
 ): string {
   const L: string[] = []
   L.push(...renderShip(d))
   L.push('')
   L.push(...renderRules(goalText, goalOptions, gate))
   L.push('')
+  if (missing.length > 0) {
+    L.push(`★ 本次有 ${missing.length} 个计划**没取到**（取数失败 ✗ —— **并不代表那里没有候选** ✗）：${missing.join('、')}`)
+    L.push('   → 不要据"它没来"就断定"没得挖/没得捞" ✗；可以再等一轮、换个动作、先侦察/换位置，或先做别的 ✓。')
+    L.push('')
+  }
   const acts = renderActions(d)
   if (acts.length > 0) { L.push(...acts); L.push('') }
   // ★ 护航候选：有 Trade 段时才写 ✓（别的动作不吃护航 ✓）
@@ -453,6 +459,19 @@ export function renderDossier(input: DossierInput): DossierResult {
   const budget = Math.max(512, Math.floor(input.budgetBytes ?? DEFAULT_BUDGET))
   const rows0 = Math.max(1, Math.floor(input.rowsPerPlan ?? DEFAULT_ROWS))
   const rootRaw = (input.payload ?? input.fallbackCard ?? {}) as Record<string, unknown>
+  // ★★ "没取到 ≠ 没有候选"（2026-10-17 血案 ✓）：取数失败的计划**不能**被读成"那里没候选" ✗。
+  //   数据由 index.ts 的 `dossierInputOf()` 以 `planFetchFailures`（[{what,why}]）带进来 ✓。
+  const missing: string[] = (() => {
+    const raw = (rootRaw as Record<string, unknown>).planFetchFailures
+    if (!Array.isArray(raw)) return []
+    return raw.map((m) => {
+      if (m !== null && typeof m === 'object') {
+        const w = (m as Record<string, unknown>).what
+        return typeof w === 'string' && w !== '' ? w : '?'
+      }
+      return typeof m === 'string' && m !== '' ? m : '?'
+    })
+  })()
 
   // ★★ 形状归一 ✗✓：`dossier` 载荷把船卡放在 `card` 里 ✓ —— 老形状（直接一张卡）也照吃 ✓。
   const cardSrc = (rootRaw.card !== undefined && rootRaw.card !== null
@@ -475,7 +494,7 @@ export function renderDossier(input: DossierInput): DossierResult {
   const dropped: string[] = []
   const escortCandidates = Array.isArray(input.escortCandidates) ? input.escortCandidates : []
   const draw = (list: Array<{ action: string; plan: DossierPlan }>, o: RenderOpts): string =>
-    render(cardSrc, goalText, goalOptions, gate, list, o, escortCandidates)
+    render(cardSrc, goalText, goalOptions, gate, list, o, escortCandidates, missing)
 
   // ★ **未裁剪的那一份** = 每个计划给**全部**候选、散文与辅助段全开 ✓ ——
   //   它就是 before/after 里的 **before** ✓（不是估算，是**渲染出来量过的** ✓）。

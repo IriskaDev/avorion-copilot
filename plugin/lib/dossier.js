@@ -344,12 +344,17 @@ function renderPlan(action, p, o) {
     }
     return L;
 }
-function render(d, goalText, goalOptions, gate, planList, o, escorts) {
+function render(d, goalText, goalOptions, gate, planList, o, escorts, missing) {
     const L = [];
     L.push(...renderShip(d));
     L.push('');
     L.push(...renderRules(goalText, goalOptions, gate));
     L.push('');
+    if (missing.length > 0) {
+        L.push(`★ 本次有 ${missing.length} 个计划**没取到**（取数失败 ✗ —— **并不代表那里没有候选** ✗）：${missing.join('、')}`);
+        L.push('   → 不要据"它没来"就断定"没得挖/没得捞" ✗；可以再等一轮、换个动作、先侦察/换位置，或先做别的 ✓。');
+        L.push('');
+    }
     const acts = renderActions(d);
     if (acts.length > 0) {
         L.push(...acts);
@@ -385,6 +390,20 @@ export function renderDossier(input) {
     const budget = Math.max(512, Math.floor(input.budgetBytes ?? DEFAULT_BUDGET));
     const rows0 = Math.max(1, Math.floor(input.rowsPerPlan ?? DEFAULT_ROWS));
     const rootRaw = (input.payload ?? input.fallbackCard ?? {});
+    // ★★ "没取到 ≠ 没有候选"（2026-10-17 血案 ✓）：取数失败的计划**不能**被读成"那里没候选" ✗。
+    //   数据由 index.ts 的 `dossierInputOf()` 以 `planFetchFailures`（[{what,why}]）带进来 ✓。
+    const missing = (() => {
+        const raw = rootRaw.planFetchFailures;
+        if (!Array.isArray(raw))
+            return [];
+        return raw.map((m) => {
+            if (m !== null && typeof m === 'object') {
+                const w = m.what;
+                return typeof w === 'string' && w !== '' ? w : '?';
+            }
+            return typeof m === 'string' && m !== '' ? m : '?';
+        });
+    })();
     // ★★ 形状归一 ✗✓：`dossier` 载荷把船卡放在 `card` 里 ✓ —— 老形状（直接一张卡）也照吃 ✓。
     const cardSrc = (rootRaw.card !== undefined && rootRaw.card !== null
         ? rootRaw.card
@@ -403,7 +422,7 @@ export function renderDossier(input) {
     all.sort((a, b) => a.action.localeCompare(b.action));
     const dropped = [];
     const escortCandidates = Array.isArray(input.escortCandidates) ? input.escortCandidates : [];
-    const draw = (list, o) => render(cardSrc, goalText, goalOptions, gate, list, o, escortCandidates);
+    const draw = (list, o) => render(cardSrc, goalText, goalOptions, gate, list, o, escortCandidates, missing);
     // ★ **未裁剪的那一份** = 每个计划给**全部**候选、散文与辅助段全开 ✓ ——
     //   它就是 before/after 里的 **before** ✓（不是估算，是**渲染出来量过的** ✓）。
     //   ★ 它**含记忆块** ✓ —— 预算管的是**整个提示词**（记忆块也在里面 ✓），
