@@ -648,15 +648,17 @@ local function pickSquareSize(templates, requested, fallback)
     return want
 end
 
--- 与 vanilla 一致地夹进星系范围 ✓（areaanalysis.lua:36 `math.min(500, math.max(-499, x))` ✓）
-local function clampCoord(v)
-    return math.min(500, math.max(-499, v))
-end
-
 -- ★★★ 框的**宽 × 高**（不是只有正方形 ✓✓ —— Trade 有三种合法形状，见 legalAreaSizes ✓）
 --   `size` 给成单个数就是正方形（向后兼容 ✓）；给 width/height 就是矩形 ✓。
 --   半宽/半高按原版口径 `floor((n-1)/2)` 算（Mine/Salvage/Sell 15x15 → half=7 ✓、
 --   Scout 21x21 → half=10 ✓、Trade 17x17 → 8 / 29x11 → 14,5 / 11x29 → 5,14 ✓）。
+--
+--   ★★ 这一段必须**定义在 onOrder 之前** ✗✓（Lua 的 local 是词法作用域 ✓）：
+--     `onOrder` 也要按 sizeX/sizeY 建框 ✓（Trade 的矩形框就是靠它 ✓✓）。
+local function clampCoord(v)
+    return math.min(500, math.max(-499, v))
+end
+
 local function buildAreaWH(cx, cy, width, height)
     local w = math.max(1, math.floor(tonumber(width) or 1))
     local h = math.max(1, math.floor(tonumber(height) or w))
