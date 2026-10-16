@@ -442,6 +442,14 @@ interface DecideFacts {
    * "取不到" 与 "确实没有候选" 是**两个完全不同的事实** ✗ —— 必须让模型分得清 ✓。
    */
   planFetchFailures?: Array<{ what: string; why: string }>
+  /**
+   * ★★ 没取到的计划名清单（2026-10-17 补 ✓）。
+   * 存在的理由：`planFetchFailures` 是给人看的长句 ✓，而**每个消费方都自己判空** ✗
+   * —— 这就是这一晚连着崩三次的根（各自判空就会漏 ✓✓）。所以统一成**一个显式事实** ✓：
+   * 消费方只读它 ✓；而且**提示词里必须说清**：
+   * 「本计划**没取到** ✗ ≠ 那里没有候选 ✓」（两者天差地别 ✓✓）。
+   */
+  planMissing?: string[]
 }
 
 /**
@@ -520,6 +528,8 @@ function buildPrompt(f: DecideFacts): string {
     }
     lines.push('  → 所以：不要据"它没来"就断定"没得挖/没得捞" ✗；')
     lines.push('    你可以再等一轮、换个动作、先侦察/换位置、或者先做别的 —— **由你判断** ✓。')
+    // ★★ 同一个事实的**机器可读**版本 ✓（主人在 DSH 里也要能一眼看到 ✓）
+    lines.push(`  （机器可读：facts.planMissing = ${JSON.stringify(f.planMissing ?? [])} ✓）`)
     lines.push('')
   }
   if (f.jobPlans !== undefined && f.jobPlans.length > 0) {
@@ -1075,7 +1085,11 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         )
       }
       if (planned.length > 0) facts.jobPlans = planned
-      if (planFails.length > 0) facts.planFetchFailures = planFails
+      if (planFails.length > 0) {
+        facts.planFetchFailures = planFails
+        // ★ 统一成一个**显式事实** ✓（消费方不再各自判空 ✗ —— 那一晚就是这么连崩三次的 ✓）
+        facts.planMissing = planFails.map((pf) => pf.what)
+      }
 
     // ★★ 船上有货 → 拉一份 Sell 计划 ✓✓（Issue B：被伏击召回后必须先变现才能再贸易 ✓）
     const cardObj = (facts.card ?? {}) as Record<string, unknown>
@@ -1247,7 +1261,13 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     }
     const hint = (facts.tradeRoutes as Record<string, unknown> | undefined)?.orderHint as
       { x?: number; y?: number } | undefined
-    if (hint !== undefined && hint.x !== undefined && hint.y !== undefined) {
+    // ★★ 2026-10-17 实机崩溃真凶 ✓✓：`?.orderHint` 在 JSON 里是 null 时返回 **null** ✗，
+    //   而 `hint !== undefined` 对 null **依然成立** ✓ → 下一句 `hint.x` 抛
+    //   `Cannot read properties of null (reading 'x')` ✓（与日志逐字吻合 ✓，行序也吻合 ✓）。
+    //   ★ 规矩：判**对象**（null + undefined 一起判 ✓），不要只判属性 ✗；
+    //     读不到坐标 = **缺数据** ✓，绝不当 0（那会伪造一个星区 ✓）。
+    if (hint !== undefined && hint !== null &&
+        typeof hint.x === 'number' && typeof hint.y === 'number') {
       memSectors.push(String(hint.x) + "," + String(hint.y))
     }
     const sectorKey = memSectors.length > 0 ? memSectors[memSectors.length - 1] : ""
