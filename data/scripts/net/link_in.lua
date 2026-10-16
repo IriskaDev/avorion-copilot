@@ -798,6 +798,35 @@ local SCAN_FINE_PARENTS = 3         -- 细扫围绕**最好的**几个粗扫框�
 local SCAN_FINE_WINDOW = 5          -- 细扫窗口边长（框心，步长 1 ✓ → 最多 (5*5-1)=24 个新框/父框 ✓）
 local SCAN_FINE_BUDGET_MS = 3000    -- 细扫自己的时间预算片（ms ✓ 软预算 ✓）
 
+-- ★★ 给**单次、无工具**的模型一句"这里是选项、框可以平移"的**事实声明** ✓✓（主人 2026-10-17 要求 ✓）
+--   主人原话：「框选区域的时候，她应该总是框选几块不同区域，看看情况再做决策。」✓
+--   ★★ 措辞红线 ✗：这**不是策略建议** —— 只陈述"字段是什么、哪个数是绝对值、有几种形状" ✗✓，
+--      不说"你该选另一个框 / 该先卖货" ✓（check-mechanics.mjs 会拦后者 ✓）。
+local function moveHint(opts)
+    local o = opts or {}
+    local c = o.coordFields or "x / y"
+    local s = o.shapes or "sizeX x sizeY"
+    return {
+        listIsOptions = true,
+        statement = "响应里给的是**多个**候选框（不是只有一个 ✓），每个框都带它自己的数字 ✓。"
+            .. "★ 框的位置是**可以变的**：同一艘船、同一个星区，把它往不同方向挪几格就是**另一个框** ✓"
+            .. "（Mine/Salvage/Sell/Trade/Scout 的框都**必须包含船** ✓，所以框心只能在船周围"
+            .. " half 格以内平移 ✓；Travel 是 1x1，不要求含船 ✓）。"
+            .. "★ 框选位置不同，落进框里的星区就不同 → 收益与伏击概率也不同 ✓"
+            .. "（实机：同一艘船同一个星区，Salvage 偏移 (0,0) 显示 0.04、(0,-4) 显示 0.02 ✓）。"
+            .. "★ Trade 的框**形状**也能变 ✓（原版只允许 17x17 / 29x11 / 11x29 ✓）。",
+        absoluteCoordinatesNote = "★ 每个候选里的 " .. c .. " 都是**绝对星区坐标** ✓ —— "
+            .. "是**已经算好的框心** ✓，不要再往上加 offset 或船的位置 ✗。"
+            .. "offset 是「相对船所在星区的偏移」✓，它**也在响应里** ✓（两个都给，用哪个都行 ✓）。",
+        shapesNote = "★ 形状信息在 shape / " .. s .. "（例如 29x11）✓；"
+            .. "下单时把 x、y、" .. s .. " 一起原样回传，框就与这个候选**完全一致** ✓。",
+        rankerNote = "★ 榜的次序只是**某个评分器**的排序 ✓ —— 一行一个候选、每个候选都带它自己的"
+            .. "伏击概率与收益/产出（以及 Scout 的未探索数、Sell 的逐货数字 ✓）；"
+            .. "比什么、怎么比、选哪个（或都不选），由你自己判断 ✓（本鱼不替你选 ✗）。",
+        scoreBasis = o.basis or "per-candidate risk vs value",
+    }
+end
+
 local function phaseMs(t0)
     return math.floor((os.clock() - t0) * 1000 + 0.5)
 end
@@ -2132,6 +2161,10 @@ function CopilotLinkIn.tradePlan(player, data)
         scanMs = scanMs,
         scanNote = scanNote,
         orderHint = orderHint,
+        -- ★★ 主人 2026-10-17：「她应该总是框选几块不同区域，看看情况再做决策」→
+        --   每个计划都**显式声明**"这里是多个可选框、框可以平移、Trade 形状可变" ✓✓（只是事实 ✓）
+        moveHint = moveHint({ shapes = "sizeX x sizeY",
+            basis = "每行一个候选框，各自带 attackChance + netProfit* ✓" }),
         scan = {
             step = step, size = size, sizeRequested = reqSize, legalSizes = templates,
             maxAreas = maxAreas, budgetMs = budgetMs, stoppedEarly = stoppedEarly,
@@ -3106,6 +3139,7 @@ function CopilotLinkIn.sellPlan(player, data)
         boxesEvaluated = #scanned,
         scanMs = scanMs,
         scanNote = notes[2],
+        moveHint = moveHint({ basis = "每行一个候选框；Sell 的逐货数字在 perGood 里 ✓" }),
         note = table.concat(notes, "；"),
         cap = card and card.cargoCapacity or nil,
         scan = { size = size, step = step, maxAreas = maxAreas, gate = gate,
@@ -3570,6 +3604,7 @@ function CopilotLinkIn.jobPlan(player, data, action)
         note = table.concat(notes, "；"),
         durationChoices = durs,
         orderHint = orderHint,
+        moveHint = moveHint({ basis = "每行一个候选框，各自带 attackChance + 层级加权产出 ✓" }),
         analysis = {
             sectors = results.sectors, reachable = results.reachable,
             unreachable = results.unreachable,
@@ -3996,6 +4031,7 @@ function CopilotLinkIn.scoutPlan(player, data)
         scanMs = phaseMs(startMs),
         areaRanking = scanned,
         areasScannedList = scanned,
+        moveHint = moveHint({ basis = "每行一个候选框，各自带 unknownCount + revealsOffgrid + attackChance ✓" }),
         -- ★★ 逐框**未探索数**是这次的主口径 ✓✓；原版那个枚举仍然逐个列出来 ✓
         unknownNote = "★ 每个候选框都有 unknownCount / knownCount / totalSectors ✓ —— "
             .. "那是**那个框里**还剩多少未探索星区（数字 ✓，遍历框内每个星区、"
