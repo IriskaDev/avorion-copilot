@@ -102,6 +102,10 @@ return CopilotLinkIn.tradePlan(player, data)
         --   → 必须先 Sell ✓✓（主人的场景 ✓）
         return CopilotLinkIn.sellPlan(player, data)
 
+    elseif what == "scoutPlan" then
+        -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
+        return CopilotLinkIn.scoutPlan(player, data)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -150,10 +154,12 @@ local COMMAND_TYPES = {
     -- ★★ Sell（2026-10-17 加，Issue B ✓✓）：UUID **实读**自原版
     --   data/scripts/commandtype.lua（`Sell = "6bf2d9af-…"` ✓），不是猜的 ✓
     Sell    = "6bf2d9af-255b-4108-a1e1-dc83ace49819",
+    --   · CommandType.Scout = "7619ca9c-3f26-4b89-a4a4-10fd9aca5c60"（commandtype.lua L? ✓ 实读核对 ✓）
+    Scout   = "7619ca9c-3f26-4b89-a4a4-10fd9aca5c60",
 }
 
 -- 各命令的默认区域边长（与 LLM-OPS.md 的调研一致 ✓）
-local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15 }   -- ★ Trade 与 tradePlan 保持一致（29 会换一张商品表 ✗）；Sell 原版 getAreaSize 就是 15x15 ✓
+local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15, Scout = 21 }   -- ★ Scout 原版 getAreaSize = 21x21（scoutcommand.lua:416 ✓ 实读）
 
 -- 排队中的第二阶段：{ {at=时刻, ...}, ... }
 CopilotLinkIn.pendingOrders = CopilotLinkIn.pendingOrders or {}
@@ -2726,4 +2732,154 @@ end
 --   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
 --   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
 --   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
+-- ===========================================================================
+-- scoutPlan —— 勘察（2026-10-16 加 ✓，主人定的战略第一步）
+-- ===========================================================================
+-- 主人的原话：「往地图中心推进…越往中心矿越高级、装备越优秀、也越危险」✓
+--   → 而**没有已探索的星区，就没有可推进的方向** ✓✓ 所以勘察是前提 ✓
+--
+-- 原版核实（scoutcommand.lua，全部实读 ✓）：
+--   · getAreaSize            = {21,21}          :416 ✓
+--   · isShipRequiredInArea   = **true**         :428 ✓ → 区域必须**含船** ✓（与 Mine/Salvage 同 ✓）
+--   · isAreaFixed            = false            :434 ✓
+--   · getConfigurableValues  = 只有 addCaptainsNote(default true)  :446 ✓
+--       ★ **没有 duration / safeMode** ✗ —— 时长是它自己按可达星区数算的 ✓
+--   · getPredictableValues   = attackChance + duration + **revealsOffgrid**  :459 ✓
+--   · calculatePrediction    : duration = area.analysis.reachable / 25（+ Reckless 船长加成）:472 ✓
+--       results: duration :516 / attackChance+attackLocation :517 / **revealsOffgrid** :519-530 ✓
+--
+-- 评分（照主人的目标 ✓，不是拍脑袋 ✗）：
+--   主键 = **revealsOffgrid**（新揭开多少"隐藏质量星区" ✓ = 多少**新地图** ✓）
+--   次键 = **离地图中心 (0,0) 越近越好** ✓（推进方向 ✓）
+--   ★ 若原版没给出可用的 revealsOffgrid → 退到"可达星区数"，并在 scoreBasis **写明** ✓
+function CopilotLinkIn.scoutPlan(player, data)
+    data = data or {}
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "scoutPlan needs data.ship"
+    end
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    local startMs = os.clock()
+    local gate = tonumber(data.maxAttackChance) or 0.10
+    local Card = include("copilotcard")
+    local card = Card.shipCard(player, ship)
+    local sx = card.sector and card.sector.x or nil
+    local sy = card.sector and card.sector.y or nil
+    if sx == nil or sy == nil then
+        return false, "NO_POSITION", "cannot read the ship position"
+    end
+
+    local ctype = COMMAND_TYPES.Scout
+    local okInc = pcall(function() return include("areaanalysis") end)
+    if not okInc or type(run) ~= "function" then
+        return false, "NO_ANALYSIS_RUN", "areaanalysis.run missing"
+    end
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF then return false, "NO_COMMAND_FACTORY", tostring(factory) end
+    local okCmd, command = pcall(function() return factory.makeCommand(ctype) end)
+    if not okCmd or command == nil then return false, "NO_COMMAND", tostring(command) end
+
+    local sizes = legalAreaSizes(command, player, ship)
+    local size = pickSquareSize(sizes, tonumber(data.size), 21)
+    local half = math.floor((size - 1) / 2)
+    local offs = scanOffsets(half, tonumber(data.step) or 4)
+    local maxAreas = math.max(1, math.min(tonumber(data.maxAreas) or 9, #offs))
+
+    local scanned, dropped = {}, 0
+    for _, o in ipairs(offs) do
+        if #scanned >= maxAreas then break end
+        local cx, cy = sx + o.x, sy + o.y
+        local a = buildArea(cx, cy, size)
+        -- ★ 原版要求船在区域内（:428 ✓）→ 不含船的区域**直接丢掉** ✓（不许把船挪走 ✗）
+        if sx >= a.lower.x and sx <= a.upper.x and sy >= a.lower.y and sy <= a.upper.y then
+            local okR, _s, _t, rArea, rRes = pcall(function()
+                return run(player.index, ship, ctype, a, player.index)
+            end)
+            local entry = { area = a, offset = o, centre = { x = cx, y = cy }, distance = math.abs(cx) + math.abs(cy) }
+            if okR and type(rRes) == "table" then
+                rArea.analysis = rRes
+                entry.analysis = {
+                    reachable = rRes.reachable, sectors = rRes.sectors,
+                    unreachable = rRes.unreachable,
+                }
+                local okP, pred = pcall(function()
+                    return command:calculatePrediction(player.index, ship, rArea, { addCaptainsNote = true })
+                end)
+                if okP and type(pred) == "table" then
+                    local revLo, revHi = numericRange(pred.revealsOffgrid)
+                    local durLo, durHi = numericRange(pred.duration)
+                    entry.revealsLow, entry.revealsHigh = revLo, revHi
+                    entry.durationLow, entry.durationHigh = durLo, durHi
+                    entry.attackChance = pred.attackChance and pred.attackChance.value or nil
+                    -- ★ 退路：原版没给 revealsOffgrid → 用"可达星区数"当代理 ✓ 并写明 ✓
+                    if entry.revealsLow == nil then
+                        entry.revealsLow = tonumber(rRes.reachable) or 0
+                        entry.revealsHigh = entry.revealsLow
+                        entry.scoreBasis = "revealsOffgrid unavailable -> reachable sector count (proxy)"
+                    else
+                        entry.scoreBasis = "revealsOffgrid (vanilla, scoutcommand.lua:519-530)"
+                    end
+                else
+                    entry.predictionFailed = tostring(pred)
+                end
+            else
+                entry.error = tostring(rRes)
+            end
+            local ch = chanceOf(entry)
+            entry.attackChanceEffective = ch
+            entry.acceptable = (entry.revealsLow ~= nil) and (ch == nil or ch <= gate)
+            scanned[#scanned + 1] = entry
+        else
+            dropped = dropped + 1
+        end
+    end
+
+    -- 排序：达标优先 → reveals 降序 → 离中心近优先 ✓✓
+    table.sort(scanned, function(x, y)
+        if x.acceptable ~= y.acceptable then return x.acceptable end
+        local rx, ry = x.revealsLow or -1, y.revealsLow or -1
+        if rx ~= ry then return rx > ry end
+        return (x.distance or 0) < (y.distance or 0)
+    end)
+
+    local best = scanned[1]
+    local acceptable = nil
+    for _, e in ipairs(scanned) do
+        if e.acceptable then acceptable = e; break end
+    end
+
+    local out = {
+        ship = ship, action = "Scout",
+        shipSector = { x = sx, y = sy },
+        size = size, areasScanned = #scanned, droppedNoShip = dropped,
+        maxAttackChance = gate,
+        scanMs = math.floor((os.clock() - startMs) * 1000),
+        areaRanking = scanned,
+        areasScannedList = scanned,
+    }
+    if acceptable ~= nil then
+        out.recommendation = acceptable
+        out.area = acceptable.area
+        out.orderHint = {
+            ship = ship, action = "Scout",
+            x = acceptable.centre.x, y = acceptable.centre.y, size = size,
+            addCaptainsNote = true,
+            note = "reveals hidden-mass sectors; the ship must already be inside this area (vanilla isShipRequiredInArea = true)",
+        }
+        out.scoreBasis = acceptable.scoreBasis
+        out.note = "scout recommendation: reveals " .. tostring(acceptable.revealsLow)
+            .. " (basis: " .. tostring(acceptable.scoreBasis) .. "), attackChance "
+            .. tostring(acceptable.attackChanceEffective) .. ", " .. tostring(acceptable.distance) .. " from map centre"
+    else
+        out.recommendation = nil
+        out.scoreBasis = best and best.scoreBasis or "n/a"
+        out.riskWarning = "no scouting area passed the risk gate (<= " .. tostring(gate) .. ")"
+        out.note = "no acceptable scouting area — do not order; consider escorts or another region"
+    end
+    CopilotRpc.trace(string.format("scoutPlan %s 扫 %d 区 / %dms 推荐=%s",
+        ship, #scanned, out.scanMs, acceptable and "有" or "无"))
+    return true, out
+end
+
 return CopilotLinkIn

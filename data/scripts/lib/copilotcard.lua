@@ -307,7 +307,12 @@ function M.shipCard(player, name)
             note = "jump to one target sector; destination must be at least 2 jumps away",
         },
     }
-    card.actionNames = { "Mine", "Salvage", "Trade", "Travel" }
+    -- ★ 勘察（主人定的战略前提）：没有已探索星区，就没有往里推进的方向 ✓✓
+    --   原版核实（scoutcommand.lua）：区域 21x21（:416）、船必须在区域内（:428）、
+    --   配置只有 addCaptainsNote（:446，没有 duration/safeMode）、
+    --   产出 = revealsOffgrid（新揭开的隐藏质量星区，:519-530）+ attackChance + duration
+    card.scoutNote = 'Scout reveals hidden-mass sectors; the game gets better AND more dangerous toward the map centre. Area 21x21, ship must already be INSIDE it; the only config is addCaptainsNote.'
+    card.actionNames = { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout" }
 
     if next(probeNotes) ~= nil then card.probe = probeNotes end
     return card
