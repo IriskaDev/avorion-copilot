@@ -30,8 +30,13 @@ import { retrieve as retrieveMemory, rememberStart, rememberOutcome, } from './m
 import { RpcPeer } from './rpc.js';
 import { registerFleetTools, ask } from './tools.js';
 import { loadSystemPrompt, setPromptNotifier, describePromptPaths } from './promptfile.js';
+// ★★ 投递阶梯（Phase A/B，2026-10-17 ✓）：目标会话 = **主人自己正在用的那个会话**
+import { dispatchDecision, BUDGETS, makeTaskId, } from './dispatch.js';
+import { getCommanderSessionId, setCommanderSession, renewLease, getState as getCommanderState, isLeaseFresh, setCommanderNotifier, COMMANDER_FILE, } from './commander.js';
 // ★ 把提示词相关通知接到实时流水 ✓（live 是函数声明，已提升 ✓）
 setPromptNotifier(live);
+// ★ 投递目标（会话）的变化也进流水 ✓（主人一眼看到"现在投给谁" ✓）
+setCommanderNotifier(live);
 // 启动时把"该改哪个文件"写进流水一次 ✓
 for (const line of describePromptPaths())
     live(line);
@@ -108,6 +113,75 @@ export function live(msg) {
  *   要真正完整，需换成返回完整 CoT 的模型 ✓。
  */
 const rawFile = path.join(os.homedir(), 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'decisions.raw.log');
+const sessionListeners = new Map();
+/** 把一个监听器挂到某个会话上 ✓；返回退订函数 ✓ */
+function subscribeSession(sessionId, fn) {
+    let set = sessionListeners.get(sessionId);
+    if (set === undefined) {
+        set = new Set();
+        sessionListeners.set(sessionId, set);
+    }
+    set.add(fn);
+    return () => {
+        const cur = sessionListeners.get(sessionId);
+        if (cur === undefined)
+            return;
+        cur.delete(fn);
+        if (cur.size === 0)
+            sessionListeners.delete(sessionId);
+    };
+}
+/** 把一条 session/event 派发给等这个会话的人 ✓（没有等待者就静默丢掉 ✓ —— 主人自己的聊天不该被我们插嘴 ✓） */
+function dispatchSessionEvent(session, event) {
+    const id = (session !== null && typeof session === 'object' && typeof session.id === 'string')
+        ? session.id
+        : '';
+    if (id === '')
+        return;
+    const set = sessionListeners.get(id);
+    if (set === undefined)
+        return;
+    for (const fn of [...set]) {
+        try {
+            fn(event);
+        }
+        catch { /* 单个监听器出错不许影响别人 ✓ */ }
+    }
+}
+// ---------------------------------------------------------------------------
+// ★★ 舰队级串行 + 下单幂等（2026-10-17 ✓）
+//
+// 铁律（TAKEOVER.md）：**同一时刻只能有一个决策者** ✓。一个会话同一刻只能有一个 turn ✓，
+// 所以"投递目标会话"这一级用一把**单一**锁 ✓：抢不到就**根本不投** ✓ → 直接落单发 ✓
+// （不排队 ✗ —— 排队只会让这一轮白等到超时，而单发本来就是对的答案 ✓）。
+// ---------------------------------------------------------------------------
+let sessionInFlight = false;
+/**
+ * 取不到 = 已经有一条决策在用那个会话 ✓（本次调用直接落单发 ✓）。
+ * ★ 这只是**兜底**：主路径上"会话正忙"时我们压根不会走到这里 ✓（见 dispatch.ts ✓）。
+ */
+const fleetSessionLock = {
+    tryClaim() {
+        if (sessionInFlight)
+            return undefined;
+        sessionInFlight = true;
+        let released = false;
+        return () => {
+            if (released)
+                return;
+            released = true;
+            sessionInFlight = false;
+        };
+    },
+};
+/**
+ * ★ 下单幂等闸：同一艘船同一刻只允许一条在飞的 `order` ✓。
+ *
+ * 为什么需要（诚实说明）：`ask()` 有超时 ✓，而**超时之后那条 RPC 其实还在飞** ✓ ——
+ * 于是"超时 → 走下一级 → 又下一条"就可能变成**同一艘船两条命令** ✗✓，
+ * 正是 TAKEOVER.md 铁律要防的那种事 ✓。这道闸让它不可能发生 ✓。
+ */
+const ordersInFlight = new Set();
 let rawKind = null;
 /** 收到一个 delta → 立刻追加（不做任何组织/截断 ✓✓） */
 export function liveRaw(kind, delta) {
@@ -844,6 +918,18 @@ export function pickRendezvousEscort(ships, actionShip, pilotedName, targetSecto
 const RENDEZVOUS_MEMO_MS = 30 * 60 * 1000;
 const rendezvousMemo = new Map();
 // ---------------------------------------------------------------------------
+// 小数：单发路径被判成"没有动作行"时要重试一次 ✓（2026-10-17 ✓）
+//
+// 实机事故（`decisions.live.log` 16:18:10 逐字）：她想太久、**正文一个动作行都没吐** ✗
+//   （`BAD_MODEL_REPLY ... saw: no action line`）→ 于是整轮决策被丢弃 ✓、货也没卖成 ✓✓。
+// 规矩：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
+//   ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗（慢且游戏状态可能已变 ✓）。
+// ---------------------------------------------------------------------------
+/** 单发路径的"重试一次"补语（进提示词末尾 ✓） */
+const SINGLE_SHOT_RETRY_HINT = '\n\n★ 你上一次**没有输出任何 action 行**（想太久、额度烧光 ✗）。\n'
+    + '现在**只输出答案行** ✓: action 必须在**第一行** ✓；**不要**写任何推理或解释 ✗；'
+    + 'reason 可以留空 ✓。一行一个字段，从 action= 开始。';
+// ---------------------------------------------------------------------------
 // 插件入口：把 RPC 接起来
 // ---------------------------------------------------------------------------
 export function apply(ctx, config = {}) {
@@ -854,17 +940,143 @@ export function apply(ctx, config = {}) {
         maxTokens: config.maxTokens ?? DEFAULTS.maxTokens,
         temperature: config.temperature ?? DEFAULTS.temperature,
     };
+    /** ★ Phase B（影子）是**默认**：先零风险地量她答得怎么样，再决定要不要让她说了算 ✓ */
+    const decideMode = config.decideMode === 'live' ? 'live' : 'shadow';
+    const steerWhenBusy = config.steerWhenBusy === true;
+    const retrySessionOnce = config.retrySessionOnce === true;
+    // ★ 投递目标：① 显式 config（主人写在 profile 里 ✓）→ ② 落盘的选择（fleet_commander 指定过 ✓）
+    //   都没有 = 不投递 ✓（= 今天逐字不变 ✓）。**绝不猜** ✗（猜错就塞进别人的聊天里了 ✓）。
+    if (typeof config.commanderSession === 'string' && config.commanderSession.trim() !== '') {
+        setCommanderSession(config.commanderSession);
+    }
+    const targetSession = () => getCommanderSessionId();
     // 双写：控制台（人看 ✓）+ 文件（agent 读 ✓）
     const logger = {
         info: (m) => { ctx.logger?.info?.(m); fileLog(m); },
         warn: (m) => { ctx.logger?.warn?.(m); fileLog('WARN ' + m); },
     };
     fileLog(`=== 插件启动：监听 ${cfg.port}（模型 ${cfg.provider}/${cfg.model}）===`);
+    // ---- 会话那一级：拿服务 + 装**唯一一个** session/event 监听器 --------------
+    // ★ 不经 `inject`（inject 里多一项就要重启 DSH 才生效 ✗）—— 拿不到就是"不投递"，
+    //   单发路径逐字不受影响 ✓✓。
+    const agents = ctx.get?.('agents');
+    if (agents !== undefined && ctx.on !== undefined) {
+        ctx.on('session/event', (session, event) => dispatchSessionEvent(session, event));
+        live(`  ├ 会话投递：已就绪（模式=${decideMode}${decideMode === 'shadow' ? '（影子：只观测、不采纳 ✓）' : '（她的答案算数 ✓）'}）`);
+    }
+    else {
+        live('  ├ 会话投递：**不可用**（拿不到 ctx.agents / ctx.on ✗）→ 决策全部走单发（今天的行为 ✓）');
+    }
+    // 启动时把"现在投给谁"写进流水一次 ✓（主人一眼看到 ✓）
+    const startState = getCommanderState();
+    live(startState.session === null
+        ? '  ├ 投递目标：**未指定** ✓ → 决策走单发（用 fleet_commander 指定主人自己的会话即可启用投递 ✓）'
+        : `  ├ 投递目标：会话 ${startState.session} ✓（租约 ${startState.leasedUntil === null ? '未开始' : new Date(startState.leasedUntil).toISOString()}）`);
     const peer = new RpcPeer({
         port: cfg.port,
         logger,
         defaultTimeoutSec: 5,
     });
+    /**
+     * ★★ 会话页顶部的**开关**用的 HTTP 路由（2026-10-17，主人要的形状 ✓）
+     *
+     * 主人的原话：「在会话上方做个开关，打开就切到对应会话，不再投递到之前会话。」
+     * 客户端的那个开关（`lib/client.js` ✓）就靠这条路由读写"现在谁是投递目标" ✓：
+     *   GET  /avorion-copilot/api/commander            → 当前状态（含"是不是这个会话" ✓）
+     *   POST /avorion-copilot/api/commander/toggle     → 原子切换 ✓（打开=我；再点=关 ✓）
+     *   POST /avorion-copilot/api/commander/clear      → 清除 ✓
+     *
+     * ★ 「打开就**不再投递到之前会话**」是**原子**的 ✓：`setCommanderSession` 只保存一个 id ✓，
+     *   所以换成 X 的那一刻，旧会话就已经不在投递路径上了 ✓✓（不是"两个都投"✗）。
+     *   与 TAKEOVER.md 的"同一时刻只有一个决策者"完全一致 ✓。
+     *
+     * ★ 拿不到 webserver（比如 headless / 没有该服务）→ **静默跳过** ✓：
+     *   开关是**便利**，不是功能本体 ✗ —— 没有它也照样能用 `fleet_commander` 工具指定 ✓✓。
+     */
+    try {
+        const webServer = ctx.get?.('webServer');
+        if (webServer !== undefined && typeof webServer.register === 'function') {
+            const COMMANDER_API = '/avorion-copilot/api';
+            const snapshot = (mine) => {
+                const st = getCommanderState();
+                return {
+                    commander: st.session,
+                    isMine: st.session !== null && st.session === mine,
+                    leasedUntil: st.leasedUntil,
+                    leaseFresh: isLeaseFresh(),
+                    mode: decideMode,
+                    sessionLive: st.session === null ? false : agents?.get(st.session) !== undefined,
+                };
+            };
+            const json = (res, code, body) => {
+                res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify(body));
+            };
+            const readBody = async (req) => {
+                try {
+                    const chunks = [];
+                    for await (const c of req)
+                        chunks.push(Buffer.from(c));
+                    const raw = Buffer.concat(chunks).toString('utf8');
+                    return raw.trim() === '' ? {} : JSON.parse(raw);
+                }
+                catch {
+                    return {};
+                }
+            };
+            ctx.effect(() => {
+                // ★ 保留 register 的返回值不等于把它交给 effect ✓（effect 要 void | cleanup ✓）；
+                //   真要清理就自己 return 一个 ✓（拿不到就不 return ✓）。
+                const handle = webServer.register({
+                    kind: 'prefix',
+                    path: COMMANDER_API,
+                    handler: async (req, res) => {
+                        try {
+                            const pathname = new URL(req.url ?? '/', 'http://localhost').pathname
+                                .replace(/^\/avorion-copilot\/api/, '') || '/';
+                            const method = String(req.method ?? 'GET').toUpperCase();
+                            const body = method === 'POST' ? await readBody(req) : {};
+                            const mine = typeof body.session === 'string' && body.session.trim() !== '' ? body.session.trim() : null;
+                            if (method === 'GET' && (pathname === '/commander' || pathname === '/')) {
+                                return json(res, 200, { ok: true, ...snapshot(mine) });
+                            }
+                            if (method === 'POST' && pathname === '/commander/toggle') {
+                                if (mine === null)
+                                    return json(res, 400, { ok: false, error: 'toggle needs the session id' });
+                                const was = getCommanderState().session;
+                                // ★ 点开一个已经是目标的会话 = 关掉它（开关的语义 ✓）；否则 = 切换到这个会话 ✓
+                                const now = was === mine ? null : mine;
+                                setCommanderSession(now);
+                                live(`  ├ [开关] 会话 ${mine} 把投递目标${now === null ? '**关掉**了' : `切到了自己`}` +
+                                    `${was !== null && was !== now ? `（原目标 ${was} 立刻不再收到任务 ✓）` : ''}`);
+                                return json(res, 200, { ok: true, ...snapshot(mine), previous: was });
+                            }
+                            if (method === 'POST' && pathname === '/commander/clear') {
+                                const was = getCommanderState().session;
+                                setCommanderSession(null);
+                                live(`  ├ [开关] 投递目标已清除${was !== null ? `（原目标 ${was}）` : ''} ✓ → 决策回到单发 ✓`);
+                                return json(res, 200, { ok: true, ...snapshot(mine), previous: was });
+                            }
+                            return json(res, 404, { ok: false, error: `no such route: ${method} ${pathname}` });
+                        }
+                        catch (error) {
+                            return json(res, 500, { ok: false, error: String(error) });
+                        }
+                    },
+                });
+                void handle;
+                live(`  ├ 会话开关：HTTP 路由已挂（${COMMANDER_API}/commander ✓ —— 客户端开关靠它 ✓）`);
+                return undefined;
+            }, 'avorion-copilot:commander-api');
+        }
+        else {
+            live('  ├ 会话开关：拿不到 webServer → **没有 UI 开关** ✗；' +
+                '请改用 fleet_commander 工具显式指定（功能本体不依赖开关 ✓）');
+        }
+    }
+    catch (error) {
+        live(`  ⚠ 会话开关：挂路由失败（${String(error)}）—— 功能本体不受影响 ✓（用 fleet_commander 工具 ✓）`);
+    }
     // ---- 我提供的功能（游戏可以调我）------------------------------------------
     peer.handle('hello', (data) => {
         // 协议 §6/§8：两端各发一次 hello，各自声明 caps ✓
@@ -1237,6 +1449,7 @@ export function apply(ctx, config = {}) {
                             `${Math.round(RENDEZVOUS_MEMO_MS / 60000)} 分钟内不重复派，本轮不出海`;
                     live(`  ├ rendezvous 已记录（${mins} 分钟前，${prev.ok ? '在途' : '被拒'}）→ 不重复派 ✓`);
                     const answer = { action: 'None', params: { escort: prev.escort, x: prev.x, y: prev.y }, reason };
+                    rec.source = 'rendezvous';
                     return [true, answer];
                 }
                 const pick = pickRendezvousEscort(fleetShips, ship, pilotedName, target);
@@ -1267,6 +1480,7 @@ export function apply(ctx, config = {}) {
                         ? `已派护航 ${pick.name} 前往本星系 (${target.x},${target.y})，本轮不下单，等它到位后下一轮再出海`
                         : `想派护航 ${pick.name} 前往 (${target.x},${target.y})，但被游戏拒绝（${why}），本轮不出海`;
                     const answer = { action: 'None', params: { escort: pick.name, x: target.x, y: target.y }, reason };
+                    rec.source = 'rendezvous';
                     logger.info(`avorion-copilot: ${ship} 护航 rendezvous → ${pick.name} Travel (${target.x},${target.y}) accepted=${String(ord.ok)}`);
                     return [true, answer];
                 }
@@ -1321,82 +1535,227 @@ export function apply(ctx, config = {}) {
         live("  ├ 载入记忆：" + mem.counts + (mem.compressed > 0 ? "（压缩 " + mem.compressed + " 条）" : ""));
         const memoryBlock = "【你自己的记忆 —— 仅供参考 ✓；若与下面新算出的游戏数据冲突，以游戏数据为准 ✗】"
             + String.fromCharCode(10) + mem.text;
-        let result;
-        try {
-            rawKind = null; // 每次调用重新分段 ✓
-            liveRaw('reasoning', '');
-            result = await askModel(ctx, cfg, buildPrompt(facts), liveRaw, [memoryBlock]);
-        }
-        catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn(`avorion-copilot: 模型调用异常 ${message}`);
-            return [false, 'MODEL_ERROR', message];
-        }
-        if (result.failure !== undefined) {
-            logger.warn(`avorion-copilot: 模型调用失败 ${result.failure}`);
-            return [false, 'MODEL_FAILED', result.failure];
-        }
-        // ★ 记录③"推理"（含思维链 ✓✓ —— 这是主人最想看的一段 ✓）
-        rec.modelText = result.text;
-        rec.reasoning = result.reasoning;
-        rec.truncated = result.truncated;
-        live(`  ├ 模型回复 正文 ${result.text.length} 字 / 思维链 ${result.reasoning.length} 字${result.truncated ? "  ⚠️被maxTokens截断" : ""}`);
-        for (const line of result.reasoning.trim().split('\n')) { // ★ 不再截断（主人要看原始全过程 ✓）
-            if (line.trim() !== '')
-                live(`  │ ${line.trim()}`); // ★ 思维链**逐行**进流水 ✓✓
-        }
-        let decision = parseDecision(result.text);
-        let answer = toAnswer(decision, facts, result.text);
-        if (typeof answer === 'string') {
-            // ★★ 重试一次（2026-10-17 ✓✓）：实测她**想太久、正文一个动作行都没吐** ✗
-            //   （decisions.live.log 16:18:10 `BAD_MODEL_REPLY ... saw: no action line` ✓）——
-            //   于是整轮决策被丢弃 ✓、货也没卖成 ✓✓。
-            //   规矩：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
-            //        ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗（慢且游戏状态可能已变 ✓）、
-            //        两次都不行就照旧失败 ✓ —— **绝不替她编一个动作** ✗✓。
-            const answerOnly = "\n\n★ 你上一次**没有输出任何 action 行**（想太久、额度烧光 ✗）。\n"
-                + "现在**只输出答案行** ✓: action 必须在**第一行** ✓；**不要**写任何推理或解释 ✗；"
-                + "reason 可以留空 ✓。一行一个字段，从 action= 开始。";
-            live(`  ├ ⚠ 首轮没有可用动作行（${answer}）→ **重试一次**：同一批事实，只要求答案行 ✓`);
-            rawKind = null;
-            liveRaw('reasoning', '');
-            let retryResult;
+        // ★★★ 决策来源：**先试着投给主人的会话**，不行才自己单发 ✓✓
+        //   （范围见 commander.ts 的文件头：没有分身、没有新建会话 ✓；
+        //     没指定会话 / 会话在忙 / 超时 → 逐字回到今天那条单发 ✓✓）
+        /**
+         * 今天那条路的**全部既有语义**都留在里面 ✓（同一份 `buildPrompt` ✓、同一条重试 ✓、
+         * 同一套 `parseDecision`/`toAnswer` ✓）—— 只是**加了一道硬期限**（今天没有 ✗ 见设计书 §3.4 ✓）。
+         * `hint` 非空 = 任务层要的那次"只要答案行"的重试 ✓。
+         */
+        const runSingleShot = async (hint) => {
+            const attempt = { text: '', reasoning: '', truncated: false };
             try {
-                retryResult = await askModel(ctx, cfg, buildPrompt(facts) + answerOnly, liveRaw);
+                rawKind = null; // 每次调用重新分段 ✓
+                liveRaw('reasoning', '');
+                const r = await askModel(ctx, cfg, buildPrompt(facts) + (hint ?? ''), liveRaw, hint === undefined ? [memoryBlock] : undefined);
+                attempt.text = r.text;
+                attempt.reasoning = r.reasoning;
+                attempt.truncated = r.truncated;
+                attempt.failure = r.failure;
+                if (r.failure !== undefined)
+                    return attempt;
+                // ★ 记录③"推理"（含思维链 ✓✓ —— 这是主人最想看的一段 ✓）
+                rec.modelText = hint === undefined ? r.text : rec.modelText;
+                rec.reasoning = hint === undefined
+                    ? r.reasoning
+                    : (rec.reasoning ?? '') + String.fromCharCode(10) + '--- 重试（仅答案行）---'
+                        + String.fromCharCode(10) + r.reasoning;
+                rec.truncated = r.truncated;
+                live(`  ${hint === undefined ? '├' : '├ 重试回复 '}模型回复 正文 ${r.text.length} 字 / 思维链 ${r.reasoning.length} 字${r.truncated ? '  ⚠️被maxTokens截断' : ''}`);
+                for (const line of r.reasoning.trim().split('\n')) { // ★ 不截断（主人要看原始全过程 ✓）
+                    if (line.trim() !== '')
+                        live(`  │ ${line.trim()}`); // ★ 思维链**逐行**进流水 ✓✓
+                }
+                if (hint === undefined) {
+                    // ★ 只有"**完全没有动作行**"这一种才值得再问一次 ✓（见上面的小段注释 ✓）。
+                    //   ★ 判据用**结构化事实**（`decision.action === undefined` ✓），
+                    //     不拿 `toAnswer` 那句话去 `includes()` 匹配 ✗ —— 那句文案改一个字，
+                    //     重试就静默失效 ✓（本仓库"靠字符串匹配同一个事实"踩过不止一次 ✓）。
+                    const decision = parseDecision(r.text);
+                    if (decision.action === undefined)
+                        attempt.retryHint = SINGLE_SHOT_RETRY_HINT;
+                    void decision;
+                }
             }
             catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
-                logger.warn(`avorion-copilot: 重试时模型调用异常 ${message}`);
-                return [false, 'MODEL_ERROR', message];
+                attempt.failure = `EXCEPTION: ${error instanceof Error ? error.message : String(error)}`;
             }
-            if (retryResult.failure !== undefined) {
-                logger.warn(`avorion-copilot: 重试模型调用失败 ${retryResult.failure}`);
-                return [false, 'MODEL_FAILED', retryResult.failure];
+            return attempt;
+        };
+        /** 单发那一路的中止出口（把"为什么"原样报给游戏 ✓） */
+        const failSingleShot = (why, last) => {
+            // ★ 重试那一路会把"两轮都不行"写进 `why` ✓ —— 那比只报最后一轮有用得多 ✓（见 singleShotWithRetry ✓）
+            const detail = last?.why ?? why;
+            logger.warn(`avorion-copilot: 单发决策失败 ${detail}`);
+            const truncated = last?.truncated === true;
+            return {
+                ok: false,
+                code: detail.startsWith('模型失败') || detail.includes('EXCEPTION') ? 'MODEL_FAILED' : 'BAD_MODEL_REPLY',
+                message: detail,
+                why: detail,
+                text: last?.text,
+            };
+        };
+        /** 把(可能重试过的)单发回复解析成结论 ✓（**解析器与今天逐字相同** ✓） */
+        const answerFromText = (r) => toAnswer(parseDecision(r.text), facts, r.text);
+        /**
+         * ★★ 单发路径的"**没有动作行 → 再问一次**"（把 2026-10-17 那条既有行为守住 ✓）。
+         *
+         * 为什么必须有这个包装 ✗✓（这是本鱼自己踩的坑）：重试原来同时活在**两处** ✓ ——
+         *   index.ts 里一份 ✓、投递阶梯里一份 ✓。重构时只把阶梯那份做对了 ✗，
+         *   于是"**没有指定会话**"这条**与今天逐字相同**的路径**静默丢掉了重试** ✗✓，
+         *   而它正是实机事故（她想太久、正文一个动作行都没吐 ✓）发生时**唯一会走**的那条 ✓。
+         *   `test/order-payload.mjs` 的 g/g2 用例当场抓住了它 ✓✓。
+         *
+         * 规矩（与实机一致 ✓）：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
+         *   ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗ —— 两次都不行就照旧失败 ✓，
+         *   **绝不替她编一个动作** ✗✓。
+         */
+        const singleShotWithRetry = async () => {
+            const first = await runSingleShot();
+            if (first.failure !== undefined)
+                return first;
+            const firstVerdict = answerFromText(first);
+            try {
             }
-            rec.modelText = retryResult.text;
-            rec.reasoning = result.reasoning + String.fromCharCode(10) + '--- 重试（仅答案行）---'
-                + String.fromCharCode(10) + retryResult.reasoning;
-            rec.truncated = retryResult.truncated;
-            live(`  ├ 重试回复 正文 ${retryResult.text.length} 字 / 思维链 ${retryResult.reasoning.length} 字${retryResult.truncated ? '  ⚠️被maxTokens截断' : ''}`);
-            decision = parseDecision(retryResult.text);
-            answer = toAnswer(decision, facts, retryResult.text);
-            if (typeof answer === 'string') {
-                logger.warn(`avorion-copilot: 重试后仍无法解析 —— ${answer}`);
-                return [false, 'BAD_MODEL_REPLY',
-                    `first attempt had no action line (text ${result.text.length} chars, truncated=${result.truncated}); retry also failed: ${answer}`];
+            catch { /* ignore */ }
+            if (typeof firstVerdict !== 'string')
+                return first;
+            if (first.retryHint === undefined)
+                return first;
+            live('  ├ ⚠ 首轮没有可用动作行 → **重试一次**：同一批事实，只要求答案行 ✓');
+            const retry = await runSingleShot(first.retryHint);
+            if (retry.failure !== undefined)
+                return retry;
+            const retryVerdict = answerFromText(retry);
+            if (typeof retryVerdict === 'string') {
+                // ★ 两轮都要留在理由里 ✓（要看的是"为什么两次都没成" ✓；只报最后一轮会把第一轮的
+                //   信息抹掉 ✗ —— 而那正是排查时最需要的一条 ✓）。措辞与既有实机事故记录一致 ✓。
+                retry.why = `first attempt had no usable action line (text ${first.text.length} chars, `
+                    + `truncated=${first.truncated}); retry also failed: ${retryVerdict}`;
+                return retry;
             }
             live('  ├ ✔ 重试成功（拿到动作行 ✓）');
+            return retry;
+        };
+        // ★ 会话那一级的两条注入点（投递 + 收答案 ✓）：
+        //   · `followup` 用**现成的** `createUserMessage` + `source.kind='plugin'` ✓
+        //     —— 所以她在会话里看到的是"插件投递"，不是主人在说话 ✓；
+        //   · `subscribe` 走上面那个**唯一**的 session/event 监听器 ✓。
+        const deliverToSession = (agent, block, _req) => {
+            agent.followup(createUserMessage({
+                content: [{ type: 'text', text: block }],
+                source: { kind: 'plugin', plugin: '@dsh-external/dsh-avorion-copilot' },
+            }));
+            // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）
+            try {
+                renewLease();
+            }
+            catch { /* 续租失败不影响本轮 ✓ */ }
+        };
+        let outcome;
+        if (agents === undefined || ctx.on === undefined) {
+            // 拿不到会话服务 → 与今天完全一致 ✓（不绕远、不报错 ✓；**含那条重试** ✓）
+            const r = await singleShotWithRetry();
+            if (r.failure !== undefined) {
+                const fail = failSingleShot(`模型失败 ${r.failure}`, r);
+                rec.source = 'none';
+                return [false, fail.code, fail.message];
+            }
+            const a = answerFromText(r);
+            outcome = typeof a === 'string'
+                // ★ 失败理由用**我们记下的详版**（两轮都写进去了 ✓），不要用 `a` 那句单轮短句 ✗✓
+                ? { action: 'None', params: {}, reason: r.why ?? a, source: 'none', text: r.text, truncated: r.truncated }
+                : { action: a.action, params: a.params, reason: a.reason, source: 'single-shot', text: r.text, truncated: r.truncated };
         }
+        else {
+            const target = targetSession();
+            live(`  ├ 决策来源：${target === undefined
+                ? '**只走单发**（未指定投递目标会话 ✓）'
+                : `优先投给会话 ${target}（模式=${decideMode}；忙时${steerWhenBusy ? '会插队' : '绝不打扰主人 ✗'}）`}`);
+            outcome = await dispatchDecision({
+                registry: agents,
+                commanderId: target,
+                subscribe: subscribeSession,
+                followup: (agent, block) => deliverToSession(agent, block),
+                singleShot: runSingleShot,
+                allowedActions: facts.goalOptions.length > 0 ? facts.goalOptions : [...ALL_ACTIONS],
+                mode: decideMode,
+                steerWhenBusy,
+                retrySessionOnce,
+                lock: fleetSessionLock,
+                log: live,
+            }, {
+                taskId: makeTaskId(),
+                ship,
+                goalText: facts.goalText,
+                goalOptions: facts.goalOptions,
+                card: facts.card,
+                planText: buildPrompt(facts),
+                deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
+            });
+        }
+        // ★ 三条出口：① 她的答案算数 ② 单发的答案算数 ③ 两条都没有（明说的 None ✓）
+        if (outcome.source === 'none') {
+            // 单发那一路的细节要原样报给游戏 ✓（今天的行为：MODEL_FAILED / BAD_MODEL_REPLY ✓）
+            const fail = failSingleShot(outcome.reason ?? '没有可用的决策', undefined);
+            // ★ 影子模式下会话那一级**也**没成 —— 这本身就是主人要看的结论 ✓
+            rec.source = 'none';
+            rec.session = outcome.session;
+            logger.warn(`avorion-copilot: ${ship} 没有任何可用的决策（${fail.message}）`);
+            return [false, fail.code, fail.message];
+        }
+        if (outcome.source === 'single-shot' || outcome.source === 'shadow') {
+            const last = { text: outcome.text ?? '', reasoning: '', truncated: outcome.truncated === true };
+            const a = answerFromText(last);
+            if (typeof a === 'string') {
+                const fail = failSingleShot(a, last);
+                rec.source = outcome.source;
+                rec.session = outcome.session;
+                rec.agreement = outcome.agreement;
+                return [false, fail.code, fail.message];
+            }
+            outcome = { ...outcome, action: a.action, params: a.params, reason: a.reason };
+        }
+        // ★ 会话的答案直接可用 ✓（它已经在 dispatch 里按同一套契约校验过了 ✓）；'None' 也合法 ✓
+        const answer = {
+            action: outcome.action,
+            params: outcome.params,
+            reason: outcome.reason,
+            raw: outcome.text,
+        };
         // ★ 记录④"结论"（先记下，⑤ 结果随后补 ✓）
+        rec.source = outcome.source;
+        rec.session = outcome.session;
+        rec.agreement = outcome.agreement;
         rec.answer = answer;
-        live(`  ├ 决策 ${answer.action} ${JSON.stringify(answer.params)}  (${answer.reason ?? ''})`);
+        live(`  ├ 决策 [${outcome.source}] ${answer.action} ${JSON.stringify(answer.params)}  (${answer.reason ?? ''})`);
         logger.info(`avorion-copilot: ${ship} -> ${answer.action} ${JSON.stringify(answer.params)}` +
+            `  来源=${outcome.source}` +
             (answer.reason !== undefined ? `  (${answer.reason})` : '') +
-            (result.truncated ? '  [被 maxTokens 截断]' : '') +
-            (result.reasoning.length > 0 ? `\n--- 思维链 ---\n${result.reasoning.trim()}` : ''));
+            (outcome.truncated === true ? '  [被 maxTokens 截断]' : '') +
+            ((rec.reasoning ?? '').length > 0 ? `\n--- 思维链 ---\n${(rec.reasoning ?? '').trim()}` : ''));
         // ★ 真下单：DSH 主动调游戏的 order ✓✓（游戏侧会走两段式 ✓）
         if (answer.action !== 'None') {
-            const ord = await ask(peer, 'order', { ship, action: answer.action, ...answer.params }, 30);
+            // ★★ 幂等闸（2026-10-17 ✓）：同一艘船同一刻只允许一条在飞的 order ✓。
+            //   为什么必须有：`ask()` 会超时，而**超时之后那条 RPC 其实还在飞** ✓ ——
+            //   于是"超时 → 落下一级 → 再下单"就可能变成**同一艘船两条命令** ✗✓，
+            //   正是 TAKEOVER.md 铁律要防的事 ✓。这道闸让它不可能发生 ✓。
+            if (ordersInFlight.has(ship)) {
+                logger.warn(`avorion-copilot: ${ship} 已有一条 order 在飞 → **丢掉这一条** ✗（防同一艘船两条矛盾命令 ✓）`);
+                live(`  └ ⚠ ${ship} 已有一条 order 在飞 → 丢掉本条（幂等闸 ✓）`);
+                rec.orderResult = { dropped: 'another order for this ship is already in flight' };
+                return [true, answer];
+            }
+            ordersInFlight.add(ship);
+            let ord;
+            try {
+                ord = await ask(peer, 'order', { ship, action: answer.action, ...answer.params }, 30);
+            }
+            finally {
+                ordersInFlight.delete(ship);
+            }
             // ★ 记录⑤"结果"（下单回执 ✓）
             rec.orderResult = ord.ok ? ord.data : { failed: ord.why ?? 'unknown' };
             if (ord.ok) {
@@ -1455,7 +1814,37 @@ export function apply(ctx, config = {}) {
         };
     }, 'dsh-avorion-copilot:rpc');
     // ★ 把游戏能力暴露成 DSH 工具（主人要的"会话接管"就靠它们 ✓✓）
-    registerFleetTools(ctx, peer, decisionLog);
+    registerFleetTools(ctx, peer, decisionLog, {
+        current: getCommanderSessionId,
+        set: (session) => setCommanderSession(session),
+        state: () => getCommanderState(),
+        // ★ 租约只用于**状态显示** ✓ —— 真正能不能投递看 `agents.get(id)` 是否活着 ✓（见 commander.ts ✓）
+        leaseFresh: (now) => isLeaseFresh(now !== undefined ? { now } : {}),
+        agent: (id) => agents?.get(id),
+        file: COMMANDER_FILE,
+        /**
+         * ★ 「**从这个会话打开，就是这个会话接管**」（主人原话 ✓）。
+         *
+         * `ctx.agents.currentInitiator()` 正是干这个的 ✓（证据：`dsh-goal-round-driver/lib/index.js:173`
+         * 用 `ctx.agents.withoutInitiator(...)` / `:237` 用 `currentInitiator()` ✓ ——
+         * 它把"发起这次调用的那个 Agent"传下去 ✓）。
+         * → 所以主人在会话里说一句"接管舰队"，工具就能**自己认出是哪个会话** ✓✓，
+         *   不用他去别处抄一个 id 过来 ✓。
+         *
+         * ★ 拿不到就返回 undefined ✓ —— 那时工具会**明确要求**显式给 `session=` 参数 ✓
+         *   （绝不猜 ✗：猜错就是把任务塞进别人的聊天 ✓）。
+         */
+        currentSessionId: () => {
+            try {
+                const reg = agents;
+                const initiator = reg?.currentInitiator?.();
+                return (initiator !== undefined && typeof initiator.id === 'string') ? initiator.id : undefined;
+            }
+            catch {
+                return undefined;
+            }
+        },
+    });
     // 供将来从 DSH 侧主动操作（例如命令面板、定时巡检）使用 ✓
     void queryShip;
     void order;

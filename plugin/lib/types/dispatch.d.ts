@@ -1,5 +1,5 @@
 /**
- * dispatch.ts —— 「把决策任务投递给指挥官会话」的**阶梯**与**硬期限**（Phase A/B ✓）
+ * dispatch.ts —— 「把决策任务投递给主人正在用的那个会话」的**阶梯**与**硬期限**（Phase A/B ✓）
  *
  * 设计书：`AGENT-DESIGN.md` §2.2/§3.4；离线原型：`test/commander-dispatch-proto.mjs`（7/7 ✓）。
  * 本文件是原型的**生产版**：把桩换成真依赖（`ctx.agents` / `ctx.on('session/event')`），
@@ -14,7 +14,7 @@
  * ## 三级阶梯（**永不卡住舰队** ✓）
  *
  * ```
- * ① 指挥官会话（若主人指定且活着）
+ * ① 投递目标会话（若主人指定且活着）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
  *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队，直接下② ✓
  *      超时          → cancel({kind:'timeout'}) → 下② ✓
@@ -41,7 +41,7 @@
 import type { TaskAnswer, TaskRequest } from './task.js';
 import { makeTaskId, renderTaskBlock, validateAnswer } from './task.js';
 export interface Budgets {
-    /** 等指挥官会话的**硬闸**：超了就 `cancel()` 并放弃这一级 ✓ */
+    /** 等投递目标会话的**硬闸**：超了就 `cancel()` 并放弃这一级 ✓ */
     sessionDeadlineMs: number;
     /** 剩余预算不够这个数，就**不要开始投递** ✓（避免"刚投完就超时" ✓） */
     queueReserveMs: number;
@@ -97,6 +97,17 @@ export interface SingleShotResult {
     truncated?: boolean;
     /** 'first' | 'retry' —— 让流水能说清"这是重试那次" ✓ */
     attempt?: string;
+    /**
+     * ★★ 调用方要求**再问一次**（2026-10-17 修 ✓✓）。
+     *
+     * 为什么必须是它 ✗：单发那一级"该不该重试"只有**调用方**知道 ✓ ——
+     *   提示词、事实、解析器都在 index.ts 里 ✓，dispatch 只看得到一段文本 ✓。
+     *   原来的实现是 dispatch 自己拿正则找 `action=` ✓，可**"没有动作行"必须由真解析器判** ✓
+     *   （`parseDecision` 容忍 `choice=`/加粗/全角冒号 ✓，一个正则判不准 ✗）。
+     *   → 于是真正该重试的那种回复**永远重试不了** ✓（order-payload 的 g 用例就是这个 ✓）。
+     * ★ 今天它是**必填**的：类型上漏了它 = 静默丢掉整条重试路径 ✗✓（这次就是这么被抓到的 ✓）。
+     */
+    retryHint?: string;
 }
 /** 阶梯的结论来源（**进 DecisionRecord.source ✓**） */
 export type DecisionSource = 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'none';
@@ -122,7 +133,7 @@ export interface SessionAttempt {
 }
 export interface DispatchDeps {
     registry: RegistryLike;
-    /** 指挥官会话 id；undefined = 没指定 ✓（阶梯直接从②开始 ✓） */
+    /** 投递目标会话 id；undefined = 没指定 ✓（阶梯直接从②开始 ✓） */
     commanderId?: string;
     /** 订阅会话事件（真实现 = `ctx.on('session/event', …)` 再按 sessionId 筛 ✓） */
     subscribe?: Subscribe;

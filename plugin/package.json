@@ -1,10 +1,19 @@
 {
   "name": "@dsh-external/dsh-avorion-copilot",
   "version": "0.1.0",
-  "description": "Avorion Copilot 桥接插件：监听游戏的 moddata/copilot/ 请求文件，用模型做出舰队运营决策，再把决策写回响应文件。",
+  "description": "Avorion Copilot 桥接插件：把游戏暴露成 DSH 的工具（游戏 RPC 接口提供者），并把空闲船的决策任务投递进主人自己的会话、再把结论交回游戏下单。",
   "private": true,
   "type": "module",
   "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "lib",
     "prompt",
@@ -15,6 +24,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
     }
   },
   "peerDependencies": {

@@ -33,11 +33,55 @@ interface ToolCtx {
     };
     effect(fn: () => void | (() => void), label?: string): void;
 }
+/**
+ * The delivery target for fleet decisions (2026-10-17, scope set by the owner).
+ *
+ * The owner's words: "no clone needed -- just deliver to the CURRENT session; the plugin's
+ * role becomes the GAME RPC INTERFACE PROVIDER". So the target is ONE explicitly chosen
+ * session id (his own session), never guessed and never listed as clone candidates.
+ */
+export interface CommanderBridge {
+    /** current target session id, or undefined = no delivery (pure single-shot) */
+    current(): string | undefined;
+    /** designate (empty/null = clear). Returns the new state. */
+    set(session: string | null): {
+        session: string | null;
+        leasedUntil: number | null;
+    };
+    /** read the persisted state without changing it */
+    state(): {
+        session: string | null;
+        leasedUntil: number | null;
+    };
+    /** is the lease still fresh (status display only -- never a delivery gate) */
+    leaseFresh(now?: number): boolean;
+    /** the live agent for a session id, when the registry is reachable */
+    agent(id: string): {
+        status?: string;
+    } | undefined;
+    /**
+     * The session that CALLED this tool, when the harness can tell us.
+     *
+     * Real implementation: `ctx.agents.currentInitiator()` -- the harness carries the
+     * initiating Agent through the call (`dsh-goal-round-driver/lib/index.js:173`/`:237`).
+     * This is what makes "open it from THIS session and this session takes over" work
+     * without the owner having to copy a session id around.
+     *
+     * undefined = we cannot tell -> the tool must then REQUIRE an explicit `session=`.
+     */
+    currentSessionId?(): string | undefined;
+    /** persistence path (so the owner knows which file holds the choice) */
+    file?: string;
+}
 /** Wrap the callback-based RpcPeer.call into a Promise (tool execute is async). */
 export declare function ask(peer: RpcPeer, cmd: string, data: unknown, timeoutSec?: number): Promise<{
     ok: boolean;
     data?: any;
     why?: string;
 }>;
-export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[]): void;
+export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[], commander?: CommanderBridge, 
+/** the recall/query timeouts differ in tests; keep the production defaults */
+opts?: {
+    orderTimeoutSec?: number;
+}): void;
 export {};

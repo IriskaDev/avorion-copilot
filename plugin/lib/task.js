@@ -1,5 +1,5 @@
 /**
- * task.ts —— 投递进指挥官会话的**任务块**，与它的**答案契约**（Phase A ✓）
+ * task.ts —— 投递进投递目标会话的**任务块**，与它的**答案契约**（Phase A ✓）
  *
  * 这是「插件 ⇄ 会话」之间唯一的接口 ✗✓ —— 协议在这里、校验也在这里 ✓，
  * 这样"任务长什么样"和"什么算合格答案"永远不会各改各的 ✓（原型
@@ -7,7 +7,7 @@
  *
  * ## 为什么答案里必须回显 `task=<id>`（**这条不能省**）
  *
- * 指挥官会话是**一条活着的、主人也在用的普通会话** ✓✓。所以同一轮里可能出现：
+ * 投递目标会话是**一条活着的、主人也在用的普通会话** ✓✓。所以同一轮里可能出现：
  *   · 主人在聊天，她的回复与任务交错 ✓
  *   · 主人一次性投了几艘船 → 会话里连着几条任务 ✓
  * 于是"最后一条 assistant/message 就是结论"**不总成立** ✗。
@@ -65,6 +65,20 @@ function listField(text, key) {
 /**
  * 渲染任务块 ✓ —— **与单发路径的 `buildPrompt()` 同源**（同一批事实、同一套读法 ✓）。
  *
+ * ## ★ 为什么界线要画得这么重（主人 2026-10-17 定的范围之后，这条变成了硬要求）
+ *
+ * 投递的目标会话**就是主人自己正在聊天的那个会话** ✓（不再是"分身会话"✗）。
+ * 于是同一个 transcript 里会同时存在：
+ *   · 主人在跟助手聊天 ✓
+ *   · 舰队要一条决策 ✓
+ * 两者**绝不能互相误会** ✗✓：
+ *   · 她必须一眼看出"这条是**舰队任务**，不是主人说话" → 三行 `<fleet_task …>` /
+ *     `这是插件投递的…` / 结尾 `</fleet_task>` ✓；
+ *   · 我们还必须能认出"哪条回复是**这一单**" → 回显 `task=<id>` 是唯一可靠的锚点 ✓
+ *     （见本文件头注释 ✓）。
+ * ★ 所以她**可以**在任务块外继续跟主人说话 ✓ —— 我们只认回显对上号的那条 ✓；
+ *   主人也一眼能看出哪几行是舰队的活儿 ✓✓。
+ *
  * 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与
  * `src/index.ts` 的重试路径都记录了实机事故 ——「她想太久、正文被 maxTokens 截断，
  * 一个动作行都没吐」✓。把契约放最前，最坏情况丢的是散文，不是结论 ✓。
@@ -72,7 +86,10 @@ function listField(text, key) {
 export function renderTaskBlock(req) {
     const L = [];
     L.push(`<fleet_task id="${req.taskId}" ship="${req.ship}" deadline_hint="${req.deadlineHintSec}s">`);
-    L.push('这是舰队运营的一个决策请求（不是闲聊）。你可以先调用工具自己查证，再给结论。');
+    L.push('★ 这是**插件**（dsh-avorion-copilot）投递的**舰队决策请求** —— **不是主人在说话** ✗✓。');
+    L.push('  它来自游戏（Avorion）：有一艘船空闲了，需要你替它定个动作。');
+    L.push('  你可以先调用工具自己查证（fleet_query / fleet_decisions 等 ✓），再给结论。');
+    L.push('  答复时**请把结论行放在最前面** ✓（见本块末尾的格式 ✓）。');
     L.push('');
     L.push(`船：${req.ship}`);
     L.push('玩家给这艘船设定的运营目标：');
@@ -91,13 +108,17 @@ export function renderTaskBlock(req) {
         L.push(req.planText);
         L.push('');
     }
-    L.push('★ 请**先**给出结论行（**第一行就写 action=**），再写理由；理由写进 reason= 或写在后面都行 ✓。');
-    L.push('★ 结论里**必须回显** task=' + req.taskId + '（这样即使你同一轮里还答了别的船，也能对上号 ✓）。');
-    L.push('★ 如果你需要主人拍板（例如"要不要先派护航"），就**直接问他** ✓ ——');
-    L.push('  不写 action 行、把问题写出来即可 ✓；本轮会明确记为"等主人裁决"，**不会**替你编一个动作 ✗。');
+    L.push('★★★ 答复格式（**必须**，这样你的聊天与舰队的任务永远不会互相误会 ✓✓）★★★');
+    L.push(`1. **第一行**就是结论：action=... （不要先写客套话或推理 ✗）`);
+    L.push(`2. 第二行**必须回显** task=${req.taskId} —— 这一行是舰队认出"这是回给我的"的**唯一凭据** ✓；`);
+    L.push('   写错或写成别的任务号 → 这一单**会被判无效**（绝不允许把别的船的答案用在这艘船上 ✗）。');
+    L.push('3. 之后可以写 x= / y= / size= / duration= / goodName= / safeMode= / reason= 等字段 ✓。');
+    L.push('4. 如果你需要主人拍板（例如"要不要先派护航"），就**直接问他** ✓ ——');
+    L.push('   不写 action 行、把问题写出来即可 ✓；本轮会明确记为"等主人裁决"，**不会**替你编一个动作 ✗。');
+    L.push('5. 这些字段行之后，你**照常**跟主人聊天、继续原来的话题都行 ✓（舰队只看上面这几行 ✓）。');
     L.push('');
     L.push('action=<动作>');
-    L.push('task=' + req.taskId);
+    L.push(`task=${req.taskId}`);
     L.push('x=<框心 x>  y=<框心 y>  size=<边长>  duration=<小时>  reason=<一句话>');
     L.push('</fleet_task>');
     return L.join('\n');
@@ -116,7 +137,7 @@ export function validateAnswer(text, taskId, allowedActions) {
     const q = field(text, 'question');
     const rawAction = field(text, 'action');
     // ★ 人在环里是**特性** ✓，但绝不许实现成"悬着的 promise"✗ —— 这里只判"她在问" ✓，
-    //   延期动作由 dispatch 层做 ✓（它会写清"指挥官在问主人：…"并**不派单** ✓）。
+    //   延期动作由 dispatch 层做 ✓（它会写清"投递会话在问主人：…"并**不派单** ✓）。
     if (rawAction === undefined && (q !== undefined && q !== ''
         || /[?？]\s*$/.test(text.trim()))) {
         return {

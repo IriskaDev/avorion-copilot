@@ -14,7 +14,7 @@
  *   6. 影子模式（Phase B）   → 会话答了**也由单发决定** ✓，但答案被并排记下来 ✓
  *   7. 舰队级串行            → 同一会话同一刻只有一条在飞 ✓（抢不到直接落单发 ✓）
  *   8. 单发**硬期限**        → 今天没有这道闸 ✗ → 超时就 action=None，且总耗时受控 ✓
- *   9. 指挥官选择            → 未指定 = 与今天逐字相同 ✓；指定/清除/落盘/租约 ✓
+ *   9. 投递会话选择            → 未指定 = 与今天逐字相同 ✓；指定/清除/落盘/租约 ✓
  *
  *   node test/commander-dispatch.mjs
  */
@@ -28,7 +28,7 @@ const { renderTaskBlock, validateAnswer, makeTaskId } = await import('../lib/tas
 const commander = await import('../lib/commander.js')
 
 // ---------------------------------------------------------------------------
-// 桩：一个按剧本走的指挥官会话（面与 dsh-agent 的 Agent 一致 ✓）
+// 桩：一个按剧本走的投递会话会话（面与 dsh-agent 的 Agent 一致 ✓）
 // ---------------------------------------------------------------------------
 
 /** 一"轮"的剧本：按顺序吐这几条 assistant 文本，然后 turn/end ✓ */
@@ -193,7 +193,7 @@ await test('③ 会话挂死：硬闸内 cancel() + 放弃这一级 → 单发�
   assert.equal(out.source, 'single-shot')
   assert.equal(agent.cancelled, 1, '挂死的一轮必须被 cancel ✓')
   assert.equal(agent.cancelCause.kind, 'timeout')
-  assert.equal(agent.inbox.length, 1, '★ 失败**绝不重投** ✓（同一艘船只投一次 ✓）')
+  assert.equal(agent.inbox.length, 1, '★ 失败**绝不重递** ✓（同一艘船只递一次 ✓）')
   assert.ok(took < FAST.sessionDeadlineMs + FAST.singleShotTimeoutMs + 500, `耗时失控: ${took}ms`)
   return `掐掉挂死的一轮，仍在 ${took}ms 内给出了决策`
 })
@@ -237,7 +237,7 @@ await test('⑥ 会话在问主人：显式延期（ASKED_OWNER），不派单�
   console.log('  result:', JSON.stringify(out), 'singleShotCalls=' + single.calls)
   assert.equal(out.source, 'asked-owner')
   assert.equal(out.action, 'None')
-  assert.match(out.reason ?? '', /指挥官在问主人/)
+  assert.match(out.reason ?? '', /投递会话在问主人/)
   assert.equal(single.calls, 0, '人在环里**不是**失败 → 不该偷偷落回单发 ✓')
   return '人在环里 = 明确的延期状态，不是悬着的 promise'
 })
@@ -272,7 +272,7 @@ await test('⑦b 影子模式下没有指定会话：与今天逐字相同（单
   console.log('  result:', JSON.stringify(out))
   assert.equal(out.source, 'single-shot')
   assert.equal(single.calls, 1)
-  return '清除指挥官 = 立刻回到今天的行为（这就是回滚开关 ✓）'
+  return '清除投递会话 = 立刻回到今天的行为（这就是回滚开关 ✓）'
 })
 
 await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞（锁兜住竞态；绝不排队）', async (log) => {
@@ -292,10 +292,10 @@ await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞（锁�
     followup, singleShot: single.run, allowedActions: ALLOWED, budgets: FAST, lock, log,
   }
   const first = dispatchDecision({ ...deps, log: () => {} }, { ...REQ, taskId: 'A' })
-  await sleep(40)                                     // 第一条真的投出去了、正占着会话 ✓
-  assert.equal(agent.inbox.length, 1, '第一条必须已经投出去 ✓')
-  // ★ 竞态兜底：真环境里 `status` 可能还没翻成 running，或者我们会话刚投完又有人来问 ✓
-  //   → 就算它看着"空闲"，只要锁被占着，也**绝不许**再投一条 ✗（同时飞两条 = 两条矛盾命令 ✓）
+  await sleep(40)                                     // 第一条真的递出去了、正占着会话 ✓
+  assert.equal(agent.inbox.length, 1, '第一条必须已经递出去 ✓')
+  // ★ 竞态兜底：真环境里 `status` 可能还没翻成 running，或者我们会话刚递完又有人来问 ✓
+  //   → 就算它看着"空闲"，只要锁被占着，也**绝不许**再递一条 ✗（同时飞两条 = 两条矛盾命令 ✓）
   agent.status = 'idle'
   const second = await dispatchDecision({ ...deps, log: () => {} }, { ...REQ, taskId: 'B', ship: 'Miner-00003' })
   const done = await first
@@ -350,8 +350,11 @@ await test('⑩ 任务块契约 + 校验器：回显、允许集合、问题、�
   assert.match(block, /^<fleet_task id="t-0001" ship="Miner-00002" deadline_hint="20s">/)
   assert.match(block, /<\/fleet_task>$/)
   assert.match(block, /task=t-0001/)
-  assert.match(block, /第一行就写 action=/)
-  log('  任务块头尾与回显要求都在 ✓')
+  assert.match(block, /第一行\*\*就是结论/, '★ 结论行必须在最前（被截断时丢掉的是散文 ✓）')
+  assert.match(block, /不是主人在说话/, '★ 必须说清"这条是舰队任务、不是主人说话" ✓')
+  assert.match(block, /唯一凭据/, '★ 回显 task 的意义要写清 ✓')
+  assert.match(block, /照常\*\*跟主人聊天/, '★ 任务块外的闲聊不受影响（同一会话两用 ✓）')
+  log('  任务块头尾、回显要求、"这不是主人说话"、以及"块外照样聊天"都在 ✓')
 
   // 合格 ✓
   const good = validateAnswer('action=Mine\nx=30\ny=-12\ntask=t-0001\nreason=好', 't-0001', ['Mine'])
@@ -404,10 +407,10 @@ await test('⑩ 任务块契约 + 校验器：回显、允许集合、问题、�
 })
 
 // ---------------------------------------------------------------------------
-// 11：指挥官的选择与租约（commander.ts）
+// 11：投递会话的选择与租约（commander.ts）
 // ---------------------------------------------------------------------------
 
-await test('⑪ 指挥官选择：未指定=今天 / 指定 / 落盘 / 清除 / 租约', async (log) => {
+await test('⑪ 投递会话选择：未指定=今天 / 指定 / 落盘 / 清除 / 租约', async (log) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-cmdr-'))
   const file = path.join(dir, 'commander.json')
   commander.resetCommanderCache()
@@ -464,7 +467,7 @@ await test('⑪ 指挥官选择：未指定=今天 / 指定 / 落盘 / 清除 / 
 // 12：会话路径的"再给一次机会"（只此一次 ✓）
 // ---------------------------------------------------------------------------
 
-await test('⑫ 会话两次都没有动作行 → 只投两次（绝不重投第三次 ✗）→ 单发', async (log) => {
+await test('⑫ 会话两次都没有动作行 → 只递两次（绝不重递第三次 ✗）→ 单发', async (log) => {
   const agent = makeAgent({ script: ['嗯……本鱼在想想。'] })
   const single = makeSingleShot('action=Mine\nx=5\ny=5\ntask=t-0001')
   const out = await dispatchDecision({
@@ -474,7 +477,7 @@ await test('⑫ 会话两次都没有动作行 → 只投两次（绝不重投�
   }, REQ)
   console.log('  result:', JSON.stringify(out))
   assert.equal(out.session.code, 'NO_ACTION_LINE')
-  assert.equal(agent.inbox.length, 2, '★ 只能投两次（第一次 + 一次重试）✗ 绝不许无限重投 ✓')
+  assert.equal(agent.inbox.length, 2, '★ 只能递两次（第一次 + 一次重试）✗ 绝不许无限重递 ✓')
   assert.equal(out.source, 'single-shot')
   return '重试严格只有一次，且仍然落在单发上'
 })
@@ -487,6 +490,51 @@ await test('⑬ 默认预算就是设计书定的那几个数（防止有人悄�
   // 游戏侧的 decide 超时是 90s（data/scripts/net/fleet.lua:30 ✓）——
   // ② 之后还有计划的取数与下单，所以这里必须留足余量 ✓。
   return `硬闸合计 ${BUDGETS.sessionDeadlineMs + BUDGETS.singleShotTimeoutMs}ms，远在游戏侧 90s 之内 ✓`
+})
+
+await test('⑭ ★ 唯一性：把第二个会话设为指挥官 → 第一个**立刻**不再是目标（原子替换）', async (log) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'copilot-cmdr2-'))
+  const file = path.join(dir, 'commander.json')
+  commander.resetCommanderCache()
+
+  commander.setCommanderSession('session-A', { file })
+  assert.equal(commander.getCommanderSessionId(), 'session-A')
+  commander.setCommanderSession('session-B', { file })
+  assert.equal(commander.getCommanderSessionId(), 'session-B', '★ 只能有一个：新的立刻取代旧的 ✓')
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).session, 'session-B',
+    '★ 盘上也只有一个 id ✓ —— 没有任何地方还记着 A ✓')
+  log('  A → B：只有一个 id 被保存（A 立刻不在投递路径上 ✓）')
+
+  // ★ 交付只去被指定的那个会话 ✓（真实后果：A 再也收不到任务 ✓）
+  const a = makeAgent({ id: 'session-A', script: ['action=Mine\nx=1\ny=1\ntask=t'] })
+  const b = makeAgent({ id: 'session-B', script: ['action=Salvage\nx=9\ny=9\ntask=t-0001'] })
+  const single = makeSingleShot('action=Trade\ngoodName=Drill\ntask=t-0001')
+  const out = await dispatchDecision({
+    registry: makeRegistry([a, b]), commanderId: commander.getCommanderSessionId(),
+    subscribe: subscribeTo([a, b]), followup, singleShot: single.run,
+    allowedActions: ALLOWED, budgets: FAST, log,
+  }, REQ)
+  console.log('  result:', JSON.stringify(out))
+  assert.equal(out.source, 'session')
+  assert.equal(out.action, 'Salvage', '答案必须来自 B（当前指挥官 ✓）')
+  assert.equal(a.inbox.length, 0, '★ A 被顶掉之后**一个任务都不该收到** ✗✓')
+  assert.equal(b.inbox.length, 1)
+  log('  投递只去 B；A 的收件箱空着 ✓')
+
+  // 关掉之后：回到单发（舰队照样有决策 ✓）
+  commander.setCommanderSession(null, { file })
+  const single2 = makeSingleShot('action=Mine\nx=3\ny=3\ntask=t-0001')
+  const out2 = await dispatchDecision({
+    registry: makeRegistry([a, b]), commanderId: commander.getCommanderSessionId(),
+    subscribe: subscribeTo([a, b]), followup, singleShot: single2.run,
+    allowedActions: ALLOWED, budgets: FAST, log,
+  }, REQ)
+  console.log('  after clear:', JSON.stringify(out2))
+  assert.equal(out2.source, 'single-shot', '★ 没有指挥官 = 回落到单发（**决策绝不静默停止** ✓）')
+  assert.equal(b.inbox.length, 1, '关掉之后两边都不该再收到任务 ✓')
+  fs.rmSync(dir, { recursive: true, force: true })
+  commander.resetCommanderCache()
+  return '一次只有一个指挥官；换人立刻生效；关掉就回落到单发'
 })
 
 console.log(`\n${'='.repeat(72)}\n## commander dispatch result\n${'='.repeat(72)}`)

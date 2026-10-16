@@ -34,6 +34,39 @@ interface ToolCtx {
   effect(fn: () => void | (() => void), label?: string): void
 }
 
+/**
+ * The delivery target for fleet decisions (2026-10-17, scope set by the owner).
+ *
+ * The owner's words: "no clone needed -- just deliver to the CURRENT session; the plugin's
+ * role becomes the GAME RPC INTERFACE PROVIDER". So the target is ONE explicitly chosen
+ * session id (his own session), never guessed and never listed as clone candidates.
+ */
+export interface CommanderBridge {
+  /** current target session id, or undefined = no delivery (pure single-shot) */
+  current(): string | undefined
+  /** designate (empty/null = clear). Returns the new state. */
+  set(session: string | null): { session: string | null; leasedUntil: number | null }
+  /** read the persisted state without changing it */
+  state(): { session: string | null; leasedUntil: number | null }
+  /** is the lease still fresh (status display only -- never a delivery gate) */
+  leaseFresh(now?: number): boolean
+  /** the live agent for a session id, when the registry is reachable */
+  agent(id: string): { status?: string } | undefined
+  /**
+   * The session that CALLED this tool, when the harness can tell us.
+   *
+   * Real implementation: `ctx.agents.currentInitiator()` -- the harness carries the
+   * initiating Agent through the call (`dsh-goal-round-driver/lib/index.js:173`/`:237`).
+   * This is what makes "open it from THIS session and this session takes over" work
+   * without the owner having to copy a session id around.
+   *
+   * undefined = we cannot tell -> the tool must then REQUIRE an explicit `session=`.
+   */
+  currentSessionId?(): string | undefined
+  /** persistence path (so the owner knows which file holds the choice) */
+  file?: string
+}
+
 /** Wrap the callback-based RpcPeer.call into a Promise (tool execute is async). */
 export function ask(
   peer: RpcPeer,
@@ -78,7 +111,14 @@ function addTool(ctx: ToolCtx, def: any, label: string): void {
   }, label)
 }
 
-export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[]): void {
+export function registerFleetTools(
+  ctx: ToolCtx,
+  peer: RpcPeer,
+  decisionLog?: DecisionRecord[],
+  commander?: CommanderBridge,
+  /** the recall/query timeouts differ in tests; keep the production defaults */
+  opts: { orderTimeoutSec?: number } = {},
+): void {
   // ---------------------------------------------------------------------
   // fleet_query -- read game data (the "eyes")
   // ---------------------------------------------------------------------
@@ -191,7 +231,7 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
         sizeY?: number
         duration?: number
       }) {
-        const r = await ask(peer, 'order', args, 30)
+        const r = await ask(peer, 'order', args, opts.orderTimeoutSec ?? 30)
         if (!r.ok) return `order failed: ${r.why ?? 'unknown'}`
         return `ordered: ${args.ship} -> ${args.action}\n${text(r.data)}`
       },
@@ -392,6 +432,106 @@ export function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: De
     },
     'fleet_recall tool',
   )
+
+  // ---------------------------------------------------------------------
+  // fleet_commander -- designate WHICH session receives fleet decisions
+  //
+  // The owner's scope (2026-10-17): the plugin is the GAME RPC INTERFACE
+  // PROVIDER. Decision tasks are delivered into the session HE is already
+  // using -- no clone, no new session, no candidate listing.
+  //
+  // Why explicit and never guessed: `Agent.followup()` performs NO ownership
+  // check, so the plugin can push a task block into ANY live session. Guessing
+  // wrong pollutes someone else's transcript. So the owner says the id, and
+  // clearing it restores today's single-shot behaviour verbatim.
+  // ---------------------------------------------------------------------
+  if (commander !== undefined) {
+    addTool(
+      ctx,
+      {
+        name: 'fleet_commander',
+        description:
+          'Show, set or clear WHICH DSH session receives fleet decision tasks from the Avorion ' +
+          'copilot plugin -- the fleet COMMANDER switch. There is no clone and no separate ' +
+          'commander session: the target is a session you already use, and the plugin is only the ' +
+          'game RPC interface provider. While a session is designated, an idle-roster ship that ' +
+          'needs a decision gets a delimited <fleet_task> block delivered into that session ' +
+          '(visible as a normal user message) and its answer is mapped onto the same order path the ' +
+          'plugin already had. Only ONE session is ever the commander: designating a new one ' +
+          'displaces the previous one immediately. The session is never interrupted: if you are ' +
+          'chatting, the decision falls back to the plugin single-shot model call. Call with no ' +
+          'arguments to see the current commander. Pass session=<id> to designate it, or clear=true ' +
+          'to stop delivering -- clearing restores the pure single-shot behaviour.',
+        parameters: {
+          session: {
+            type: 'string',
+            description:
+              'session id to make the commander; omit to read the current state. Empty string = clear. ' +
+              'If omitted together with action="claim", the CALLING session is used automatically.',
+          },
+          action: {
+            type: 'string',
+            description:
+              'optional: "claim" = make the CALLING session the commander (this is the per-session ' +
+              'toggle: open the switch from a session and that session takes over), ' +
+              '"clear" = drop the current commander, "status" = read state only.',
+          },
+          clear: { type: 'boolean', description: 'true = clear the commander (back to single-shot only)' },
+        },
+        output: {
+          schema: { type: 'string' },
+          render: (_args: unknown, value: unknown) => [{ type: 'text', text: String(value) }],
+        },
+        async execute(args: { session?: string; action?: string; clear?: boolean }) {
+          const action = typeof args.action === 'string' ? args.action.trim().toLowerCase() : ''
+          const wantsClear = args.clear === true || action === 'clear' ||
+            (args.session !== undefined && args.session.trim() === '')
+          // ★ "从这个会话打开"：不给 id 的 claim = 用**调用者**自己的会话 ✓（绝不猜别人的 ✗）
+          let wanted: string | null | undefined = args.session
+          if (action === 'claim' && (wanted === undefined || wanted.trim() === '')) {
+            const caller = commander.currentSessionId?.()
+            if (caller === undefined) {
+              return 'fleet_commander: cannot tell which session is calling, so I will not guess. ' +
+                'Pass session=<id> explicitly (or use the switch at the top of the session).'
+            }
+            wanted = caller
+          }
+          const previous = commander.state().session
+          if (wanted !== undefined || wantsClear) {
+            commander.set(wantsClear ? null : (wanted ?? null))
+          }
+          // Report the resulting state truthfully, including whether it is actually alive.
+          const st = commander.state()
+          const lines: string[] = []
+          if (st.session === null || st.session === undefined) {
+            lines.push('fleet commander: NONE')
+            lines.push('  -> decisions go through the plugin single-shot model call (unchanged behaviour)')
+            if (previous !== null && previous !== undefined) lines.push(`  (was ${previous}; it no longer receives tasks)`)
+          } else {
+            const agent = commander.agent(st.session)
+            const live = agent !== undefined
+            lines.push(`fleet commander: ${st.session}`)
+            if (previous !== null && previous !== undefined && previous !== st.session) {
+              lines.push(`  displaced: ${previous} -- it no longer receives any fleet task`)
+            }
+            lines.push(`  session live now: ${live ? 'YES' : 'NO (plugin will skip delivery)'}`)
+            if (live) lines.push(`  session status: ${String(agent?.status ?? 'unknown')}`)
+            lines.push(`  lease: ${commander.leaseFresh() ? 'fresh (recently received a task)' : 'stale/never used'} -> ` +
+              `${st.leasedUntil === null ? 'never delivered' : new Date(st.leasedUntil).toISOString()}`)
+            lines.push('  NOTE: a BUSY session is never interrupted; the decision falls back to the ' +
+              'plugin single-shot call instead. Fleet tasks are delimited by <fleet_task> and require ' +
+              'a task=<id> echo, so they never get confused with your own words.')
+          }
+          lines.push('  mode: shadow by default -- the session answer is recorded and compared with the ' +
+            'single-shot answer, but the single-shot answer is what actually gets ordered. ' +
+            'Set decideMode="live" in the plugin config to let the session answer decide.')
+          if (commander.file !== undefined) lines.push(`  persisted at: ${commander.file}`)
+          return lines.join('\n')
+        },
+      },
+      'fleet_commander tool',
+    )
+  }
 
   // ---------------------------------------------------------------------
   // fleet_decisions -- READ THE DECISION PROCESS (requested by the master)

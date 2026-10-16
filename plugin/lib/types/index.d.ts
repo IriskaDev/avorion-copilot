@@ -22,6 +22,7 @@
  * 和踩过坑的鲁棒解析 ✓，与传输无关 ✓。
  */
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm/types';
+import { type SessionAttempt } from './dispatch.js';
 export declare const name = "@dsh-external/dsh-avorion-copilot";
 /** 需要 LLM 服务；没有它插件不启动。 */
 export declare const inject: string[];
@@ -40,6 +41,14 @@ interface CopilotCtx {
     tools: {
         register(tool: unknown): unknown;
     };
+    /** ★ `ctx.agents`（不经 inject：拿不到也不影响单发路径 ✓ —— 见 resolveAgents ✓） */
+    agents?: unknown;
+    /**
+     * ★ `ctx.on('session/event', …)` ✓ —— 收会话答案靠它 ✓。
+     *   作用域规则（`dsh-scope`）：**未打 scope 标记的监听者收到所有会话的事件** ✓，
+     *   所以我们按 sessionId 自己筛 ✓（与 dsh-goal-round-driver 同一套做法 ✓）。
+     */
+    on?: (event: string, listener: (...args: any[]) => void) => unknown;
     get?(name: string): unknown;
 }
 interface CopilotConfig {
@@ -49,6 +58,24 @@ interface CopilotConfig {
     model?: string;
     maxTokens?: number;
     temperature?: number;
+    /**
+     * ★ 决策任务投递到**哪个会话**（主人自己的会话 id ✓）。
+     *   缺省 → 用落盘的选择（`fleet_commander` 指定过的 ✓）；都没有 = 不投递 ✓
+     *   （= 今天的单发路径，逐字不变 ✓）。
+     */
+    commanderSession?: string;
+    /**
+     * ★ 怎么用那个会话的答案（主人 2026-10-17 定的两阶段 ✓）：
+     *   · `shadow`（**默认**）= 只投递 + 只观测：她的答案被记下来并跟单发的答案并排比较，
+     *     但**实际下单仍然是单发** ✓✓ —— 零风险地量延迟/成本/质量 ✓（设计书推荐的第一步 ✓）。
+     *   · `live` = 她的答案**算数** ✓（校验通过就直接下单 ✓）；她没答成才落单发 ✓。
+     *     ★ 需要主人显式打开（这也是"回滚开关"：改回 shadow 即恢复零风险 ✓，不用重启游戏 ✓）。
+     */
+    decideMode?: 'shadow' | 'live';
+    /** 主人在那个会话里聊天时要不要插队投递（**默认 false** ✓ —— 主人的对话优先 ✓） */
+    steerWhenBusy?: boolean;
+    /** 会话第一次答不上来时要不要再投一次（默认 false ✓）；单发那次重试默认开 ✓ */
+    retrySessionOnce?: boolean;
 }
 /**
  * ★★ 一次决策的完整记录（主人在 DSH 里要看得见的东西 ✓✓）。
@@ -65,6 +92,16 @@ export interface DecisionRecord {
     ship: string;
     goalText: string;
     goalOptions: string[];
+    /**
+     * ★★ 这一单是**谁**定的（2026-10-17 补 ✓）—— 主人一眼看出决策来自哪条路 ✓：
+     *   `session`      = 投进主人会话、由她定的 ✓
+     *   `single-shot`  = 插件自己那一次单发调用定的 ✓（今天的行为 ✓）
+     *   `shadow`       = ★ 影子模式：她答了，但这一单**采纳的是单发** ✓（Phase B ✓）
+     *   `asked-owner`  = 她在问主人 → 本轮**明确延期**、未派单 ✓（人在环里 ✓）
+     *   `none`         = 两条路都没有可用答案 ✓
+     *   `rendezvous`   = 插件自己先派护航、本轮不下单 ✓（既有逻辑 ✓）
+     */
+    source?: 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'none' | 'rendezvous';
     card?: unknown;
     routes?: unknown;
     ok: boolean;
@@ -79,6 +116,10 @@ export interface DecisionRecord {
         reason?: string;
     };
     orderResult?: unknown;
+    /** ★ 会话那一路的观察结果（她答了什么 / 几步 / 多久 / 为什么没答成 ✓ —— 影子模式最有价值的一栏 ✓） */
+    session?: SessionAttempt;
+    /** ★ 她的答案与单发的答案**是否一致**（影子模式下用来量"她靠不靠谱" ✓） */
+    agreement?: boolean;
 }
 /**
  * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。

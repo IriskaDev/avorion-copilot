@@ -1,5 +1,5 @@
 /**
- * dispatch.ts —— 「把决策任务投递给指挥官会话」的**阶梯**与**硬期限**（Phase A/B ✓）
+ * dispatch.ts —— 「把决策任务投递给主人正在用的那个会话」的**阶梯**与**硬期限**（Phase A/B ✓）
  *
  * 设计书：`AGENT-DESIGN.md` §2.2/§3.4；离线原型：`test/commander-dispatch-proto.mjs`（7/7 ✓）。
  * 本文件是原型的**生产版**：把桩换成真依赖（`ctx.agents` / `ctx.on('session/event')`），
@@ -14,7 +14,7 @@
  * ## 三级阶梯（**永不卡住舰队** ✓）
  *
  * ```
- * ① 指挥官会话（若主人指定且活着）
+ * ① 投递目标会话（若主人指定且活着）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
  *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队，直接下② ✓
  *      超时          → cancel({kind:'timeout'}) → 下② ✓
@@ -47,7 +47,7 @@ import { field, makeTaskId, renderTaskBlock, validateAnswer } from './task.js'
 // ---------------------------------------------------------------------------
 
 export interface Budgets {
-  /** 等指挥官会话的**硬闸**：超了就 `cancel()` 并放弃这一级 ✓ */
+  /** 等投递目标会话的**硬闸**：超了就 `cancel()` 并放弃这一级 ✓ */
   sessionDeadlineMs: number
   /** 剩余预算不够这个数，就**不要开始投递** ✓（避免"刚投完就超时" ✓） */
   queueReserveMs: number
@@ -111,14 +111,25 @@ export interface SingleShotResult {
   truncated?: boolean
   /** 'first' | 'retry' —— 让流水能说清"这是重试那次" ✓ */
   attempt?: string
+  /**
+   * ★★ 调用方要求**再问一次**（2026-10-17 修 ✓✓）。
+   *
+   * 为什么必须是它 ✗：单发那一级"该不该重试"只有**调用方**知道 ✓ ——
+   *   提示词、事实、解析器都在 index.ts 里 ✓，dispatch 只看得到一段文本 ✓。
+   *   原来的实现是 dispatch 自己拿正则找 `action=` ✓，可**"没有动作行"必须由真解析器判** ✓
+   *   （`parseDecision` 容忍 `choice=`/加粗/全角冒号 ✓，一个正则判不准 ✗）。
+   *   → 于是真正该重试的那种回复**永远重试不了** ✓（order-payload 的 g 用例就是这个 ✓）。
+   * ★ 今天它是**必填**的：类型上漏了它 = 静默丢掉整条重试路径 ✗✓（这次就是这么被抓到的 ✓）。
+   */
+  retryHint?: string
 }
 
 /** 阶梯的结论来源（**进 DecisionRecord.source ✓**） */
 export type DecisionSource =
-  | 'session'        // 指挥官会话定的 ✓
+  | 'session'        // 会话（本轮的投递目标）定的 ✓
   | 'single-shot'    // 单发定的 ✓
   | 'shadow'         // ★ 影子模式：会话答了、但采纳的是单发 ✓
-  | 'asked-owner'    // 显式延期：指挥官在问主人 ✓
+  | 'asked-owner'    // 显式延期：投递会话在问主人 ✓
   | 'none'           // 都没有 → action=None ✓
 
 /** 会话这一级的结果（**影子模式也要报出来** ✓ —— 主人要看她答了什么 ✓） */
@@ -144,7 +155,7 @@ export interface SessionAttempt {
 
 export interface DispatchDeps {
   registry: RegistryLike
-  /** 指挥官会话 id；undefined = 没指定 ✓（阶梯直接从②开始 ✓） */
+  /** 投递目标会话 id；undefined = 没指定 ✓（阶梯直接从②开始 ✓） */
   commanderId?: string
   /** 订阅会话事件（真实现 = `ctx.on('session/event', …)` 再按 sessionId 筛 ✓） */
   subscribe?: Subscribe
@@ -254,17 +265,17 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
 
   let sessionAttempt: SessionAttempt | undefined
 
-  // ---- 阶梯①：指挥官会话 --------------------------------------------------
+  // ---- 阶梯①：投递目标会话 --------------------------------------------------
   const agent = deps.commanderId !== undefined ? deps.registry.get(deps.commanderId) : undefined
   if (deps.commanderId !== undefined && agent === undefined) {
-    say(`  [ladder] 指挥官会话 ${deps.commanderId} **不在了** ✗（已关/已换）→ 下②单发 ✓`)
+    say(`  [ladder] 投递目标会话 ${deps.commanderId} **不在了** ✗（已关/已换）→ 下②单发 ✓`)
   }
   if (agent !== undefined) {
     const remaining = B.sessionDeadlineMs - elapsed()
     if (agent.status !== 'idle') {
       // 主人在聊天 / 这一轮在做别的事 ✓ —— 设计书的默认是**不插队** ✓（插队会把任务块插到
       // 别人的上下文里，正是"猜会话"那类风险的同源 ✓）。
-      say(`  [ladder] 指挥官**正忙**（主人在聊 / 在别的任务上）`)
+      say(`  [ladder] 投递会话**正忙**（主人在聊 / 在别的任务上）`)
       if (deps.steerWhenBusy !== true) {
         say('  [ladder] steerWhenBusy=false（默认）→ 不插队，直接下②单发 ✓')
       } else if (remaining < B.queueReserveMs) {
@@ -278,13 +289,13 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
       sessionAttempt = await runSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs), say)
     }
   } else if (deps.commanderId === undefined) {
-    say('  [ladder] 没有指定指挥官会话 → 直接走②单发（**与今天逐字相同** ✓）')
+    say('  [ladder] 没有指定投递目标会话 → 直接走②单发（**与今天逐字相同** ✓）')
   }
 
   // 会话那一路的结论先落进结果里 ✓（影子模式也照样带着走 ✓）
   if (sessionAttempt !== undefined && mode === 'live') {
     if (sessionAttempt.answered && sessionAttempt.answer !== undefined) {
-      say(`  [commit] 采用**指挥官会话**的答案：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
+      say(`  [commit] 采用**投递目标会话**的答案：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
         `（${sessionAttempt.steps} 步 / ${sessionAttempt.tookMs}ms ✓）`)
       return {
         action: sessionAttempt.answer.action,
@@ -297,12 +308,12 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
     if (sessionAttempt.code === 'ASKED_OWNER') {
       // ★ 人在环里 = **显式延期** ✓（绝不是悬着的 promise ✗）
       const q = String(sessionAttempt.question ?? '').slice(0, 300)
-      say(`  [commit] 指挥官**在问主人** ✓：${JSON.stringify(q.slice(0, 160))}`)
+      say(`  [commit] 投递会话**在问主人** ✓：${JSON.stringify(q.slice(0, 160))}`)
       say('  [commit] → 本轮**明确延期**（不派单 ✓）；主人回答后，下一轮投递自然带上新信息 ✓')
       return {
         action: 'None',
         params: {},
-        reason: `指挥官在问主人：${q}（本轮明确延期，未派单 ✓）`,
+        reason: `投递会话在问主人：${q}（本轮明确延期，未派单 ✓）`,
         source: 'asked-owner',
         session: sessionAttempt,
       }
@@ -313,10 +324,10 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
   // ---- 阶梯②：今天的单发事实调用（★ 现在有硬期限 ✓）-----------------------
   if (sessionAttempt !== undefined && mode === 'shadow') {
     if (sessionAttempt.answered && sessionAttempt.answer !== undefined) {
-      say(`  [shadow] 指挥官会话答了：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
+      say(`  [shadow] 投递目标会话答了：${sessionAttempt.answer.action} ${JSON.stringify(sessionAttempt.answer.params)}` +
         `（${sessionAttempt.steps} 步 / ${sessionAttempt.tookMs}ms ✓）—— ★ **本轮不采纳** ✓，仍由单发决定 ✓`)
     } else {
-      say(`  [shadow] 指挥官会话没答成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）✓`)
+      say(`  [shadow] 投递目标会话没答成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）✓`)
     }
   }
   say(`  [ladder] → ② 单发模型调用（今天那条路 ✓；硬期限 ${B.singleShotTimeoutMs}ms ✓）`)
@@ -327,7 +338,7 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
     return {
       action: 'None',
       params: {},
-      reason: `没有可用的决策（指挥官未指定/未答成；单发：${single.why ?? 'unknown'}）`,
+      reason: `没有可用的决策（投递会话未指定/未答成；单发：${single.why ?? 'unknown'}）`,
       source: 'none',
       session: sessionAttempt,
     }
@@ -488,7 +499,7 @@ async function runSessionRung(
   const agent = deps.registry.get(deps.commanderId ?? '')
   if (agent === undefined) {
     release?.()
-    return fail('SESSION_GONE', '指挥官会话不在了 ✓')
+    return fail('SESSION_GONE', '投递目标会话不在了 ✓')
   }
 
   const texts: string[] = []
