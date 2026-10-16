@@ -14,6 +14,7 @@ Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略�
 | 主题 | 读 |
 |---|---|
 | 工程总览 / 仓库布局 / 开发工作流 | [`docs/dev/overview.md`](docs/dev/overview.md) |
+| ★ 接口原子化（接口怎么拆：一次一件小事 / 不做策略推荐 / 发命令原子化） | [`docs/dev/interface-atomicity.md`](docs/dev/interface-atomicity.md) |
 | Lua / VFS / 引擎约定（挂载层级、UI 图标栏、两条硬规矩） | [`docs/dev/lua-vfs-and-engine.md`](docs/dev/lua-vfs-and-engine.md) |
 | 热重载与 VM 边界 | [`docs/dev/hot-reload-and-vm-boundaries.md`](docs/dev/hot-reload-and-vm-boundaries.md) |
 | 构建与编译 / 原生 DLL / ABI | [`docs/dev/build-and-native.md`](docs/dev/build-and-native.md) |
