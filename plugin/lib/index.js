@@ -1700,7 +1700,7 @@ export function apply(ctx, config = {}) {
                 // ★ 官方结构是 { kind:'plugin', plugin:'<包名>' } ✓ —— 之前这里把包名直接
                 //   塞进了 kind（'plugin:@dsh-external/...' ✗），宿主没校验所以一直能跑，
                 //   但类型对不上、也让 tsc 过不去 ✗（2026-10-17 修正为官方形状 ✓）。
-                source: { kind: 'plugin', plugin: '@dsh-external/dsh-avorion-copilot' },
+                source: { kind: 'plugin:@dsh-external/dsh-avorion-copilot' },
             }));
             // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）
             try {
