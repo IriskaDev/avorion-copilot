@@ -80,31 +80,31 @@ function CopilotLinkIn.onQuery(data)
 --   而那个 VM 里没有 CopilotRpc → 顶层语句一执行就
 --   "attempt to index global 'CopilotRpc' (a nil value)" ✗✓✓。
 --   （也就是说：**net 链的改动热重载不了，必须重启游戏** ✓ —— 见 AGENTS.md ✓）
-return CopilotLinkIn.tradePlan(player, data)
+return CopilotLinkIn.informOnly(CopilotLinkIn.tradePlan(player, data), data)
 
     elseif what == "minePlan" then
         -- ★★★ 采矿决策的**数据获取 + 组装**（只算不下单 ✓）—— 见 jobPlan ✓
         --   与 tradePlan 同构：多区域 × 参数 × 层级加权 + 同一道 0.10 风险闸门 ✓✓
-        return CopilotLinkIn.jobPlan(player, data, "Mine")
+        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Mine"), data)
 
     elseif what == "salvagePlan" then
         -- ★★★ 打捞决策：装备件数 × E[稀有度层级]，次级键 = 残骸场材料层级均值 ✓
-        return CopilotLinkIn.jobPlan(player, data, "Salvage")
+        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, "Salvage"), data)
 
     elseif what == "jobPlan" then
         -- 一个入口两种活（data.action = Mine | Salvage ✓）；缺省按 Mine ✓
-        return CopilotLinkIn.jobPlan(player, data, data.action)
+        return CopilotLinkIn.informOnly(CopilotLinkIn.jobPlan(player, data, data.action), data)
 
     elseif what == "sellPlan" then
         -- ★★★ 卖货决策（2026-10-17 加，Issue B ✓✓）：把**船上的货**变现 ✓
         --   为什么需要：Trader 被伏击召回时**只退押金、不发利润**，货还留在船上 ✓
         --   （原版 tradecommand.lua:456-490 ✓），此时再下 Trade 会**装不进新货** ✗
         --   → 必须先 Sell ✓✓（主人的场景 ✓）
-        return CopilotLinkIn.sellPlan(player, data)
+        return CopilotLinkIn.informOnly(CopilotLinkIn.sellPlan(player, data), data)
 
     elseif what == "scoutPlan" then
         -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
-        return CopilotLinkIn.scoutPlan(player, data)
+        return CopilotLinkIn.informOnly(CopilotLinkIn.scoutPlan(player, data), data)
 
     elseif what == "goal" then
         local name = data.ship
@@ -2915,6 +2915,58 @@ function CopilotLinkIn.scoutPlan(player, data)
     CopilotRpc.trace(string.format("scoutPlan %s 扫 %d 区 / %dms 推荐=%s",
         ship, #scanned, out.scanMs, acceptable and "有" or "无"))
     return true, out
+end
+
+-- ---------------------------------------------------------------------------
+-- ★★ 只告知、不决定（2026-10-17 主人要求 ✓✓）
+-- ---------------------------------------------------------------------------
+--
+--   主人原话：「把机制写清楚，让决策 LLM 去判断该怎么做，而不是做成一个固定的脚本流程」✓
+--
+--   所以计划响应只提供**事实与选项** ✓：某个评分器排第一的档位**只是一个选项** ✗，
+--   而"超闸门"的候选也**照样列出来**（标 exceedsRiskLimit=true ✓），不静默丢弃 ✓✓。
+--
+--   本函数只加字段、不改任何既有字段 ✓ —— 既不重排、也不删减 ✓。
+function CopilotLinkIn.informOnly(resp, data)
+    if type(resp) ~= "table" then return resp end
+    local gate = 0.10
+    if type(data) == "table" then
+        local g = tonumber(data.maxAttackChance)
+        if g ~= nil then gate = g end
+    end
+    resp.riskLimit = gate
+    resp.recommendationIsOneOption = true
+    resp.decisionNote = "★ 这些是事实与选项：recommendation / orderHint 只是评分器选出的其中一组参数，" ..
+        "**供参考、不是必须照抄的答案** ✓；选哪个（或什么都不选）由决策模型自己定 ✓。" ..
+        "exceedsRiskLimit=true 的候选只是**超出玩家闸门**，数字照样列出来供你比较 ✓。"
+
+    local function tagList(list, depth)
+        if type(list) ~= "table" then return end
+        for _, c in ipairs(list) do
+            if type(c) == "table" then
+                local ch = tonumber(c.attackChanceEffective)
+                if ch == nil then ch = tonumber(c.attackChance) end
+                c.riskLimit = gate
+                if ch ~= nil then
+                    c.exceedsRiskLimit = (ch > gate)
+                    c.satisfiesPlayerRiskRule = (ch <= gate)
+                end
+                if depth ~= nil and depth > 0 then tagList(c.candidates, depth - 1) end
+            end
+        end
+    end
+
+    tagList(resp.candidates, 0)
+    tagList(resp.areaRanking, 1)
+    if type(resp.recommendation) == "table" then
+        local r = resp.recommendation
+        local ch = tonumber(r.attackChanceEffective)
+        if ch == nil then ch = tonumber(r.attackChance) end
+        r.riskLimit = gate
+        if ch ~= nil then r.exceedsRiskLimit = (ch > gate) end
+        r.isOneOptionAmongListed = true
+    end
+    return resp
 end
 
 return CopilotLinkIn

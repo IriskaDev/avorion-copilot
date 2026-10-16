@@ -253,6 +253,69 @@ function M.shipCard(player, name)
     local okPos, px, py = pcall(function() return player:getShipPosition(name) end)
     if okPos and px ~= nil and py ~= nil then
         card.sector = { x = px, y = py }
+
+        -- ★★ 深度事实（2026-10-17 补 ✓✓ —— 主人要"往地图中心推进"，所以把
+        --    "待在这里 vs 往里走"变成**可比较的数字** ✓，而不是让决策层去猜 ✓）。
+        --
+        --    原版提供的三个**可 Lua 直调**的函数（证据见 MECHANICS.md §0 ✓）：
+        --      Balancing_GetSectorRichnessFactor(x, y)  星区富饶度（gate.lua:92 等大量用例 ✓）
+        --      Balancing_GetMaterialProbability(x, y)   该坐标的材料概率（resourcetrader.lua:152 ✓）
+        --      Balancing_InsideRing(x, y)               是否在**中心屏障环**内（repairdock.lua:867 ✓）
+        --
+        --    ⚠️ 全部走 pcall ✓：签名不符只会变成 nil，绝不崩 ✗✓
+        --    ⚠️ 材料名用**文档里的枚举顺序**（Documentation/Enums.html#MaterialType ✓），
+        --       不去碰 Material() 的 userdata 属性（拼错会直接崩 ✗✓）
+        local MATERIAL_NAMES = { "Iron", "Titanium", "Naonite", "Trinium", "Xanion", "Ogonite", "Avorion" }
+
+        local function probeSector(sx, sy)
+            local out = {
+                x = sx, y = sy,
+                distanceFromCentre = math.floor(math.sqrt(sx * sx + sy * sy) + 0.5),
+                manhattanToCentre = math.abs(sx) + math.abs(sy),
+            }
+            local okR, rich = pcall(Balancing_GetSectorRichnessFactor, sx, sy)
+            if okR then out.richness = tonumber(rich) end
+            local okG, ring = pcall(Balancing_InsideRing, sx, sy)
+            if okG then out.insideCentreRing = ring end
+            local okP, probs = pcall(Balancing_GetMaterialProbability, sx, sy)
+            if okP and type(probs) == "table" then
+                local list = {}
+                local n = 0
+                if NumMaterials ~= nil then n = NumMaterials() end
+                if n <= 0 then n = #probs end
+                for i = 1, n do
+                    -- 原版用法是 probabilities[i - 1]（resourcetrader.lua:152 ✓）；两种索引都试 ✓
+                    local v = tonumber(probs[i - 1])
+                    if v == nil then v = tonumber(probs[i]) end
+                    if v ~= nil and v > 0 then
+                        list[#list + 1] = {
+                            materialIndex = i,
+                            material = MATERIAL_NAMES[i] or ("Material" .. tostring(i)),
+                            probability = v,
+                        }
+                    end
+                end
+                table.sort(list, function(a, b) return a.probability > b.probability end)
+                for i = #list, 5, -1 do list[i] = nil end   -- 只留前 4 个，控制体积 ✓
+                out.materialProbabilities = list
+            end
+            return out
+        end
+
+        -- 朝中心方向的三个取样点（用来比较"往里走会不会更值" ✓）
+        local sgnX = (px > 0 and -1) or (px < 0 and 1) or 0
+        local sgnY = (py > 0 and -1) or (py < 0 and 1) or 0
+        card.depth = {
+            note = "越靠地图中心：矿层级越高、装备越好、也更危险 ✓。richness = 原版富饶度 ✓；" ..
+                   "materialProbabilities = 原版材料概率（前 4 名 ✓）；insideCentreRing = 是否在中心屏障环内 ✓。" ..
+                   "towardCentre = 朝中心方向的三个候选星区（同类数字 ✓）—— 用来比较「待在这里 vs 往里走」✓。",
+            here = probeSector(px, py),
+            towardCentre = {
+                probeSector(px + sgnX * 8, py + sgnY * 8),
+                probeSector(px + sgnX * 16, py + sgnY * 16),
+                probeSector(px + sgnX * 28, py + sgnY * 28),
+            },
+        }
     else
         probeNotes.position = tostring(px)
     end
