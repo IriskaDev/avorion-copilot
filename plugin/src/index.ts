@@ -45,6 +45,9 @@ import {
   isLeaseFresh, setCommanderNotifier, COMMANDER_FILE, type CommanderState,
 } from './commander.js'
 import { renderTaskBlock } from './task.js'
+// ★★ 单发路径的**有界档案**（2026-10-17 ✓）：预取 + 裁剪 + 硬字节预算 ✓
+//   ★ 它与 agent 路径**共享数据、不共享渲染** ✓✓ —— 见 dossier.ts 的文件头（根因就在那儿 ✓）
+import { renderDossier, byteLen as dossierByteLen, type DossierPayload } from './dossier.js'
 
 // ★ 把提示词相关通知接到实时流水 ✓（live 是函数声明，已提升 ✓）
 setPromptNotifier(live)
@@ -173,6 +176,14 @@ export interface DecisionRecord {
   session?: SessionAttempt
   /** ★ 她的答案与单发的答案**是否一致**（影子模式下用来量"她靠不靠谱" ✓） */
   agreement?: boolean
+  /**
+   * ★★ 两条路的**体积实测**（2026-10-17 加 ✓✓ —— 体积问题必须有可回看的数字 ✓）：
+   *   · `blockBytes`   = 投进会话那个块的真实字节数 ✓（agent 路径；目标远小于 2 KB ✓）
+   *   · `cardCopies`   = 那次块里出现了几遍船卡 ✓（**必须是 0** ✗ —— 以前是 2 ✓）
+   *   · `dossierBytes` = 单发那份有界档案的字节数与裁剪记录 ✓（`dossier.ts` 的 stats ✓）
+   */
+  delivered?: { blockBytes: number; cardCopies: number; targetBytes: number }
+  dossierBytes?: unknown
 }
 
 /**
@@ -1758,6 +1769,39 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
     )
 
+    // ★★★ 单发路径的**档案**（2026-10-17 主人批准的改动 ✓✓）--------------------------
+    //
+    //   为什么单发那条路**必须**"预取 + 裁剪"而不是"告知 + 自拉" ✗→✓：
+    //   它是一个**没有工具、没有文件访问**的模型调用 ✓ —— 它不能自己查任何东西 ✗。
+    //   而 agent 那条路（投进会话）**只被告知**（`task.ts` ✓），数据由**她自己查** ✓✓。
+    //   ★ 两条路**共享数据**（同一批计划函数 / 同一份卡片 ✓），**不共享渲染** ✗✓
+    //     —— "共享那一份'把所有东西都嵌进去'的渲染"**正是** 8.7 MB 的根因 ✓✓。
+    //
+    //   ★ 惰性 + 记忆化：只在**真的要跑单发**时才去取 ✓（会话答了就不取 ✓，省一次 RPC ✓），
+    //     而且一次决策里最多取一次 ✓（重试那次**不重取** ✓ —— 与"重试不重取数据"的既有纪律一致 ✓）。
+    //   ★ 取不到**不许**让这一轮没有决策 ✗ → 兜底用 `facts.card` 渲染骨架 ✓（保证事实仍在 ✓）。
+    let dossierPromise: Promise<DossierPayload | undefined> | undefined
+    const dossierOf = (): Promise<DossierPayload | undefined> => {
+      if (dossierPromise === undefined) {
+        dossierPromise = (async (): Promise<DossierPayload | undefined> => {
+          try {
+            const r = await ask(peer, 'query', { what: 'dossier', ship }, 120)
+            if (r.ok && r.data !== undefined && r.data !== null) {
+              const d = r.data as Record<string, unknown>
+              const plans = Array.isArray(d.plans) ? (d.plans as unknown[]).length : 0
+              live(`  ├ 单发档案已取到（${plans} 个计划；运行时另有一道字节预算 ✓）`)
+              return d as DossierPayload
+            }
+            live(`  ⚠ 单发档案取不到（${r.why ?? 'unknown'}）→ 用兜底卡渲染骨架 ✓（**绝不**让本轮没有决策 ✓）`)
+          } catch (error) {
+            live(`  ⚠ 单发档案取不到（${String(error)}）→ 用兜底卡渲染骨架 ✓`)
+          }
+          return undefined
+        })()
+      }
+      return dossierPromise
+    }
+
     // ★★ 护航 rendezvous（2026-10-17 ✓）--------------------------------------
     //   主人：「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
     //   触发：tradePlan 真的缺护航 ✓ + 本星系没有护航候选 ✓ + 别的星系有闲置战斗船 ✓
@@ -1882,11 +1926,40 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       try {
         rawKind = null                                  // 每次调用重新分段 ✓
         liveRaw('reasoning', '')
+        // ★★★ 单发提示词的**组装点**（2026-10-17 主人批准的改动 ✓✓）：
+        //   · 旧写法 = `buildPrompt(facts)` —— **把预取的全部数据原样嵌进去** ✗
+        //     （船卡 + 每个计划的原始 JSON + 渲染好的候选表 + 散文 ✓）。
+        //   · 新写法 = **预取 + 裁剪 + 硬字节预算** ✓（`dossier.ts` ✓）：
+        //     船 essentials + 玩家的规则 + 能做什么 + 每个计划最好的 2~3 个候选与风险/收益数字 ✓，
+        //     并且**超预算就按固定顺序继续裁、把裁了什么记下来** ✓（绝不静默 ✓）。
+        //   ★ 两道渲染**彻底分开** ✓：agent 路径在 `task.ts`（一行通知 ✓），
+        //     单发路径在这里（有界档案 ✓）—— 共享的只有**数据** ✓✓。
+        const dossierPayload = await dossierOf()
+        const dossier = renderDossier({
+          payload: dossierPayload,
+          fallbackCard: (facts.card ?? {}) as DossierPayload,
+          goalText: facts.goalText,
+          goalOptions: facts.goalOptions,
+          // ★★ 护航候选**必须**进单发档案 ✗✓（Trade 那一单没有它就判断不了风险能不能压到闸门内 ✓）
+          escortCandidates: facts.escortCandidates,
+          // ★ 记忆块是**单发路径专属**的拼装点 ✓（agent 那条路不给 ✓）——
+          //   以前它是 `askModel(history)` 的第二个参数 ✗，现在直接进同一段文本 ✓（少一次历史拼装 ✓）。
+          memoryBlock: hint === undefined ? memoryBlock : undefined,
+          // ★ 只把"裁过头了"记进流水 ✓（正常情况一句话都不刷 ✓ —— 流水已经很吵了 ✓）。
+          log: (l) => live(l),
+        })
+        if (hint === undefined) {
+          live(`  ├ 单发档案：${dossier.stats.finalBytes} 字节 / 预算 ${dossier.stats.budgetBytes}` +
+            `（未裁剪时 ${dossier.stats.untouchedBytes} 字节；候选 ${dossier.stats.rowsPerPlan} 行/计划）`)
+          for (const d of dossier.stats.dropped) live(`  │ 裁剪：${d}`)
+          rec.dossierBytes = dossier.stats
+        }
         const r = await askModel(
           ctx, cfg,
-          buildPrompt(facts) + (hint ?? ''),
+          dossier.text + (hint ?? ''),
           liveRaw,
-          hint === undefined ? [memoryBlock] : undefined,
+          // ★ 历史参数**不再传** ✗：记忆块已经在 dossier 文本里 ✓（见上面的 memoryBlock ✓）。
+          undefined,
         )
         attempt.text = r.text
         attempt.reasoning = r.reasoning
@@ -1989,6 +2062,15 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     const copilotSource = (): UserMessageSource =>
       ({ kind: 'plugin:@dsh-external/dsh-avorion-copilot' } as unknown as UserMessageSource)
 
+    /**
+     * ★★ 把任务块投进会话 —— 顺手**量一次体积** ✓✓（2026-10-17 主人批准的改动 ✓）
+     *
+     * 为什么必须在**投递处**量 ✗→✓：这次的全部理由是"投进去的东西太大"✓ ——
+     * 那就得有一个**真实投递字节数**留在记录里 ✓，而不是靠事后估算 ✓。
+     * ★ `cardCopies` 是同一件事的**回归探针** ✓：以前船卡在块里出现**两遍** ✓
+     *   （块一遍 + 提示词一遍 ✓）—— 现在**必须是 0** ✗✓（数据一个字节都不进来 ✓）。
+     */
+    const BLOCK_TARGET_BYTES = 2_000
     const deliverToSession = (agent: AgentLike, block: string, _req?: unknown): void => {
       agent.followup(createUserMessage({
         content: [{ type: 'text', text: block }],
@@ -1996,6 +2078,13 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       }))
       // 真投出去了才续租 ✓（主人能在 fleet_status 里看到"这条选择还新鲜 ✓"）
       try { renewLease() } catch { /* 续租失败不影响本轮 ✓ */ }
+      try {
+        const bytes = dossierByteLen(block)
+        const cardCopies = block.split('"cargoCapacity"').length - 1
+        rec.delivered = { blockBytes: bytes, cardCopies, targetBytes: BLOCK_TARGET_BYTES }
+        const over = bytes > BLOCK_TARGET_BYTES ? ` ★ 超过目标 ${BLOCK_TARGET_BYTES} 字节 ✗` : ''
+        live(`  ├ 投递块体积：${bytes} 字节（目标 < ${BLOCK_TARGET_BYTES} ✓）；块里船卡副本 ${cardCopies} 份（必须 0 ✓）${over}`)
+      } catch { /* 量体积失败不影响投递 ✓ */ }
     }
 
     let outcome: DispatchOutcome
@@ -2034,8 +2123,11 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         ship,
         goalText: facts.goalText,
         goalOptions: facts.goalOptions,
-        card: facts.card,
-        planText: buildPrompt(facts),
+        // ★★★ 这里**故意**不再传数据 ✗✓（2026-10-17 主人批准的改动）：
+        //   · `card: facts.card` —— 船卡曾经在这个块里出现**两遍** ✓（本块一遍 + 提示词一遍 ✓）；
+        //   · `planText: buildPrompt(facts)` —— 那是**整份预取渲染**（8.7 MB 的入口 ✓）。
+        //   → 现在 agent 路径**只告知**（`task.ts` ✓），数据她自己用工具拉 ✓（缺省 compact ✓）。
+        //   ★ 单发那条路的档案是**另一个渲染**（`dossier.ts` ✓），两条路共享数据不共享渲染 ✓✓。
         deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
       })
     }

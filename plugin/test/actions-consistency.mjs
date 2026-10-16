@@ -97,11 +97,31 @@ check('优先用原版 attackChanceWithEscorts', /best\.withEscorts \?\?/.test(i
 //   六个计划分支曾是 `return CopilotLinkIn.informOnly(...)` ✗（只有一个返回值 ✓）
 //   → ok=那个表（真值）而 payload=nil ✗ → DSH 收到空载荷 {} ✗✓ → 模型**完全没计划数据**
 //   却以为「没有候选」✗✓ 并开始瞎猜 ✓✓。这条断言让那种写法**再也进不了仓库** ✓。
+//
+//   ★★ 2026-10-17 重构后（体积改动 ✓）：六个计划分支**收成一个出口** `planQuery` ✓
+//      —— 契约断言跟着换成"那个出口仍然显式接三个返回值" ✓（语义一模一样 ✓，
+//      只是不再有六份重复 ✓；而"六个分支各自写对"这件事**再也不需要人来守** ✗✓）。
 {
+  // (a) 任何地方都不许出现 `return informOnly(...)` 这种**单返回值**写法 ✗
+  //     （`return true, informOnly(...)` 是合法的 ✓ —— 所以只禁"直接 return 它" ✓）
   const bare = [...lua.matchAll(/return\s+(CopilotLinkIn\.informOnly\s*\()/g)].length
-  const good = [...lua.matchAll(/return\s+true\s*,\s*CopilotLinkIn\.informOnly\s*\(/g)].length
-  check('六个计划分支都返回 (true, payload) ✓', bare === 0, `仍单返回值 ${bare} 处 ✗`)
-  check('确实存在包装调用（不是把代码删光了 ✓）', good >= 6, `只找到 ${good} 处 ✓`)
+  check('没有任何"单返回值 informOnly"写法 ✓', bare === 0, `仍单返回值 ${bare} 处 ✗`)
+
+  // (b) 计划出口必须**显式接三个返回值**（血案的写法就是漏了这个 ✓）。
+  //     ★ 写法是"先声明、再在分支里赋 (ok, payload, why)"✓ —— 所以要断言
+  //       **三返回值赋法真的存在** ✓，别去猜某个具体的 `local a, b, c =` 形状 ✗。
+  const takes3 = /\bok,\s*payload,\s*why\s*=\s*CopilotLinkIn\.(tradePlan|jobPlan|sellPlan|scoutPlan)\s*\(/.test(lua)
+  check('计划出口显式接 (ok, payload, why) ✓', takes3, 'planQuery 里没找到三返回值接法 ✗')
+  const wraps = /payload\s*=\s*CopilotLinkIn\.informOnly\s*\(\s*payload,\s*data\s*\)/.test(lua)
+  check('计划出口仍然调用 informOnly 包装（不是把它删了 ✓）', wraps, '没找到 informOnly 包装 ✗')
+
+  // (c) ★ 六个计划**都**走同一个出口 ✓（"加一层处理要改六处"这个坑不可能再出现 ✓）
+  const dispatch = [...lua.matchAll(/return\s+CopilotLinkIn\.planQuery\s*\(/g)].length
+  check('六个计划分支都走同一个出口 planQuery ✓', dispatch >= 6, `只找到 ${dispatch} 处 ✓`)
+  // (d) 六个 what 名一个都没少 ✓
+  for (const w of ['tradePlan', 'minePlan', 'salvagePlan', 'jobPlan', 'sellPlan', 'scoutPlan']) {
+    check(`query 分支仍在：${w} ✓`, new RegExp(`what\\s*==\\s*"${w}"`).test(lua), '')
+  }
 }
 
 // ── ⑨ 零候选必须自带机器可读的原因（否则模型自己编 ✗✓）

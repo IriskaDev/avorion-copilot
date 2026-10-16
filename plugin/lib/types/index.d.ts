@@ -130,6 +130,18 @@ export interface DecisionRecord {
     session?: SessionAttempt;
     /** ★ 她的答案与单发的答案**是否一致**（影子模式下用来量"她靠不靠谱" ✓） */
     agreement?: boolean;
+    /**
+     * ★★ 两条路的**体积实测**（2026-10-17 加 ✓✓ —— 体积问题必须有可回看的数字 ✓）：
+     *   · `blockBytes`   = 投进会话那个块的真实字节数 ✓（agent 路径；目标远小于 2 KB ✓）
+     *   · `cardCopies`   = 那次块里出现了几遍船卡 ✓（**必须是 0** ✗ —— 以前是 2 ✓）
+     *   · `dossierBytes` = 单发那份有界档案的字节数与裁剪记录 ✓（`dossier.ts` 的 stats ✓）
+     */
+    delivered?: {
+        blockBytes: number;
+        cardCopies: number;
+        targetBytes: number;
+    };
+    dossierBytes?: unknown;
 }
 /**
  * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。

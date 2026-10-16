@@ -63,63 +63,54 @@ function listField(text, key) {
         .filter((s) => s !== '' && !NONE_WORDS.has(s.toLowerCase()));
 }
 /**
- * 渲染任务块 ✓ —— **与单发路径的 `buildPrompt()` 同源**（同一批事实、同一套读法 ✓）。
+ * ★★★ 渲染任务块 —— **只告知，不灌数据** ✓✓（2026-10-17 主人批准的改动）
  *
- * ## ★ 为什么界线要画得这么重（主人 2026-10-17 定的范围之后，这条变成了硬要求）
+ * 这个函数是"agent 路径"的**唯一**渲染点 ✓。它的输出目标是 **远小于 2 KB** ✓，
+ * 且**与计划有多大无关** ✗✓ —— 因为计划一个字节都不进来 ✓。
  *
- * 投递的目标会话**就是主人自己正在聊天的那个会话** ✓（不再是"分身会话"✗）。
- * 于是同一个 transcript 里会同时存在：
- *   · 主人在跟助手聊天 ✓
- *   · 舰队要一条决策 ✓
- * 两者**绝不能互相误会** ✗✓：
- *   · 她必须一眼看出"这条是**舰队任务**，不是主人说话" → 三行 `<fleet_task …>` /
- *     `这是插件投递的…` / 结尾 `</fleet_task>` ✓；
- *   · 我们还必须能认出"哪条回复是**这一单**" → 回显 `task=<id>` 是唯一可靠的锚点 ✓
- *     （见本文件头注释 ✓）。
- * ★ 所以她**可以**在任务块外继续跟主人说话 ✓ —— 我们只认回显对上号的那条 ✓；
- *   主人也一眼能看出哪几行是舰队的活儿 ✓✓。
+ * ## 它为什么长这样（每条都有实测理由 ✓）
  *
- * 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与
- * `src/index.ts` 的重试路径都记录了实机事故 ——「她想太久、正文被 maxTokens 截断，
- * 一个动作行都没吐」✓。把契约放最前，最坏情况丢的是散文，不是结论 ✓。
+ * | 要素 | 为什么不能省 |
+ * |---|---|
+ * | `<fleet_task …>` / 结尾标记 | 投递目标是主人**正在聊天的那条会话** ✓ —— 她必须一眼看出"这是舰队的活儿，不是主人在说话" ✗✓ |
+ * | 船名 | 不写船名，她连该查哪艘都不知道 ✓ |
+ * | `task=<id>` 回显 | **唯一**能认出"哪条回复是这一单"的锚点 ✓（见文件头 ✓）；对不上就判 MISMATCH 并走阶梯 ✓ |
+ * | 一行"它空闲了、要一个决策" | 这就是**全部**的请求内容 ✓（主人原话 ✓） |
+ * | 工具指针 | 让"自拉"变得**不用猜** ✓ —— 哪个 `what` 查什么、哪个参数要小答案 ✓（这是这次改动的**关键**：光说"你自己查"而不给路由，等于把体积问题换成瞎猜问题 ✗✓） |
+ * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 让她知道别慢慢查 ✓ |
+ * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：她想太久、正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
+ *
+ * ★ 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与 `src/index.ts` 的重试路径
+ *   都记录了同一个事故 ✓ —— 把契约写清楚，最坏情况丢的是散文，不是结论 ✓。
+ *
+ * ★ 为什么**没有**"参考计划"段 ✗✓：那一段以前是 `planText`（`buildPrompt()` 的全文 ✓）——
+ *   也就是 8.7 MB 的入口 ✓。现在她要计划就**自己查** ✓（`fleet_query`，缺省 compact ✓）。
  */
 export function renderTaskBlock(req) {
     const L = [];
     L.push(`<fleet_task id="${req.taskId}" ship="${req.ship}" deadline_hint="${req.deadlineHintSec}s">`);
-    L.push('★ 这是**插件**（dsh-avorion-copilot）投递的**舰队决策请求** —— **不是主人在说话** ✗✓。');
-    L.push('  它来自游戏（Avorion）：有一艘船空闲了，需要你替它定个动作。');
-    L.push('  你可以先调用工具自己查证（fleet_query / fleet_decisions 等 ✓），再给结论。');
-    L.push('  答复时**请把结论行放在最前面** ✓（见本块末尾的格式 ✓）。');
+    L.push('★ 这是**插件**投递的**舰队决策请求** —— **不是主人在说话** ✗✓。');
+    L.push(`  ${req.ship} 现在**空闲**了，需要一个决策。`);
+    L.push('  ★ 本块**只告知**，不带任何数据 ✗ —— 需要什么就**自己查** ✓（下面是路由表）。');
     L.push('');
-    L.push(`船：${req.ship}`);
-    L.push('玩家给这艘船设定的运营目标：');
-    L.push(req.goalText !== '' ? req.goalText : '(玩家没有写文字目标，只给了下面的动作边界)');
-    L.push('');
-    L.push('允许的动作：');
-    L.push(req.goalOptions.length > 0
-        ? req.goalOptions.join(', ')
-        : '(玩家没有限制 —— 你可以从 Mine / Salvage / Trade / Sell / Travel / Scout 里选)');
-    L.push('');
-    L.push('这艘船的现状（能力卡）：');
-    L.push(JSON.stringify(req.card ?? {}, null, 2));
-    L.push('');
-    if (req.planText !== undefined && req.planText !== '') {
-        L.push('游戏侧算好的计划（reference，不是必须照抄 ✓）：');
-        L.push(req.planText);
-        L.push('');
+    L.push('查证工具（★ 计划查询缺省就是**小答案**，不用特意要小的）：');
+    L.push(`  · {what:"ship", ship:"${req.ship}", brief:true} → 现状（星区/船长/货舱/能做什么）`);
+    L.push(`  · {what:"goal", ship:"${req.ship}"} → 玩家定的目标与动作边界`);
+    L.push('  · 计划（多框候选，自己按需挑）：tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan');
+    if (req.goalOptions.length > 0) {
+        L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（★ 只有这些 + None ✓）`);
     }
-    L.push('★★★ 答复格式（**必须**，这样你的聊天与舰队的任务永远不会互相误会 ✓✓）★★★');
-    L.push(`1. **第一行**就是结论：action=... （不要先写客套话或推理 ✗）`);
-    L.push(`2. 第二行**必须回显** task=${req.taskId} —— 这一行是舰队认出"这是回给我的"的**唯一凭据** ✓；`);
-    L.push('   写错或写成别的任务号 → 这一单**会被判无效**（绝不允许把别的船的答案用在这艘船上 ✗）。');
-    L.push('3. 之后可以写 x= / y= / size= / duration= / goodName= / safeMode= / reason= 等字段 ✓。');
-    L.push('4. 如果你需要主人拍板（例如"要不要先派护航"），就**直接问他** ✓ ——');
-    L.push('   不写 action 行、把问题写出来即可 ✓；本轮会明确记为"等主人裁决"，**不会**替你编一个动作 ✗。');
-    L.push('5. 这些字段行之后，你**照常**跟主人聊天、继续原来的话题都行 ✓（舰队只看上面这几行 ✓）。');
+    L.push('  · {what:"sectorFacts", x:…, y:…} → 星区事实（富饶度/材料概率/离中心）');
+    L.push(`  · fleet_decisions {ship:"${req.ship}"} → 这艘船过去的决策与理由（可审计）`);
+    L.push('  ★ 全部用 fleet_query 调；计划查询 `compact`（缺省 true）与 `top=N`（缺省 4）控制答案大小。');
     L.push('');
-    L.push('action=<动作>');
-    L.push(`task=${req.taskId}`);
-    L.push('x=<框心 x>  y=<框心 y>  size=<边长>  duration=<小时>  reason=<一句话>');
+    L.push('答复格式（★ **第一行**就是结论 —— 实测：想太久会把额度烧光、答案行吐不出来 ✗）：');
+    L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | None>');
+    L.push(`  第 2 行 task=${req.taskId}  ← ★**必须回显**，这是认出"回给哪一单"的**唯一凭据**；`);
+    L.push('    写错/写成别的号 → 判无效 ✗（绝不把别船的答案用在这艘船上 ✗）。');
+    L.push('  之后按需要：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=');
+    L.push('  需要主人拍板就直接把问题写出来 ✓（不写 action 行 → 记为"等主人裁决"，不替你编动作 ✓）。');
+    L.push('  这些行之后**照常**跟主人聊天、继续原来的话题都行 ✓（舰队只看上面这几行 ✓）。');
     L.push('</fleet_task>');
     return L.join('\n');
 }

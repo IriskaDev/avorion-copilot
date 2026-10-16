@@ -106,6 +106,27 @@ const game = {
   orders: [],
 }
 
+/**
+ * ★★ `query {what:"dossier"}` 的替身（2026-10-17 ✓✓）
+ *
+ * 为什么现在必须有它 ✗→✓：单发那条路的提示词**不再**由插件自己拼（`buildPrompt`）✗，
+ * 而是走**有界档案** ✓：插件先 `query {what:"dossier"}` 拿一份预取 + 裁剪的载荷 ✓，
+ * 再由 `dossier.ts` 渲染成**有字节预算**的文本 ✓。
+ * ★ 所以"游戏那一侧的替身"也必须提供 `dossier` ✗，否则这条路会优雅地退化成**只剩骨架** ✓
+ *   （兜底是真兜底 ✓，但那样测试就没验到"候选数字真的送到眼前" ✓）。
+ */
+function dossierStub() {
+  const plans = []
+  plans.push({ ...game.tradePlan, action: 'Trade', ship: ACTION_SHIP })
+  return {
+    what: 'dossier', ship: ACTION_SHIP, gate: 0.1,
+    goal: game.goal,
+    card: game.shipCard,
+    plans,
+    note: '★ 这是有界档案 ✓',
+  }
+}
+
 function reply(cmd, data) {
   if (cmd === 'hello') return { side: 'game', ver: 2, caps: ['query', 'order', 'recall', 'reload'] }
   if (cmd !== 'query' && cmd !== 'order') return {}
@@ -118,6 +139,7 @@ function reply(cmd, data) {
   if (what === 'ship') return game.shipCard
   if (what === 'fleet') return game.fleet
   if (what === 'tradePlan') return game.tradePlan
+  if (what === 'dossier') return dossierStub()      // ★ 单发路径的预取 ✓
   return {}
 }
 

@@ -3837,7 +3837,11 @@ function CopilotLinkIn.compactPlan(resp, top, whole)
         out.trimmed = true
         -- ★ 候选 / 推荐 / area 再收一道**白名单**（只留决策真要的键 ✓）
         local AREA_KEYS = {
-            "x", "y", "shape", "sizeX", "sizeY", "origin", "offset", "distance",
+            "x", "y", "shape", "sizeX", "sizeY",
+            -- ★★ `origin` / `offset` **必须在**（2026-10-17 自检抓到 ✓）：
+            --   提示词明说"每个候选都带 origin（粗扫/细扫）与 offset（相对船的偏移）"✗✓，
+            --   而 trim 的白名单第一版漏了它们 ✗ → 单发路径就再也看不到"这个框是怎么来的"✓。
+            "origin", "offset", "distance",
             "acceptable", "bestTag", "duration", "safeMode", "attackChance",
             "baseAttackChance", "attackChanceEffective", "riskLimit", "exceedsRiskLimit",
             "satisfiesPlayerRiskRule", "valueLow", "valueHigh", "netProfitLow", "netProfitHigh",
@@ -3846,11 +3850,16 @@ function CopilotLinkIn.compactPlan(resp, top, whole)
             "routeCount", "bestRouteName", "flights", "deposit", "profitPerSize", "riskKind",
             "escortsNeeded", "unknownCountReliable", "hasUnknown", "parameterTags",
         }
+        -- ★ `offset` 本来是**表**（{x=,y=} ✓）—— 变成**一行的字符串**①省体积 ②免去模型解析 ✓
         local function trimRow(row)
             if type(row) ~= "table" then return row end
             local r = {}
             for _, k in ipairs(AREA_KEYS) do
                 if row[k] ~= nil then r[k] = row[k] end
+            end
+            local off = row.offset
+            if type(off) == "table" and type(off.x) == "number" and type(off.y) == "number" then
+                r.offset = tostring(off.x) .. "," .. tostring(off.y)
             end
             return r
         end

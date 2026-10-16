@@ -14,10 +14,18 @@ import { registerHooks } from 'node:module'
 
 // npm 装好的 dsh-llm 无法脱离 DSH 单独加载（传递依赖 cordis 在 npm 包里是空目录），
 // 离线测试用本地桩顶替它；只影响本进程，不动插件产物。
+//
+// ★ 2026-10-17：`@deepseek-ai/dsh-tools` 也要桩 ✓ —— `lib/tools.js` 顶部就 import 它 ✓，
+//   而离线环境里没有那个包（`node_modules` 是 build.ps1 的**编译期**联接，跑完即删 ✓；
+//   真实运行时由 DSH 宿主解析 ✓）→ 不桩的话 `node test/harness.mjs` 直接
+//   ERR_MODULE_NOT_FOUND ✗（**不是新问题** ✓，本改动之前也是这样 ✓）。
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier === '@deepseek-ai/dsh-llm') {
       return { url: new URL('./llm-stub.mjs', import.meta.url).href, shortCircuit: true }
+    }
+    if (specifier === '@deepseek-ai/dsh-tools') {
+      return { url: new URL('./dsh-tools-stub.mjs', import.meta.url).href, shortCircuit: true }
     }
     return next(specifier, context)
   },
@@ -52,6 +60,10 @@ function makeCtx(chunks) {
         info: (m) => logs.push(`INFO  ${m}`),
         warn: (m) => logs.push(`WARN  ${m}`),
       },
+      // ★ 2026-10-17：插件现在**一定要**有 `tools`（它注册 fleet_* 工具 ✓）——
+      //   以前这个假 ctx 没有它 ✗ → `ctx.tools.register` 直接抛 ✓（本改动之前就已经这样 ✓）。
+      //   离线测试不需要真的注册 ✓，只要有一个**收得下**的 register ✓（照 dsh-global-memory 的用法 ✓）。
+      tools: { register: () => {} },
       effect(fn, label) {
         const d = fn()
         if (typeof d === 'function') disposers.push({ label, d })

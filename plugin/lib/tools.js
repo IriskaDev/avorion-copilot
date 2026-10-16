@@ -66,18 +66,48 @@ opts = {}) {
         name: 'fleet_query',
         description: 'Query Avorion game state. what=fleet returns a snapshot of every ship on the Copilot ' +
             'roster (idle/busy, has captain, current progress). what=ship returns one ship capability ' +
-            'card. what=goal returns that ship operating goal (the player text intent and allowed ' +
-            'actions). what=orderSchema returns the currently legal commands and their parameters for ' +
-            'that ship. what=sectorFacts returns FACTS about any sector (richness / material ' +
-            'probability / centre-ring side / distance from the map centre, plus the same numbers for ' +
-            'sectors closer to the centre) -- pass x and y (and optionally ship) -- it returns no ' +
-            'verdict about whether to go there. This is the ONLY proper way to look at the game -- do ' +
+            'card (pass brief=true for the SHORT one -- it answers "what can this ship do right now" ' +
+            'in one call, which is usually all you need). what=goal returns that ship operating goal ' +
+            '(the player text intent and allowed actions). what=sectorFacts returns FACTS about any ' +
+            'sector (richness / material probability / centre-ring side / distance from the map centre, ' +
+            'plus the same numbers for sectors closer to the centre) -- pass x and y (and optionally ' +
+            'ship) -- it returns no verdict about whether to go there. what=dossier returns ONE bounded ' +
+            'pre-fetched bundle (ship + rules + plan candidates) -- that is the single-shot path helper; ' +
+            'an agent should prefer the individual queries below. The plan queries -- what=tradePlan | ' +
+            'minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- ' +
+            'are BOUNDED BY DEFAULT: you get the top few candidate boxes with their key numbers, not the ' +
+            'full multi-megabyte dump. Use top=N to change how many candidates come back, compact=false ' +
+            '(or full=true) only when you really need the complete raw answer, and brief=true on ' +
+            'what=fleet for a short roster. This is the ONLY proper way to look at the game -- do ' +
             'not rely on screenshots.',
         parameters: {
-            what: { type: 'string', required: true, description: 'fleet | ship | goal | orderSchema | sectorFacts' },
-            ship: { type: 'string', description: 'ship name; required when what is ship/goal/orderSchema' },
+            what: {
+                type: 'string',
+                required: true,
+                description: 'fleet | ship | goal | sectorFacts | dossier | tradePlan | minePlan | ' +
+                    'salvagePlan | sellPlan | scoutPlan | jobPlan',
+            },
+            ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/any plan' },
             x: { type: 'number', description: 'sector x; required for what=sectorFacts' },
             y: { type: 'number', description: 'sector y; required for what=sectorFacts' },
+            compact: {
+                type: 'boolean',
+                description: 'plan queries: DEFAULT TRUE (small answer: top few candidates, scalar fields only, ' +
+                    'the per-box bulk tables dropped -- the response says what it dropped). Pass compact=false ' +
+                    'to get the complete raw answer instead (that one is still hard-gated, and says what it cut).',
+            },
+            top: {
+                type: 'number',
+                description: 'plan queries: how many candidate boxes to keep (default 4, max 24). Smaller = cheaper. ' +
+                    'This is the main knob for answer size.',
+            },
+            full: { type: 'boolean', description: 'plan queries: same as compact=false (explicit full answer)' },
+            brief: {
+                type: 'boolean',
+                description: 'ship/fleet: return the SHORT view (name/sector/captain/cargo/actions + current-sector ' +
+                    'numbers; no depth sampling, no long per-action prose). Answers "what can it do now".',
+            },
+            action: { type: 'string', description: 'jobPlan only: Mine | Salvage (default Mine)' },
         },
         output: {
             schema: { type: 'string' },
@@ -95,10 +125,28 @@ opts = {}) {
             // tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
             // which takes far longer than a plain query -- give it room (2026-10-16).
             const timeout = args.what === 'tradePlan' ? 120 : 10;
-            const r = await ask(peer, 'query', { what: args.what, ship: args.ship, x: args.x, y: args.y }, timeout);
+            // ★★ 计划查询的**体积旋钮**（2026-10-17 ✓✓）：原样透传给游戏侧 ✓。
+            //   ★ **一个都不默认** ✗ —— 缺省由**游戏侧**定（compact=true / top=4 ✓），
+            //     这样"工具说明"与"游戏行为"只有一个真相来源 ✓（不会各改各的 ✓）。
+            //   ★ 但**必须**把参数名带过去（漏了它们 = 旋钮静默失效 ✓）。
+            const r = await ask(peer, 'query', {
+                what: args.what, ship: args.ship, x: args.x, y: args.y,
+                compact: args.compact, top: args.top, full: args.full, brief: args.brief,
+                action: args.action,
+            }, timeout);
             if (!r.ok)
                 return `query failed: ${r.why ?? 'unknown'}`;
-            return text(r.data);
+            const body = text(r.data);
+            // ★★ 体积**回显**（2026-10-17 ✓）：查询答复本身也会进上下文 ✓ ——
+            //   让调用方**看得见**自己拉了多少字节 ✓（自己决定要不要缩 top ✓）。
+            //   这一行是**事实**，不是限制 ✓（游戏侧已经有闸，这里只是让它可见 ✓）。
+            const bytes = Buffer.byteLength(body, 'utf8');
+            const head = `[fleet_query ${args.what}: ${bytes} bytes` +
+                (args.what.endsWith('Plan') || args.what === 'jobPlan'
+                    ? `, compact=${args.compact === false || args.full === true ? 'FULL' : 'yes'}${args.top !== undefined ? `, top=${String(args.top)}` : ''}`
+                    : '') +
+                ']\n';
+            return head + body;
         },
     }, 'fleet_query tool');
     // ---------------------------------------------------------------------

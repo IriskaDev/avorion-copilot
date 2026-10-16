@@ -205,6 +205,33 @@ function sellPlan() {
   }
 }
 
+/**
+ * ★★ `query {what:"dossier"}` 的替身（2026-10-17 ✓✓）
+ *
+ * 单发那条路的提示词**不再**由插件自己拼（`buildPrompt`）✗ —— 它现在走**有界档案** ✓：
+ * 插件先 `query {what:"dossier"}` 拿一份预取 + 裁剪的载荷 ✓，再由 `dossier.ts` 渲染 ✓。
+ * ★ 这个替身必须**把计划原样带进去** ✓ —— 否则测试验的就不是"数字真的送到眼前" ✓了
+ *   （那正是 f/h 两组断言要钉住的东西 ✓）。
+ */
+function dossierStub() {
+  const plans = []
+  plans.push({ ...tradePlan(), action: 'Trade', ship: SHIP })
+  plans.push({ ...minePlan(), action: 'Mine', ship: SHIP })
+  const sell = sellPlan()
+  plans.push({
+    ...sell, action: 'Sell', ship: SHIP,
+    // ★★ 游戏侧 `trim=true` 会给每个候选补 `origin`（粗扫/细扫 ✓）—— 替身照做 ✓，
+    //   否则测的就不是"这条路真的把 origin 送到眼前" ✓了。
+    areaRanking: (sell.areaRanking ?? []).map((a) => ({ ...a, origin: a.origin ?? 'coarse' })),
+  })
+  return {
+    what: 'dossier', ship: SHIP, gate: 0.1,
+    goal: game.goal, card: game.shipCard, plans,
+    planFetchFailures: [{ what: 'salvagePlan', why: 'stub: 空载荷' }],
+    note: '★ 这是有界档案 ✓（每个计划只回前几个候选、逐框只有标量 ✓）',
+  }
+}
+
 function reply(cmd, data) {
   if (cmd === 'hello') return { side: 'game', ver: 2, caps: ['query', 'order', 'recall', 'reload'] }
   if (cmd === 'order') {
@@ -217,6 +244,7 @@ function reply(cmd, data) {
   if (what === 'goal') return game.goal
   if (what === 'ship') return game.shipCard
   if (what === 'fleet') return game.fleet
+  if (what === 'dossier') return dossierStub()          // ★ 单发路径的预取 ✓
   if (what === 'minePlan' || what === 'jobPlan') return minePlan()
   if (what === 'tradePlan') return tradePlan()
   if (what === 'sellPlan') return sellPlan()
@@ -545,20 +573,25 @@ try {
   }
   // ---- h. ★★ 提示词里必须**看得见多个候选**（主人 2026-10-17 要求 ✓✓）----
   //   "她应该总是框选几块不同区域，看看情况再做决策" →
-  //   所以提示词里要有**并排的候选表**（不是"一个赢家 + 一句说明" ✗）。
+  //   所以提示词里要有**多个候选框并排摆出来**（不是"一个赢家 + 一句说明" ✗）。
+  //   ★ 2026-10-17 起这段提示词由 `dossier.ts` 渲染（有界档案 ✓）——
+  //     形状与旧 `renderCandidateTables` 的表格不同 ✓，但**要求一模一样** ✗：
+  //     多个框、每个框的绝对坐标、形状、以及"框的位置可以平移"这条事实 ✓。
   {
     modelCalls = 0
     prompts.length = 0
     const { rpc } = await decideOnce(`action=Mine\nx=${HERE.x}\ny=${HERE.y}\nduration=1\nreason=挖矿\n`, [])
     const seen = prompts.join('\n')
-    console.log(`\n[h] 提示词里的表：${['Trade 候选框', 'Mine 候选框', '并排'].filter((k) => seen.includes(k)).join(' / ') || '(无 ✗)'}`)
+    console.log(`\n[h] 提示词里的候选：${['候选框', 'Trade', '框的位置可以变'].filter((k) => seen.includes(k)).join(' / ') || '(无 ✗)'}`)
     check('h. 候选表: decide 成功', rpc.ok === true, rpc)
-    check('h. 候选表: ★ 提示词里有 Trade 的**并排候选表**（多个框 ✓✓）',
-      seen.includes('Trade 候选框') && /并排/.test(seen), '')
+    check('h. 候选表: ★ 提示词里有 Trade 的**多个候选框**（并排摆开 ✓✓）',
+      /★★ Trade/.test(seen) && /候选框（共 \d+ 个，这里列前 \d+ 个/.test(seen), '')
+    check('h. 候选表: ★ 每个候选框都带**绝对星区坐标**（不是只有 offset ✓）',
+      seen.includes(`${HERE.x},${HERE.y}`) && seen.includes(`${HERE.x + 4},${HERE.y}`), '')
     check('h. 候选表: ★ 表里能看到**两种合法形状**（17x17 与 29x11 ✓）',
       seen.includes('17x17') && seen.includes('29x11'), '')
     check('h. 候选表: ★ 说明里写明"框的位置可以变"（事实 ✓，不是建议 ✗）',
-      seen.includes('框的位置是') || seen.includes('框可以平移'), '')
+      seen.includes('框的位置可以变'), '')
     check('h. 候选表: ★ 说明里写明"x/y 是算好的绝对值、不要再加 offset" ✓',
       seen.includes('绝对星区坐标') && seen.includes('offset'), '')
     check('h. 候选表: ★ 没有"照抄第一行"之类的指令 ✗',
