@@ -2877,6 +2877,41 @@ function CopilotLinkIn.scoutPlan(player, data)
         out.riskWarning = "no scouting area passed the risk gate (<= " .. tostring(gate) .. ")"
         out.note = "no acceptable scouting area — do not order; consider escorts or another region"
     end
+    -- ★★ 侦察的**事实**（2026-10-16 ✓✓ —— 只给事实，不做决定 ✓）
+    --
+    -- 主人原则（最高优先 ✓）：「把机制写清楚让决策 LLM 去判断该怎么做，
+    --   而不是做成一个固定的脚本流程。」
+    -- → 这里**只**给算数结果 ✓：邻域还有多少未探索 ✓、离地图中心多远 ✓、侦察一次多久 ✓
+    -- → ★ **不**给"该不该挪位 / 挪到哪 / 下一步做什么" ✗（那是 LLM 的判断 ✓✓）
+    do
+        local okScout, Scout = pcall(function() return include("copilot/scout") end)
+        if okScout and type(Scout) == "table" then
+            local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+            if okPos and px ~= nil and py ~= nil then
+                -- "已探索"判据**直接来自原版** ✓（不用猜 ✗）：
+                --   player:getKnownSector(x,y) ~= nil → 该星区已知 ✓
+                --   （orderchain.lua:887 / factionmapsegment.lua:235 / entitydbg.lua:3955 ✓）
+                local isKnown = function(x, y)
+                    local ok, view = pcall(function() return player:getKnownSector(x, y) end)
+                    if not ok then return false end
+                    return view ~= nil
+                end
+                out.shipSector = { x = px, y = py }
+                -- 邻域 = 侦察区域本身（原版 21x21 → half=10 ✓ scoutcommand.lua:416 ✓）
+                out.coverage = Scout.survey(isKnown, px, py, 10)
+                out.coverage.basis = "player:getKnownSector(x,y)==nil 视为未探索 ✓（orderchain.lua:887 / factionmapsegment.lua:235）"
+                out.centre = { x = 0, y = 0, distance = Scout.centreDistance(px, py),
+                               note = "|x|+|y| 越小越靠地图中心；主人设定：越靠中心矿越高级、装备越好、也越危险 ✓" }
+                out.travelFacts = { minJumps = 2, areaSize = { 1, 1 }, shipMustBeInside = false,
+                                    source = "travelcommand.lua（目的地 ≥2 跳 ✓）；scoutcommand.lua:416/428（21x21、船必须在区内 ✓）" }
+                out.revealsOffgridNote = "0=none 1=some 2=all —— ★ 是枚举**不是计数** ✗（scoutcommand.lua:519-529 ✓）"
+                out.factNote = "以上都是**事实** ✓；在哪侦察、要不要用旅行换个位置，由你自己判断 ✓"
+                CopilotRpc.trace(string.format("scoutPlan 事实: 船(%d,%d) 未探索=%d/%d 离中心=%d",
+                    px, py, out.coverage.unknown, out.coverage.total, out.centre.distance))
+            end
+        end
+    end
+
     CopilotRpc.trace(string.format("scoutPlan %s 扫 %d 区 / %dms 推荐=%s",
         ship, #scanned, out.scanMs, acceptable and "有" or "无"))
     return true, out
