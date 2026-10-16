@@ -431,3 +431,46 @@ TypeScript 报 `TS1005: ',' expected` ✓。
 * ★ **别误删 `D:\<游戏>\bin\copilot.dll`** ✓✓ —— 那才是**游戏运行时真正加载**的那一份 ✓
   （仓库根/native 下出现的 `copilot.dll` 都只是**编译残留** ✗，可清 ✓）
 * 仓库根只留文档与 `modinfo.lua`、`data/`、`native/` ✓
+
+## ★★ 护航规则：**不是**"同星系"（2026-10-17 更正，实读原版 ✓✓）
+
+本项目**早些时候把这条记错了** ✗ —— 一直按"护航必须与行动船同星系"实现 ✓。
+实读原版后确认**并非如此** ✓：
+
+```
+data/scripts/player/background/simulation/simulationutility.lua
+  :145  function SimulationUtility.isShipUsableAsEscort(owner, escorter, escortee)
+  :157  local reach, canPassRifts, cooldown = databaseEntry:getHyperspaceProperties()
+  :161  if distance2(vec2(ex, ey), vec2(sx, sy)) > reach * reach then   → EscortError.TooFarAway
+  :165-168  if not canPassRifts then  两船必须在**同一环侧**（Balancing_InsideRing 相同）
+```
+
+→ ★ 判据是「**与行动船距离 ≤ 护航自己一跳的航程**」✓（+ 不能穿裂隙者须同处屏障环一侧 ✓）。
+**同星系只是它的一个子集** ✓。
+
+**现况**：
+* `lib/copilot/card.lua` 暴露 `hyperspace = { reach, canPassRifts }` ✓（新 ✓）。
+* 插件侧按原版判据过滤护航候选 ✓；★ 但对**环侧判不准**的两种情形
+  （`canPassRifts=false`、或拿不到 reach）**保守退回"同星系"** ✓
+  —— 同星系必然同环侧 ✓，所以是"只会少收、不会错收" ✓，并在流水里列出保守未收的船 ✓✓。
+  要彻底精确，环侧判断得放到**游戏侧**做（用 `Balancing_InsideRing` ✓）。
+
+## ★ 查询：`sectorFacts`（2026-10-17 补 ✓）
+
+`query { what="sectorFacts", x, y, ship? }` → **只有事实**的星区资料（`net/link_in.lua` 的
+`sectorFacts` 分支 ✓）：富饶度 / 材料概率（前 4）/ 是否在中心屏障环内 / 离中心距离 ✓，
+以及**朝中心方向三个取样点**的同类数字 ✓（便于横向比较 ✓）；
+给了 ship 就再带上该船的能力事实（含 `hyperspace` ✓）。
+* ★ 它**不给"该不该去"的结论** ✗ —— 主人定的原则：只给**大目标 + 机制**，
+  「要不要走、什么时候走、走多远」由决策模型自己判断 ✓✓。
+* ★ 该星区的**产量/伏击预测算不出来** ✗（原版预测要求船已经在那个区域内 ✓）——
+  返回里 `cannotCompute` 会**明说** ✓，不许让人以为那里有预测数字 ✗。
+* 同一组原版函数（`Balancing_GetSectorRichnessFactor` / `GetMaterialProbability` /
+  `InsideRing`）与卡片 `depth` 段一致 ✓，证据见 [`MECHANICS.md`](MECHANICS.md) ✓。
+
+## ★ 提示词住在插件里（2026-10-17 ✓）
+
+决策提示词**不在**本仓库 ✗，在插件仓库 `dsh-avorion-copilot/prompt/system.md` ✓
+（运行时读取 ✓，用户可用 `%AppData%\Avorion\moddata\copilot\prompt\system.md` 覆盖 ✓，
+改完**不用重启 DSH** ✓）。机制段仍以本仓库的 [`MECHANICS.md`](MECHANICS.md) 为**单一来源** ✓
+（插件脚本由它生成 ✓，`check-mechanics.mjs` 防漂移 ✓，并会拦住"照抄指令"与"策略措辞" ✗✓）。

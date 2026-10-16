@@ -106,6 +106,99 @@ return CopilotLinkIn.informOnly(CopilotLinkIn.tradePlan(player, data), data)
         -- 勘察（主人的战略前提 ✓）：没有已探索星区，就没有"往里推"的方向 ✓
         return CopilotLinkIn.informOnly(CopilotLinkIn.scoutPlan(player, data), data)
 
+    elseif what == "sectorFacts" then
+        -- ★★ 任意星区的**事实**（2026-10-17 补 ✓✓）
+        --
+        --   主人原则（原话）：「你只给她一个大目标，以及游戏当前的机制，让她自己判断」
+        --   「不是往中心两跳，而是评估威胁后当前是否支持往中心走，支持的话又往中心走多少」
+        --   → 所以这里**只给可比的数字** ✓✓，**不给任何"该不该去/去多远"的结论** ✗✗。
+        --
+        --   同一组原版函数与卡片 depth 段一致（证据见 MECHANICS.md §0 ✓）：
+        --     Balancing_GetSectorRichnessFactor(x,y)  富饶度 ✓
+        --     Balancing_GetMaterialProbability(x,y)   材料概率 ✓
+        --     Balancing_InsideRing(x,y)               是否在中心屏障环内 ✓
+        --   全部 pcall 包裹 ✓：签名不符只会少字段，绝不崩 ✗✓
+        local sx = tonumber(data.x)
+        local sy = tonumber(data.y)
+        if sx == nil or sy == nil then
+            return false, "BAD_REQUEST", "query sectorFacts needs data.x and data.y"
+        end
+
+        local MATERIAL_NAMES = { "Iron", "Titanium", "Naonite", "Trinium", "Xanion", "Ogonite", "Avorion" }
+        local function probe(ax, ay)
+            local out = {
+                x = ax, y = ay,
+                distanceFromCentre = math.floor(math.sqrt(ax * ax + ay * ay) + 0.5),
+                manhattanToCentre = math.abs(ax) + math.abs(ay),
+            }
+            local okR, rich = pcall(Balancing_GetSectorRichnessFactor, ax, ay)
+            if okR then out.richness = tonumber(rich) else out.richnessError = tostring(rich) end
+            local okG, ring = pcall(Balancing_InsideRing, ax, ay)
+            if okG then out.insideCentreRing = ring else out.ringError = tostring(ring) end
+            local okP, probs = pcall(Balancing_GetMaterialProbability, ax, ay)
+            if okP and type(probs) == "table" then
+                local list = {}
+                local n = 0
+                if NumMaterials ~= nil then n = NumMaterials() end
+                if n <= 0 then n = #probs end
+                for i = 1, n do
+                    -- 原版用法是 probabilities[i - 1]（resourcetrader.lua:152 ✓）；两种索引都试 ✓
+                    local v = tonumber(probs[i - 1])
+                    if v == nil then v = tonumber(probs[i]) end
+                    if v ~= nil and v > 0 then
+                        list[#list + 1] = {
+                            materialIndex = i,
+                            material = MATERIAL_NAMES[i] or ("Material" .. tostring(i)),
+                            probability = v,
+                        }
+                    end
+                end
+                table.sort(list, function(a, b) return a.probability > b.probability end)
+                for i = #list, 5, -1 do list[i] = nil end   -- 只留前 4 个，控制体积 ✓
+                out.materialProbabilities = list
+            else
+                out.materialProbabilityError = tostring(probs)
+            end
+            return out
+        end
+
+        local res = { what = "sectorFacts", sector = probe(sx, sy) }
+
+        -- 朝中心方向取样（同一口径 ✓，便于横向比较 ✓）
+        local sgnX = (sx > 0 and -1) or (sx < 0 and 1) or 0
+        local sgnY = (sy > 0 and -1) or (sy < 0 and 1) or 0
+        res.towardCentre = {
+            probe(sx + sgnX * 8, sy + sgnY * 8),
+            probe(sx + sgnX * 16, sy + sgnY * 16),
+            probe(sx + sgnX * 28, sy + sgnY * 28),
+        }
+
+        -- 若指定了船：把那艘船的能力事实也带上（含护航判据需要的航程 ✓✓）
+        if type(data.ship) == "string" and data.ship ~= "" then
+            local cardOk, card = pcall(Card.shipCard, player, data.ship)
+            if cardOk and type(card) == "table" then
+                res.ship = {
+                    name = data.ship,
+                    sector = card.sector,
+                    hyperspace = card.hyperspace,          -- ★ 护航判据要它 ✓
+                    captainClass = card.captainClass,
+                    turretCount = card.turretCount,
+                    freeCargoSpace = card.freeCargoSpace,
+                    holdHasGoods = card.holdHasGoods,
+                    actions = card.actions,
+                }
+            else
+                res.shipError = tostring(card)
+            end
+        end
+
+        -- ★ 如实说明**算不出什么** ✓（不许让决策方以为这里有产量预测 ✗）
+        res.cannotCompute = {
+            planNumbers = "该星区的原版产量/伏击预测这里**算不出来** ✗ —— 原版预测要求船**已经在那个区域内** ✓（所有动作的区域都必须含船 ✓）。要那里的数字，得先 Travel / Scout 过去 ✓。",
+        }
+        res.note = "这里只有**事实**（富饶度 / 材料概率 / 环侧 / 离中心距离）✓ —— 没有任何'该不该去'的结论 ✓；要不要走、什么时候走、走多远，由决策方自己判断 ✓。"
+        return true, res
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then

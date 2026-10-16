@@ -435,6 +435,7 @@ end
 --   这是**给 DSH 看的自我声明** ✓ —— 列表必须跟实现同步，否则 DSH 只能靠猜 ✗✓
 M.WHATS = {
     "fleet", "ship", "goal", "caps",
+    "sectorFacts",      -- ★ 任意星区的事实（富饶度/材料概率/环侧/离中心距离 ✓ 2026-10-17 补 ✓）
     "tradePlan",        -- Trade：多区域 × 多商品 × 净收益 ✓
     "minePlan",         -- Mine：多区域 × 参数 × 层级加权（采最高阶矿 ✓）
     "salvagePlan",      -- Salvage：装备件数 × E[稀有度层级]（收最高科技战利品 ✓）
