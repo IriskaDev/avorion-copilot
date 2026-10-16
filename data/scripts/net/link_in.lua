@@ -700,33 +700,6 @@ local function areaSizeOf(w, h)
     return math.floor(w)              -- 矩形：主字段给宽；sizeX/sizeY 才是完整信息 ✓
 end
 
--- 候选偏移：{0, ±step, ±2step …}（两轴都封顶在 half ✓），按到中心的距离排序 →
--- **offset (0,0) 永远排第一** ✓（它必含船 → 保证至少扫到一个合法区域 ✓✓）
-local function scanOffsets(half, step)
-    local vals = { 0 }
-    local d = step
-    while d <= half do
-        vals[#vals + 1] = d
-        vals[#vals + 1] = -d
-        d = d + step
-    end
-    local out = {}
-    for _, dx in ipairs(vals) do
-        for _, dy in ipairs(vals) do
-            out[#out + 1] = { x = dx, y = dy }
-        end
-    end
-    table.sort(out, function(a, b)
-        local da, db = a.x * a.x + a.y * a.y, b.x * b.x + b.y * b.y
-        if da == db then
-            if a.y == b.y then return a.x < b.x end
-            return a.y < b.y
-        end
-        return da < db
-    end)
-    return out
-end
-
 -- ★★★ 候选区域集合（**每个区域都必须含船** ✓✓）—— tradePlan 与 jobPlan 共用 ✓
 --
 -- 硬依据：原版 simulation.lua:546 `isShipRequiredInArea` → Mine/Salvage/Trade 都要求
@@ -853,8 +826,10 @@ local function areaContainsShip(area, sx, sy)
     return areaHasSector(area, sx, sy)
 end
 
--- 粗扫用的是 `scanOffsets(half, step)` ✓：两轴都用**同一个** half ✓ ——
---   矩形时两轴的半宽不同 ✓，所以这里按轴分开取 ✓（29x11 → x 轴 halfW=14 / y 轴 halfH=5 ✓）。
+-- ★★ 粗扫的候选偏移（**两轴分开取** ✓）—— 2026-10-17 起是**唯一**的偏移生成器 ✓：
+--   旧版那个"两轴同一个 half"的 `scanOffsets` 已删除 ✗（矩形框下它给不出对的东西 ✓）。
+--   29x11 → x 轴 halfW=14 / y 轴 halfH=5 ✓；两轴各自的取值都是 {0, ±step, ±2step …} ✓，
+--   再按**到框心的距离**排序 ✓（所以 (0,0) 永远第一个 ✓ —— 它必含船 ✓✓）。
 local function scanOffsetsWH(halfW, halfH, step)
     local xo, yo = {}, {}
     local function axis(half)
@@ -867,7 +842,7 @@ local function scanOffsetsWH(halfW, halfH, step)
         return vals
     end
     xo, yo = axis(halfW), axis(halfH)
-    -- 复用 scanOffsets 的排序口径 ✓：按到中心的距离 ✓（(0,0) 永远第一 ✓）
+    -- 排序口径：按**到框心**的距离 ✓（(0,0) 永远第一 ✓）
     local out = {}
     for _, dx in ipairs(xo) do
         for _, dy in ipairs(yo) do
