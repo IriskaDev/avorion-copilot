@@ -97,4 +97,4 @@ mods/copilot/
 ```
 
 热重载的原理、可重载范围、以及**新增脚本必须写 `Xn = Xn or {}`** 这条约定，
-见 [AGENTS.md](AGENTS.md#热重载开发提速务必遵守)。
+见 [docs/dev/hot-reload-and-vm-boundaries.md](docs/dev/hot-reload-and-vm-boundaries.md)。
