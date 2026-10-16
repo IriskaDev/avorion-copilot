@@ -216,18 +216,11 @@ const DEFAULTS = {
  *
  * ★ 一字未改，从文件桥版本原样搬来 ✓。
  */
+import { MECHANICS_BRIEF } from './mechanics.js'
+
 const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘船交给你自动运营，现在需要你为其中一艘空闲的船决定下一步做什么。
 
-可用命令（都属"后台命令"：船长带队离开玩家所在星区，在指定区域自动作业，期间联系不上）：
-- Mine    采矿，产出矿石。区域 15x15，且船必须已经在该区域内。
-- Salvage 打捞残骸，产出资源与装备。区域 15x15，船必须已经在该区域内。
-- Trade   按贸易路线买卖商品赚钱。船必须已经在区域内，且船长职业必须是 Merchant。（区域尺寸**以能力卡里的 actions.Trade.areaSize 为准** ✓，别按这里猜 ✗）
-- Travel  跃迁到指定星区。区域 1x1，即单个目标星区，目的地至少要 2 跳远。
-  - Scout   勘察未知星区（揭开地图）：区域 21x21，船必须已在区域内，配置只有 addCaptainsNote。价值 = revealsOffgrid（揭开隐藏质量星区）。舰队准备往里推进、前方未探索时，勘察比边缘采矿更值。
-- Sell    ★ **把船上的货变现**（区域 15x15，船必须在区域内）。**货舱里有货时先做这个** ✓✓：
-          被伏击强制召回的贸易船，**没卖完的货还在船上**（原版只退押金、不给利润 ✗），
-          带着货再去 Trade 会装不进新货 ✗。卖掉之后货舱才空 ✓。
-          ★ 卖出的是**船上的全部货**（不需要你指定商品 ✓）；风险越高越可能只卖掉一部分 ✓。
+` + '\n\n' + MECHANICS_BRIEF + '\n\n' + `可用命令速查：Mine / Salvage / Trade / Sell / Travel / Scout（每个命令的机制、产出与后果都写在上面那节里 ✓）。
 
 ★ **决策目标（主人定的，最高优先级 ✓✓）**：
    「应从**多区域**、**多商品**、**净收益**去决策，应在尽可能**低的风险**下，获取尽可能**高**的利润。」
@@ -237,7 +230,9 @@ const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘
    · 风险门槛 **attackChance < 0.10 是硬线** ✓；门槛内**优先净收益最高** ✓；
      两个候选净收益接近（约 10% 以内）时，**取风险更低**的那个 ✓（主人要"尽可能低的风险" ✓）
    · 若返回里有 areaRanking：它已经把**多个区域**各自的最优路线排好了 ✓
-     → 优先**照抄 orderHint 的 x/y** ✓；没有 hint 时再把 offset 加到船坐标上 ✓
+     → x/y 是**绝对星区坐标** ✓；orderHint 给的是**其中一组的当选值**（评分器的选择 ✓），
+       你可以选它，也可以选榜上任何其它达标区域 ✓（数字都在那里 ✓）
+     ★ 硬约束只有一条：区域必须**包含船** ✓ —— 在这个前提下怎么选由你定 ✓
      （★ 硬约束：区域必须**包含船**，所以绝不要凭感觉乱挪 ✓）
 
 ★ **采矿 / 打捞的目标（主人钦定，与上面同等优先级 ✓✓）**：
@@ -253,13 +248,22 @@ const SYSTEM_PROMPT = `你是 Avorion 舰队的运营大脑。玩家把若干艘
      fieldTier（残骸场材料层级均值）是**次级键** ✓：件数相同时，取它更高的区域 ✓。
    · **capability** 说明这艘船**到底采得动什么**（dps=0 的材料就是完全采不动 ✓）——
      别派它去采不动的矿 ✗；某片星区的高阶矿采不动时，那里对它的层级贡献就是 0 ✓。
-   · 两份计划里都带 **recommendation**（= 算出来的最优档 ✓）和 **riskWarning**（= 一个档位都没过闸门 ✗）。
-     有 recommendation 时**照它的 orderHint 下单** ✓（orderHint 里 x/y 已经是**绝对星区坐标** ✓，
-     duration / safeMode / escorts 也都算好了 ✓，直接照抄成下面那几行 ✓）。
-     只有 riskWarning、没有 recommendation 时 → 回 action=None 并说明理由 ✓（不要自己硬凑 ✗）。
-   · Mine/Salvage 的**风险救援手段**与原版窗口一一对应 ✓：缩短 duration ✓ /
-     开 safeMode（原版把伏击概率 ×0.1 ✓，代价是产量下降 ✓）/ 带同星系护航 ✓
-     —— 这三样在 jobPlans 的参数档里都算过了 ✓，直接照 orderHint 抄即可 ✓。
+    · 两份计划里都带 **recommendation**（评分器选出的"其中一个"档 ✓ —— 是**参考**，不是唯一答案 ✗✗）
+      和 **riskWarning** ✓。候选表里每一档的数字都要看 ✓，选哪个由你定 ✓
+      （你完全可以选评分器没排第一的那个，只要数字上你认为更值 ✓）。
+      recommendation 为空 + riskWarning 有字 = **连一个档位都没过玩家闸门** ✗ →
+      此时正当的选择有：换区域（换 x/y）✓ / 加护航 ✓ / 缩短时长 ✓ / 改去干别的动作 ✓ / 回 action=None ✓✓。
+    · Mine/Salvage 的**风险救援手段**与原版窗口一一对应 ✓：缩短 duration ✓ /
+      开 safeMode（原版把伏击概率 ×0.1 ✓，代价是产量下降 ✓）/ 带护航 ✓
+      —— jobPlans 的参数档里把这几样**都算过并列出了数字** ✓，按数字自己挑 ✓✓。
+
+★★ 每次都要先问这个**长期问题** ✓✓：**以现在这支舰队的能力，当前这片星区还是最值得待的地方吗？**
+   · 「原地继续干活」只是**其中一个选项** ✓，**不是默认** ✗✗；
+   · 如果这艘船（或它的护航、或装备）升级了，或旁边已经被榨干 → **先转移位置（Travel）再干活**往往更好 ✓✓；
+   · 越靠地图中心，矿层级越高、装备越好、也越危险 ✓。能力卡的 depth 字段给了当前星区的富饶度、
+     材料概率、离中心距离，以及**朝中心方向的几个候选星区**的同类数字 ✓
+     → 所以"待在这里 vs 往里走"是**可以用数字比的** ✓，不必猜 ✓；
+   · 转移要花一次 Travel 的时间（期间不产出 ✓），值不值由你判断 ✓。
 
 判断依据：
 - ★ **风险口径（玩家定的规矩，最高优先级 ✓）**：attackChance 是整段任务期间遭遇伏击的概率（0~1）。
@@ -283,8 +287,8 @@ goodName=<**仅 action=Trade 时必填** ✗：原样取自候选表/recommendat
 x=<目标星区 x 坐标，整数；action=None 时省略>
 y=<目标星区 y 坐标，整数；action=None 时省略>
 escorts=<护航舰船名，逗号分隔，可选；**只能从上面给出的同星系候选里选**>
-duration=<小时，可选；**若 orderHint 里给了，就照抄** ✓>
-safeMode=<true | false，可选；Mine/Salvage 专用：按 jobPlans 的 orderHint 照抄>
+duration=<小时，可选：给一个你从数字上认为合适的时长（jobPlans 的参数档里列了各档数字 ✓）>
+safeMode=<true | false，可选；Mine/Salvage 专用：开了降风险也降产量（参数档里有两档数字 ✓）>
 goodsToSell=<可选，仅 Sell 且仅在你想**只卖一部分**时给；省略 = 把船上全部货卖掉 ✓>
 reason=<一句话理由，用中文>`
 
@@ -492,7 +496,7 @@ interface DecideFacts {
  *   * scoreBasis  —— 分数**到底怎么算的**（口径必须可见 ✓）
  *   * capability  —— 这艘船采得动什么（原版权威口径 ✓）
  *   * recommendation / riskWarning —— 有解还是无解 ✓
- *   * orderHint   —— 直接照着下单的坐标 + duration + safeMode + escorts ✓
+ *   * orderHint   —— 评分器选中的那一档所对应的参数（x/y 绝对坐标 + duration + safeMode + escorts ✓；只是参考 ✓）
  *   * areaRanking —— 裁成标量，用来横向比区域 ✓
  * 逐材料的完整明细留在**推荐**那一份里（人要审计时看它 ✓），其余区域只给标量 ✓。
  */
@@ -522,7 +526,7 @@ function compactJobPlan(p: Record<string, unknown>): Record<string, unknown> {
     durationChoices: p.durationChoices, // 原版 duration 合法区间 ✓
     recommendation: p.recommendation,   // null/缺省 = 没有档位过闸门 ✗ → 看 riskWarning ✓
     riskWarning: p.riskWarning,
-    orderHint: p.orderHint,             // ★ 直接照抄下单：x/y 绝对坐标 + duration + safeMode + escorts ✓
+    orderHint: p.orderHint,             // ★ 其中一组的下单参数（x/y 绝对坐标 ✓）—— 是参考，不是必须照抄 ✓
     areasScanned: p.areasScanned,
     scanMs: p.scanMs,
     scanNote: p.scanNote,
@@ -540,7 +544,7 @@ function buildPrompt(f: DecideFacts): string {
   lines.push(f.goalText !== '' ? f.goalText : '(玩家没有写文字目标，只给了下面的动作边界)')
   lines.push('')
   lines.push('允许的动作：')
-  lines.push(f.goalOptions.length > 0 ? f.goalOptions.join(', ') : '(玩家没有限制 —— 你可以从 Mine/Salvage/Trade/Travel 里选)')
+  lines.push(f.goalOptions.length > 0 ? f.goalOptions.join(', ') : '(玩家没有限制 —— 你可以从 Mine / Salvage / Trade / Sell / Travel / Scout 里选)')
   lines.push('')
   lines.push('这艘船的现状（能力卡）：')
   lines.push(JSON.stringify(f.card ?? {}, null, 2))
@@ -555,8 +559,10 @@ function buildPrompt(f: DecideFacts): string {
       lines.push('')
     }
     lines.push('★ 上面这份计划的读法（与系统提示一致 ✓）：')
-    lines.push('  · recommendation = 唯一被推荐的档位（attackChance 已 ≤ 10% ✓，绝不会推荐超闸门的 ✗）')
-    lines.push('    —— 有它就照它的 orderHint 下单 ✓（orderHint 的 x/y 是**绝对星区坐标**，直接照抄 ✓）')
+    lines.push('  · 这是**评分器给的参考** ✓，不是必须照抄的答案 ✗ —— 每一档的数字都可以自己比 ✓')
+    lines.push('  · recommendation = 评分器选的那一档（只代表它认为最好 ✓，你可以不同意 ✓）')
+    lines.push('  · orderHint = 该档对应的下单参数（x/y 是**绝对星区坐标** ✓）；★ 不照抄也是允许的 ✓')
+    lines.push('  · exceedsRiskLimit=true 的档位**照样列出来了** ✓：它超出玩家闸门，但数字你应该看 ✓')
     lines.push('  · recommendation 缺省/为 null + riskWarning 有字 = **一个档位都没过闸门** ✗ →')
     lines.push('    回 action=None 并说明理由（可为它派护航 / 换区域 / 换船 ✓）')
     lines.push('  · Mine 看 valueLow/valueHigh（材料层级加权产量，**不是吨位** ✗）与 topTier/topMaterial ✓')
@@ -573,7 +579,7 @@ function buildPrompt(f: DecideFacts): string {
     lines.push(JSON.stringify(f.tradeRoutes, null, 2))
     lines.push('')
     if (f.escortCandidates !== undefined && f.escortCandidates.length > 0) {
-      lines.push(`同星系护航候选（★ 硬规则：只能从这些里选，它们与行动船**在同一星系**）：${f.escortCandidates.join(', ')}`)
+      lines.push(`护航候选（★ 只能从这些里选；原版规则是"与行动船的距离不超过护航自己的一个跳跃航程" ✓，并不要求同一星系 ✓）：${f.escortCandidates.join(', ')}`)
       lines.push('  若候选路线的伏击概率偏高，就选 1~2 艘护航来压低它 ✓（这是主人教的正当手段 ✓）。')
       lines.push('')
     } else {
@@ -585,7 +591,7 @@ function buildPrompt(f: DecideFacts): string {
     lines.push('')
     lines.push('若选 action=Trade：**goodName 是必填** ✓ —— 必须**原样**取自 recommendation/候选表里的 name；')
     lines.push('  ★ 漏了它游戏的商品选择就失控了 ✗（实测模型漏过一次 ✓），所以这是格式里唯一"不能省"的字段 ✓。')
-    lines.push('x/y 照抄 orderHint / recommendation 里的值 ✓（它们都已保证区域包含船 ✓）。')
+    lines.push('x/y 用上面的候选表 / orderHint（都是绝对星区坐标 ✓，且都保证区域包含船 ✓）；选哪个由你定 ✓。')
     lines.push('')
   }
   if (f.scoutPlan !== undefined) {
@@ -605,7 +611,7 @@ function buildPrompt(f: DecideFacts): string {
     lines.push('  bestCaseLow/High = 最好情况；两者都标了 profitBasis ✓。')
     lines.push('  ★ 若船上有货（见能力卡的 holdHasGoods / cargoState），**先 Sell 再贸易** ✓；')
     lines.push('    卖了之后货舱才空，Trade 才装得进货 ✓（这是被伏击召回后的必经一步 ✓）。')
-    lines.push('    要卖就照抄 orderHint 的 x/y（绝对星区坐标 ✓），action=Sell，不需要 goodName ✓。')
+    lines.push('    要卖就 action=Sell，x/y 从上面的候选表 / orderHint 里挑一个达标的绝对坐标 ✓（不需要 goodName ✓）。')
     lines.push('')
   }
   lines.push('请按系统提示的格式回复。')
