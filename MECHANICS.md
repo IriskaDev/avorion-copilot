@@ -155,6 +155,28 @@
 
 ---
 
+## 5.5 Refine（精炼）
+
+| 项 | 值 | 证据 |
+|---|---|---|
+| 区域 | **31×31**，且**固定**（`isAreaFixed → true`；服务端会**无视**调用方给的框心，按船所在星区重算 → 调用方给的框心不作数） | `refinecommand.lua:318-320`、`:326-328`；`simulation.lua:790-801` |
+| 船必须在区域内 | **是** | `:330-332` |
+| 配置项 | **无**（`getConfigurableValues` 返回空表 ✗ 没有 duration / safeMode）；UI 的 `refined` 勾选来自 `buildConfig`，**缺省全选** | `:334-337`、`:714-717` |
+| 前置：原矿 | ★ **货舱里必须有原矿**（按货物 tag 认材料；没有 → 报错 `There are no ores or scrap metal on board the ship.`，命令起不来） | `:443-446`；`simulation.lua:568-573` |
+| 前置：精炼厂 / 阵营 / 友好度 | ★ **不需要**。区域里有**自有/友方**精炼厂 → 时长 ÷2、税率更低；一个都没有 → 时长 ×2。找不到精炼厂**不是错误** | `:95-174`、`:463-468` |
+| 产出 | **派系资源池**（`addYield(…, 0, self.data.yields)`，钱 0、资源 = yields）；**货舱里的原矿被扣掉** | `:185-217` |
+| 产出量 | 每材料 `amount × (1 − tax)`，`rich` tag 的矿 **×4**；最后四舍五入 | `:402-455` |
+| 时长 | base 600s（按上面 ÷2 / ×2）+ 原矿单位/2000；特殊货 ×1.15；再乘船长专长 | `:457-492` |
+| 风险 | `attackChance` **硬编码 0**，且全文件**从不** `registerForAttack` → 精炼期间**不会**遇伏击 | `:364`、`:51`（只有框架注释） |
+| `config.refined` | 决定精炼哪些材料（1..`NumMaterials()`）；**缺了会 nil 索引** | `:206-209`、`:427-435` |
+
+**→ 后果（事实推论）**：
+- 精炼**不需要**先找精炼厂 ✓ —— 精炼厂只影响**时长与税率** ✓。
+- 原矿被**消耗**，产出进**全局资源**（不占货舱）✓ —— 所以"运矿回来精炼"会**清空货舱里的矿** ✓。
+- 因为 `attackChance` 恒 0 且不登记伏击，本动作的风险字段是**游戏自己给的 0** ✓（不是"没算出来"）✓。
+
+---
+
 ## 6. Travel（旅行）
 
 | 项 | 值 | 证据 |
@@ -162,15 +184,79 @@
 | 区域 | **1×1**，即"目标星区" | `travelcommand.lua:454-455` |
 | **船必须在区域内？** | **否** ✗ | `:472-473`（`return false`） |
 | 配置项 | `swiftness`（`0..3`，默认 2） | `:529-533` |
-| 距离限制 | ★ 原版**不允许**"一跳就能到"的目的地（`d <= reach` 且跳跃路线通畅 → 拒绝；也不允许一跳可达的门/虫洞） | `:482-512`（关键 `:488-491`、`:502-510`） |
-| ★★ **该限制在哪生效？** | **在客户端的选区校验**（`isValidAreaSelection`）✓；★ **服务端的 `getErrors` 是空函数** ✗ | `:448-449`（空）vs `:482-512`（客户端） |
-| 命令结束后的位置 | 船停在**目的地星区**（可在那儿接新命令） | `:458-463`（"we don't show the current position but the destination"） |
+| 距离限制 | ★ 原版**不允许**"一跳就能到"的目的地。**两道闸**：① 客户端选区校验（`d <= reach` 且路线通畅 → 拒；也不允许单跳可达的门/虫洞）`isValidAreaSelection`；② ★★ **服务端 `initialize()` 里还有一道**：`#area.analysis.route <= 2 → "This route is too short."`（route 含起点+终点，所以 `<=2` 就是"一跳之内"）—— 这一道在 **startCommand 的第二阶段**才跑 | ① `:482-512`（关键 `:488-491`、`:502-510`；只被 `mapcommands.lua:1173-1175` 在客户端调用）；② **`:67-90`（关键 `:71-73` 已在本星区、`:75-77` 路线太短）** + `simulation.lua:569-578`（`initialize` 回错 → `sendChatMessage` + **静默 return** ✗） |
+| ★★ **该限制在哪生效？** | ★ **服务端也会拒** ✓（`initialize`）—— 旧说法"只在客户端、经 RPC 可能不生效"是**错的** ✗✓。区别只是：它拒绝得**晚**（两段式的第二阶段），回执早已回 `accepted:true` ✗ → 所以 `order` 现在带**预检**（`MIN_DISTANCE`，见 §1.3 ✓） | 同上 |
+| 命令结束后的位置 | 船停在**目的地星区**（可在那儿接新命令） | `:400-408`（`onFinish` 里 `entry:setCoordinates(lastSector)` ✓） |
+| ★ 航程中坐标会变吗？ | **不会** ✗ —— 只有 `onFinish`（到达）与 `onRecall`（被召回/伏击）才写坐标；所以"下单几秒后位置没变"是**正常**的（成功证据看 `busy=InBackground` ✓） | `:373-397`（onRecall）、`:400-408`（onFinish）；`simulation.lua:584`（起跑就置 InBackground ✓） |
 
-**→ 后果（事实推论，含一个**未验证**项）**：
+**→ 后果（事实推论）**：
 - 想"换个地方干活"，唯一办法就是 **Travel**（它不产出，只移动）✓。
-- 因为距离限制**只在客户端**，通过 RPC 下单时**可能不会被拒** ✗ →
-  ★ **未验证**：太近的 Travel 实际会发生什么（可能照跑，也可能静默失败）✗。
-  → 因此把"移到附近"当作**可行但结果未保证**的操作 ✓。
+- ★ 1 跳目的地**会被原版拒**（`This route is too short.`）→ 现在 `order` 的**预检**直接回
+  `accepted:false, preflight.code=MIN_DISTANCE` ✓，**根本不发单** ✓（船一动不动 ✓）。
+- Travel 的"做成了"证据：到达（`atDestination`）或被召回后位置变化；
+  短窗口内只可能是 `busy:true`（在后台跑 ✓）—— 见 §1.3 的实测口径 ✓。
+
+---
+
+## 1.3 ★★ 回执：预检（preflight）+ 实测（verify）—— 2026-10-17 主人钦点
+
+> 主人原话：「你下的指令似乎你都不知道是有没有正常执行啊，回执没法带结果吗？」
+
+**根因（一句话）**：`order` 是两段式的（startAreaAnalysis → 6s 后 startCommand），
+而原版的**所有拒绝**都是 `player:sendChatMessage(Error); return` ✗ ——
+不抛错、不回调，RPC 早就答复过了 ✓。**回执只反映 RPC 队列那一步** ✗✓。
+
+**七道静默闸门（都在 startCommand 里 ✓）**
+
+| 闸门 | 原版原话/行为 | 证据 |
+|---|---|---|
+| 船可用/船长/船员/能量/损坏/被攻击 | "Ship not available." / "Ship doesn't have a captain." … | `simulation.lua:443-462`；`simulationutility.lua:28-105` |
+| 没有区域分析 | "No area analyzed for %1%." | `simulation.lua:472-476` |
+| 护航不合格 | "Escorting ship '%1%' not available / too far away / can't reach…" | `simulation.lua:490-522`；`simulationutility.lua:145-176` |
+| 区域尺寸变了 | "Area size for %1% changed." | `simulation.lua:528-543` |
+| 船不在框内 | "Ship is not inside the target area." | `simulation.lua:545-554` |
+| 命令自己的 `getErrors` | Sell：任一种货没需求 → "There is no demand for 'X' here."（**整单拒** ✗） | `simulation.lua:557-566`；`sellcommand.lua:397-411` |
+| `initialize()` | Travel：`#route<=2` → "This route is too short." | `simulation.lua:569-578`；`travelcommand.lua:67-90` |
+
+**回执新结构（`order` 的答复 ✓）**
+
+```
+accepted / executed          ← 只代表"进了 RPC 队列"（**不是做成了** ✗）
+preflight { ok, code?, reason?, detail?, checks[], warnings[], applied?, state?, sell?, escorts?, travel? }
+orderId                      ← 取实测用：query {what:'orderStatus', orderId}（或 ship = 该船最近一单）
+verify { pending:true, etaSeconds, how }   ← 此刻**还没有结果**（startCommand 还没发 ✓）
+```
+
+- `preflight.ok=false` → **什么都没发**（没发起区域分析、没排 startCommand ✓）；
+  通过时 `checks[]` 是逐项结论、`warnings[]` 是"原版不拒但值得知道"的事（见下 ✓）。
+- 实测由 tick 泵在 startCommand 之后 **6s** 采一次、必要时 **15s** 再采一次，然后**定稿** ✓；
+  `query {what:'orderStatus', …}` 取（`verify.pending=true` = 还没到点 ✓）。
+
+**成功证据（verifyVerdict 的口径 ✓，全部原版实读）**
+
+| 动作 | 短窗口的成功证据 | 为什么不能只看别的 |
+|---|---|---|
+| 通用 | `busy:true`（= `InBackground`） | `simulation.lua:584` 这一行在**所有**闸门**之后** → 它 true 就说明命令真的起来了 ✓ |
+| Travel | 位置变化 / 到达；否则 `busy` | 原版只在 `onFinish` / `onRecall` 写坐标（`travelcommand.lua:373-408`）→ 航程中间**不动** ✓ |
+| Sell / Refine | `cargoUsed` 下降；否则 `busy` | 货舱/原矿只在 `onFinish` 结算（`sellcommand.lua:161/235-267`、`refinecommand.lua:180-228`）→ 短窗口里**不会**掉 ✓ |
+| Mine / Salvage | `busy`（产出进派系资源池，不进货舱） | `minecommand.lua` / `salvagecommand.lua` 的 yield |
+| Trade / Scout | `busy` | 货/收益在结束时才结算 ✓ |
+
+- `verify.ok=false` + `reason` = **"接了就完"**：启动后短窗口里没有任何证据 →
+  几乎一定是原版在第二段**静默拒绝了** ✓（这就是主人今晚看到的现象 ✓✓）。
+- ★ **绝不把 `pending` 当成功** ✗✓；也绝不把"没拿到"写成 0/成功 ✗✓。
+
+**预检查什么（`preflightOf` ✓，能问原版就问原版）**
+
+| 动作 | 预检项 | 依据 |
+|---|---|---|
+| 公共 | 框是否含船（问命令 `isShipRequiredInArea` ✓；Travel 是 false ✓） | `simulation.lua:545-554` + 各命令 |
+| 公共 | `duration` 合法性（区间**问命令** `getConfigurableValues` ✓；越界按原版夹紧 ✓，≤0 直接拒 ✓）；`safeMode` 是否是本命令的配置 | `simulation.lua:52-72`；`minecommand.lua:510-527` |
+| Travel | 已在终点 / **≥2 跳** / 可达（用**与 predict 同一份**航线分析 ✓） | `travelcommand.lua:71-77`；`:109-137` |
+| Sell | 哪些货**有买家**（原版 `getErrors` 逐货单试 ✓）→ 只发能卖的 ✓ + `skipped` ✓；全卖不掉 → `NO_BUYER` ✗ | `sellcommand.lua:326-412`；`simulation.lua:557-566` |
+| Trade | 货舱是否为空（`HOLD_HAS_GOODS` ✓）；船长是否 **Merchant** | `tradecommand.lua:632-641` |
+| Mine/Salvage/Refine | 船长在（Refine 另查原矿 ✓）；框含船 ✓ | `simulation.lua:449-450`；`refinecommand.lua:443-446` |
+| 护航 | **原版真的会拒**的：不 Available / 距行动船 > 护航自己一跳 → **失败** ✓；<br>★ **原版不查**的：是否同星区、**有没有武装** → 只记 **warning**（实测口径照实报 `armedTurrets/armedFighters/torpedoes/canFight` ✓） | `simulationutility.lua:145-176`（同星区**不是**原版判据，`:161-163` 只判 reach）；`:28-105`（无武装判据 ✗） |
 
 ---
 
@@ -266,7 +352,8 @@
 - Salvage 打捞：区域 15x15，船须在区内。产出资源 + 装备/插件(炮塔与子系统各半)，稀有度用原版固定混合表(Exceptional .02/Rare .05/Uncommon .25/Common .5/Petty .18)，期望层级约 1.23。配置同 Mine，Scavenger 船长加长时长。
 - Trade   贸易：合法区域只有 17x17 / 29x11 / 11x29，船须在区内，且船长必须是 Merchant。需要 goodName(路线名，必填) 与 deposit(>0)。收益 = 每航班利润 × 航班数；预付款结束时退还(不是成本)。被伏击时被中断的那一班不给利润；已完成的班次照算；中止后货可能留在船上。
 - Sell    卖货：区域 15x15，船须在区内。卖的是船上那些"该星区有需求"的货。被伏击时只有 runTime>=11 分钟或 >duration*0.8 才按 runTime/duration 部分卖出，否则一点也卖不掉；未卖完的货留在船上。
-- Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；原版不允许"一跳就能到"的目的地(该检查在客户端，经 RPC 可能不生效)。到达后可在那儿接新命令。
+- Refine  精炼：区域 31x31 且**固定**(isAreaFixed：服务端无视你给的框心、按船重算)，船须在区内。**货舱里必须有原矿**(按货物 tag 认材料，rich 富矿产出×4)；**不需要**精炼厂/阵营/友好度 —— 区域里有自有/友方精炼厂只让时长÷2、税率更低，一个都没有则时长×2(不是错误)。产出进**派系资源池**，货舱里的原矿被扣掉(不变成货舱成品)。没有 duration/safeMode 配置。attackChance 是原版**硬编码 0**(该命令从不登记伏击)。
+- Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；★ 原版**服务端**也拒"一跳就能到"的目的地(initialize 里：路线段<=2 → "This route is too short.")，所以现在 order 的预检直接回 MIN_DISTANCE、不发单。到达后可在那儿接新命令；航程中坐标**不变**(只在到达/召回时写)，所以"位置没变"不是失败证据(看 busy)。
 - Scout   侦察/开图：区域 21x21，船须在区内；配置只有 addCaptainsNote；时长由原版按 reachable/25 自算。产出 revealsOffgrid = 隐藏质量星区的**枚举档位**(0=none / 1=some / 2=all；不是计数 ✗)；真实揭图由原版按运行时间调 revealSectors(ratio) 完成(scoutcommand.lua:157/162/179)，可达星区数在 area.analysis.reachable。
 
 框选区域(所有用框的命令共用)：区域是**必须包含船**的方块，框心可以在这个约束内平移(船不用动)；框选位置不同 → 落在框里的星区不同 → 那里的收益与伏击概率也不同(实机：同船同星区，Salvage 偏移 (0,0)=0.04、(0,-4)=0.02)。Trade 的框形状也能变，合法形状只有 17x17 / 29x11 / 11x29(tradecommand.lua:584-585)。我们的扫描是两阶段的：粗扫(步长 4) + 在最好的几个粗扫框周围步长 1 细扫。计划里每条候选都带绝对星区坐标 x/y(= 框心)与 offset(= 相对船的偏移)。Scout 的候选框另外带**框内未探索星区数**(unknownCount / knownCount / totalSectors，判据 player:getKnownSector(x,y)==nil)；框内一个未探索星区都没有的框，侦察它揭不出新地图。
@@ -329,7 +416,9 @@ player:getKnownSector(x,y)==nil 视为未探索(orderchain.lua:887)；框内一�
 计划(plan)给的是事实与选项：多区域 × 多参数档的原版预测数字(伏击概率、风险折算后的期望收益、时长、口径 scoreBasis)。每条候选都带绝对星区坐标 x/y(= 框心)与 offset；每条命令的概率都带 riskKind 标签(Sell/Salvage/Trade 的概率不是一回事，比较前先看标签)。
 玩家的风险闸门默认 attackChance<=0.10：超闸门的候选也会列出并标 exceedsRiskLimit=true，不静默丢弃。
 recommendation/orderHint 只是其中一个选项，供人审计，不是必须照抄的答案。
-已知缺口：计划只在船当前星区周围扫描(框心可在船周围 half 格内平移，但不会跑到别的星区)；可直接查上面的富饶度/材料函数，或先 Travel/Scout 过去；经 RPC 的 Travel 可能不受"不能太近"限制。
+已知缺口：计划只在船当前星区周围扫描(框心可在船周围 half 格内平移，但不会跑到别的星区)；可直接查上面的富饶度/材料函数，或先 Travel/Scout 过去。
+
+回执(下单=两段式：先区域分析、6 秒后才 startCommand)：accepted/executed 只代表"进了 RPC 队列"，**不是做成了**。所以回执还带 preflight(下单**前**的前置核对：ok=false 表示**根本没下单**，code 如 MIN_DISTANCE/SHIP_NOT_IN_AREA/CAPTAIN_NOT_MERCHANT；warnings 里是"原版不拒但值得知道"的事，如卖不掉的货被剔除/时长被夹紧/护航没武装)与 verify(下单**后**延迟重读实体状态：ok=false + reason = 启动后短窗口内没有任何成功证据，多半是原版静默拒了)。成功证据：busy=true(=后台在跑，原版在所有闸门之后才置它)最硬；Travel 看位置/到达；Sell/Refine 的货舱只在**跑完**才降，所以短窗口里别指望 cargoUsed 掉。取实测：fleet_query what=orderStatus 带 orderId(或 ship=该船最近一单)；verify.pending=true 只是"还没到采样点"，不是成功。
 <!-- END MECHANICS_BRIEF -->
 
 ---
