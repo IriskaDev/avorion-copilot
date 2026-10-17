@@ -38,6 +38,101 @@ function CopilotLinkIn.onHello(data)
     return true, { side = "game", ver = CopilotOut.VER, caps = CopilotRpc.caps() }
 end
 
+-- ---------------------------------------------------------------------------
+-- ★ 星区归属/友好度事实（2026-10-17 补 ✓✓ —— 主人规则「Trader 只走友好星区」要靠它 ✓）
+-- ---------------------------------------------------------------------------
+--
+-- 原版判定语义（全部**实读** ✓，绝不自己造阈值 ✗）：
+--   · 星区归属 = Galaxy():getControllingFaction(x,y)；取不到再 getLocalFaction(x,y)
+--       —— 这是 areaanalysis.lua:97-99 的原版口径 ✓（Trade 分析内部就是这套 ✓）。
+--   · 两者都 nil → factionIndex = 0 = 「无人区 / no-man's-space」✓
+--       （minecommand.lua:214 `local dangerous = (factionIndex == 0) -- no-man's-space` ✓）
+--   · 友好度 = player:getRelationStatus(factionIndex)（RelationStatus 枚举 ✓）：
+--       Allies=友好 / Neutral=中立 / Ceasefire=停火 / War=敌对 ✓
+--       —— tradecommand.lua:273 / travelcommand.lua:168 / minecommand.lua:224 三处原版命令
+--          是同一套判据 ✓（`getRelationStatus(...) == RelationStatus.War` = 危险 ✓）。
+--   · isFriendly = factionIndex ~= 0 且 status == RelationStatus.Allies（或玩家自己的 faction）✓
+--   · hasStations = Galaxy():getSectorView(x,y).numStations > 0（原版 SectorView 的站数估计 ✓，
+--       tradecommand.lua:283 拿它当「有商站才值得贸易」的闸门 ✓）
+local function sectorFactionFact(galaxy, player, ax, ay)
+    local out = { factionIndex = 0, hasFaction = false, relation = "unowned", isFriendly = false }
+
+    -- 空间站**先读** ✓（无人区也可能有站 —— 海盗站/残骸也算 ✓；独立于阵营归属 ✓）
+    if galaxy ~= nil then
+        local okV, view = pcall(function() return galaxy:getSectorView(ax, ay) end)
+        if okV and view ~= nil then
+            local okNS, ns = pcall(function() return view.numStations end)
+            if okNS then
+                local n = tonumber(ns)
+                if n ~= nil then
+                    out.stationCount = math.floor(n)
+                    out.hasStations = (n > 0)
+                end
+            end
+        end
+    end
+
+    if galaxy == nil then
+        out.factionIndex = nil
+        out.relation = "unknown"
+        out.relationError = "Galaxy() unavailable"
+        return out
+    end
+
+    local faction = nil
+    local okC, cf = pcall(function() return galaxy:getControllingFaction(ax, ay) end)
+    if okC and cf ~= nil then faction = cf end
+    if faction == nil then
+        local okL, lf = pcall(function() return galaxy:getLocalFaction(ax, ay) end)
+        if okL and lf ~= nil then faction = lf end
+    end
+    if faction == nil then
+        return out                      -- 无人区 ✓（isFriendly=false / relation="unowned" ✓）
+    end
+
+    out.hasFaction = true
+    local fi = tonumber(faction.index)
+    if fi == nil then
+        out.factionIndex = nil
+        out.relation = "unknown"
+        out.relationError = "faction.index is nil"
+        return out
+    end
+    out.factionIndex = fi
+
+    -- 阵营名 / 是否玩家阵营（字段读取包 pcall ✓ —— 拼错只缺字段、绝不崩 ✗）
+    local okN, nm = pcall(function() return faction.name end)
+    if okN and type(nm) == "string" and nm ~= "" then out.factionName = nm end
+    local okP, isP = pcall(function() return faction.isPlayer end)
+    if okP then out.factionIsPlayer = (isP == true) end
+
+    -- 友好度：玩家与它的关系（player:getRelationStatus —— headhunter.lua:155 ✓）
+    local selfIdx = tonumber(player.index)
+    if selfIdx ~= nil and fi == selfIdx then
+        out.relation = "self"
+        out.isFriendly = true
+    else
+        local okS, status = pcall(function() return player:getRelationStatus(fi) end)
+        if not okS then
+            out.relation = "unknown"
+            out.relationError = tostring(status)
+        elseif status == RelationStatus.Allies then
+            out.relation = "friendly"
+            out.isFriendly = true
+        elseif status == RelationStatus.Neutral then
+            out.relation = "neutral"
+        elseif status == RelationStatus.Ceasefire then
+            out.relation = "ceasefire"
+        elseif status == RelationStatus.War then
+            out.relation = "hostile"
+        else
+            out.relation = "unknown"
+            out.relationStatusRaw = tostring(status)
+        end
+    end
+    return out
+end
+
 -- query：**这就是"眼睛"** ✓ —— DSH 靠它拿游戏事实，不需要截图 ✓✓
 function CopilotLinkIn.onQuery(data)
     CopilotRpc.trace("onQuery what=" .. tostring(data and data.what))
@@ -165,6 +260,10 @@ function CopilotLinkIn.onQuery(data)
         end
 
         local MATERIAL_NAMES = { "Iron", "Titanium", "Naonite", "Trinium", "Xanion", "Ogonite", "Avorion" }
+        -- ★ 星区归属/友好度也要查 ✓（原版语义见 sectorFactionFact 头上的说明 ✓）
+        local galaxy = nil
+        local okGalaxy, gObj = pcall(Galaxy)
+        if okGalaxy and gObj ~= nil then galaxy = gObj end
         local function probe(ax, ay)
             local out = {
                 x = ax, y = ay,
@@ -199,6 +298,18 @@ function CopilotLinkIn.onQuery(data)
             else
                 out.materialProbabilityError = tostring(probs)
             end
+            -- ★★ 星区归属 / 友好度 / 空间站（2026-10-17 补 ✓ —— 原版 relation 判定 ✓，见 sectorFactionFact）
+            local gf = sectorFactionFact(galaxy, player, ax, ay)
+            out.factionIndex = gf.factionIndex
+            out.hasFaction = gf.hasFaction
+            if gf.factionName ~= nil then out.factionName = gf.factionName end
+            if gf.factionIsPlayer ~= nil then out.factionIsPlayer = gf.factionIsPlayer end
+            out.relation = gf.relation
+            out.isFriendly = gf.isFriendly
+            if gf.relationError ~= nil then out.relationError = gf.relationError end
+            if gf.relationStatusRaw ~= nil then out.relationStatusRaw = gf.relationStatusRaw end
+            if gf.stationCount ~= nil then out.stationCount = gf.stationCount end
+            if gf.hasStations ~= nil then out.hasStations = gf.hasStations end
             return out
         end
 
@@ -236,7 +347,10 @@ function CopilotLinkIn.onQuery(data)
         res.cannotCompute = {
             planNumbers = "该星区的原版产量/伏击预测这里**算不出来** ✗ —— 原版预测要求船**已经在那个区域内** ✓（所有动作的区域都必须含船 ✓）。要那里的数字，得先 Travel / Scout 过去 ✓。",
         }
-        res.note = "这里只有**事实**（富饶度 / 材料概率 / 环侧 / 离中心距离）✓ —— 没有任何'该不该去'的结论 ✓；要不要走、什么时候走、走多远，由决策方自己判断 ✓。"
+        res.note = "这里只有**事实**（富饶度 / 材料概率 / 环侧 / 离中心距离 / **阵营归属与友好度**）✓ —— " ..
+            "`factionIndex`/`factionName` = 该星区归属的阵营（0 = 无人区 ✓）；`relation` = unowned/self/friendly/neutral/ceasefire/hostile（原版 RelationStatus 语义 ✓）；" ..
+            "`isFriendly` = 该星区是否友好（由原版 relation 判定 ✓，不是本鱼造的阈值 ✗）；`hasStations` = 有无空间站 ✓。" ..
+            "没有任何'该不该去'的结论 ✓；要不要走、什么时候走、走多远，由决策方自己判断 ✓。"
         return true, res
 
     elseif what == "goal" then
@@ -249,7 +363,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），

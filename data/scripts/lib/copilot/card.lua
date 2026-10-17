@@ -596,6 +596,21 @@ M.TRADE_ROUTES_PARAMS = {
     sizeX = "number：框宽（必填 ✓）",
     sizeY = "number：框高（必填 ✓）",
 }
+-- ★★ sectorFacts 的参数与**新增输出字段**（2026-10-17 补 ✓✓ —— 主人规则「Trader 只走友好星区」✓）
+--   每个星区事实（sector 与 towardCentre 里的每一条）现在多带阵营/友好度 ✓：
+--     · factionIndex  = 归属阵营 index（0 = 无人区 ✓；原版 areaanalysis.lua:102-109 口径 ✓）
+--     · factionName   = 阵营名（拿得到才给 ✓）
+--     · factionIsPlayer = 是否玩家自己的阵营（拿得到才给 ✓）
+--     · hasFaction    = 有无派系存在（getControllingFaction/getLocalFaction 至少一个非 nil ✓）
+--     · relation      = unowned / self / friendly / neutral / ceasefire / hostile / unknown（原版 RelationStatus ✓）
+--     · isFriendly    = 布尔：由原版 relation 判定 ✓（factionIndex ~= 0 且 status == Allies 或玩家自己 ✓）
+--     · hasStations   = 有无空间站（Galaxy():getSectorView(x,y).numStations > 0 ✓）
+M.SECTOR_FACTS_PARAMS = {
+    x = "number：必填 ✓（星区绝对 x ✓）",
+    y = "number：必填 ✓（星区绝对 y ✓）",
+    ship = "string：可选 ✓（带上这艘船的能力事实 ✓）",
+    note = "每个星区事实新增 factionIndex/factionName/hasFaction/relation/isFriendly/hasStations ✓（原版语义，见上 ✓）",
+}
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",
     maxAttackChance = "number：风险闸门（缺省 0.10 ✓）",

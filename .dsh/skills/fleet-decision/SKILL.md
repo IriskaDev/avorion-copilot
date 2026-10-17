@@ -17,6 +17,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - **safeMode 一般不要开**；`baseAttackChance < 10%` 时**绝不要开**；它是**最后手段**。
 - 「**安全**」= **局势的伏击概率 < 10%**，**不是** safeMode 那个开关；✗ 禁止「没拿到风险数字就先开 safeMode 保平安」。
 - **绝不碰玩家正在开的那艘船**；只对交给 AI 的船下决策。
+- ★ **商船（以及任何跑商/移动决策）只沿友好阵营的星区行进**：只能经过/停留在**友好阵营**的星区 ✗ 不许穿中立 / 敌对 / 无人（海盗）空间。下单前用 `fleet_query {what:"sectorFacts", x, y}` 的 `isFriendly` **逐个核**路线两端或框内星区；发现非友好 → **不派** 或换框（`docs/game/lessons/README.md` L15 ✓）。
 
 ## 3. 决策必需的机制骨头（每条带出处）
 - 材料阶梯 **Fe < Ti < Na < Tr < Xa < Og < Av**；越靠地图中心矿层级越高、装备越好、**也越危险** → `docs/game/mechanics/depth-and-materials.md:17`、`:54-65`。
@@ -34,9 +35,10 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 2. `fleet_query {what:"ship", ship, brief:true}` → 只查这一艘。
 3. `fleet_query {what:"goal", ship}` → 这船目标/动作边界。
 4. ★ **自己决定要比哪几个框** → `fleet_query {what:"predict", ship, action, x, y, sizeX, sizeY, …}` → **一个框**，返回 `risk.baseAttackChance` / `value` / `box.containsShip`。
-   - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）。
+   - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）—— 现在**也带阵营/友好度**：`factionIndex` / `factionName` / `relation` / `isFriendly` / `hasStations`（原版 relation 判定 ✓）。
    - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → ★ 主判据 `value.revealsOffgrid`（隐藏质量物质区**枚举** 0=none/1=some/2=all，**不是计数**）+ `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（无未探索且计数可信 → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
 5. 贸易：`fleet_query {what:"tradeRoutes", ship, x, y, sizeX, sizeY}` → 框内路线（`profitPerSize` 等）→ 再 `predict` 比风险。
+   - ★ **下单前逐个核星区阵营**：对路线两端与框内星区 `fleet_query {what:"sectorFacts", x, y}` 看 `isFriendly`；任一个 `isFriendly=false` → **不派** 或换框/换形状。
 6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
 
 ✗ **legacy 计划不要用**：`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`（游戏侧扫 ~67 框 + 自带排序推荐）——策略必须每次由决策者自己判断。
@@ -62,5 +64,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 侦察看 `revealsOffgrid`（隐藏物质区枚举 0/1/2）**不是** `unknownCount`。
 - 侦察方向：朝中心 → 同级 → 降级；「不可行」= 威胁超闸门 或 实质不可达（航程 / `canPassRifts:false` 不能跨环）。
 - 派单前确认目标船/护航 `busy=false` 且状态落定（刚 recall 就派会被拒）。
+- ★ 商船/跑商/移动 → **只走友好星区**：下单前 `fleet_query {what:"sectorFacts", x, y}` 逐个核 `isFriendly`；`isFriendly=false`（unowned/neutral/ceasefire/hostile）→ **不派**或换框。
+- ★ `routeCount: 0` 的第一解释**不是**"这片没商站" ✗ —— 先**换形状**（17x17 → 29x11 / 11x29）再判。
 
 拿不准先查、别猜；工具报错把它给的原因当事实。

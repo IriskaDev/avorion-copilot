@@ -22,7 +22,7 @@
 | [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
 | [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派 |
 | [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步 |
-| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投、L11 只有一个决策者、L13 不许强杀游戏 |
+| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状 |
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`wins.md`](wins.md) | L14 本会话的成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
 
@@ -44,3 +44,4 @@
 | L12 | predict 关键字段可能被明细挤掉 → 需要时改用小请求 | [`queries.md`](queries.md) |
 | L13 | 不许强杀游戏；Lua 改动要重启游戏（正常退出） | [`orders.md`](orders.md) |
 | L14 | 成功模式：list → predict 单框 → 批量 3 框 → 自己比较 → 下单 | [`wins.md`](wins.md) |
+| L15 | 商船/跑商/移动只走友好星区（`sectorFacts.isFriendly` 逐个核）；`routeCount:0` 先换形状再判 | [`orders.md`](orders.md) |

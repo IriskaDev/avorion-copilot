@@ -27,7 +27,7 @@
 | `fleet` | — | 名单上每艘船的**快照**（忙/闲、有无船长、星区、进度） | `link_in.lua:54-58` ✓ |
 | `ship` | `ship` | 该船的**能力卡**（炮塔/船长/货舱/跳跃/`depth`/合法动作） | `:60-65` ✓ |
 | `goal` | `ship` | 该船的**长期目标**（玩家文字意图 + 允许动作） | `:214-220` ✓ |
-| `sectorFacts` | `x`,`y`（可选 `ship`） | **任意星区的事实**：富饶度 / 材料概率（前 4）/ 是否在中心环内 / 离中心距离，**外加朝中心方向 +8/+16/+28 的三个取样点**；给 `ship` 再带上该船的相关事实 | `:121-212` ✓ |
+| `sectorFacts` | `x`,`y`（可选 `ship`） | **任意星区的事实**：富饶度 / 材料概率（前 4）/ 是否在中心环内 / 离中心距离，**外加朝中心方向 +8/+16/+28 的三个取样点**；★ 现在**也带阵营/友好度**：`factionIndex`（0=无人区）/ `factionName` / `hasFaction` / `relation`（unowned/self/friendly/neutral/ceasefire/hostile）/ `isFriendly` / `hasStations`（原版 relation 判定 ✓）；给 `ship` 再带上该船的相关事实 | `link_in.lua` sectorFacts 分支 ✓ |
 | `minePlan` | `ship` | **多区域 × 参数档（时长/安全模式/护航）× 层级加权**的采矿计划（含风险折算与候选表） | `:87-92` ✓、`:3133+` ✓ |
 | `salvagePlan` | `ship` | 打捞计划（装备件数 × 期望稀有度层级） | `:94-98` ✓ |
 | `jobPlan` | `ship`,`action` | 上面两个的通用入口（`action` 取 `Mine` 或 `Salvage`） | `:100-104` ✓ |

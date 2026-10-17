@@ -41,3 +41,11 @@
 - **错因**：Steam P2P 残留 + player value 丢失；Lua 是启动时加载的，强杀不干净。
 - **正确判据**：不许强杀游戏 ✗；Lua 改动要**重启游戏（正常退出）** ✓。
 - **证据出处**：本会话实测（Steam P2P 残留 + player value 丢失）✓（会话记录）。★ 具体「player value」指哪个存档值、残留的确切表现，代码证据不足，标 ⚠未验证（待主人确认）。
+
+## L15 · ★ 商船/跑商/移动只走友好星区；`routeCount:0` 先换形状再判
+
+- **症状**：把商船送进了无人区（海盗空间）；一次 `tradeRoutes` 返回 `routeCount: 0` 就下结论「这片没商站」。
+- **当时的错误判断**：只看了利润与伏击概率（`profitPerSize` + `baseAttackChance`），**没看星区阵营归属**；`routeCount: 0` 直接读成「没有贸易站」。
+- **错因**：① 主人规则「Trader 只走友好星区」要的是**阵营**判据，不是利润/风险数字；而原子接口里一直**没有**「星区是否友好」这一颗 ✗ → 决策方只能凭利润与伏击概率瞎猜。② Trade 的框**形状**可换（17x17 / 29x11 / 11x29），`routeCount: 0` 的第一解释不是「没商站」，而是「这个形状的框里没路线」。
+- **正确判据**：① 商船/跑商/移动 → **只走友好星区**；下单前 `fleet_query {what:"sectorFacts", x, y}` **逐个核**路线两端与框内星区的 `isFriendly`；`isFriendly=false`（unowned/neutral/ceasefire/hostile）→ **不派**或换框。② `routeCount: 0` → **先换形状**（17x17 → 29x11 / 11x29）再判；换完还 0 才考虑「这片真没商站」。
+- **证据出处**：原版「危险 = 无人或战争」判据 `data/scripts/player/background/simulation/minecommand.lua:214`（`factionIndex == 0` = no-man's-space）✓、`:224`（`status == RelationStatus.War`）✓；`tradecommand.lua:270-276`（`details.faction == 0` 跳过 + `getRelationStatus == War` 跳过）✓；`travelcommand.lua:165-184`（no-man's-space attackProb 0.5）✓；`areaanalysis.lua:97-99`（`getControllingFaction` → `getLocalFaction`）✓；Trade 合法形状 `tradecommand.lua:584-585`（17x17 / 29x11 / 11x29）✓；新原子字段 `data/scripts/net/link_in.lua` sectorFacts 的 `isFriendly/relation/faction/hasStations`（本会话新增 ✓）；★ 本次会话（主人报告 ✓）：商船被送进无人区那次，17x17 `routeCount=0`、换 29x11 才有路线 ✓；本鱼另实测：(-381,57) 17x17 `routeCount=4`、29x11 `routeCount=2`（形状不同 → 路线不同 ✓）。
