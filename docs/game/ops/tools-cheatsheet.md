@@ -58,17 +58,22 @@
 
 | 字段 | 用途 | 备注 |
 |---|---|---|
-| `x` / `y` | 框心（**绝对星区坐标**） | 不给就用船的当前星区 ✓`:374-383` |
-| `size` | 方框边长 | 不给就用该命令的默认值 ✓`:375` |
-| `duration` | 任务时长（小时） | 默认 1 ✓`:435` |
+| `x` / `y` | 框心（**绝对星区坐标**）；Travel 时 = **目的地** | ★ 必给 —— 原子化后**不再**用船的当前星区兜底 ✗（缺 → `NO_POSITION`）`:623-625` ✓ |
+| `size` | 方框边长 | ★ 必给（缺 → `BAD_REQUEST`）；**Travel 不需要**（它的框就是 1×1 目的地 ✓）`:628-638` ✓ |
+| `duration` | 任务时长（小时） | 默认 1 ✓`:651` |
 | `safeMode` | 只对 Mine/Salvage 有意义 | 见 [`../rules/owner-rules.md`](../rules/owner-rules.md) |
-| `immediateDelivery` | 产出直接入账 | `:437` ✓ |
-| `goodName` | Trade 的路线名（必填） | 不在本区域路线里 → 本 mod **自动改选**一条 ✓`:458-481` |
-| `deposit` | Trade 预付金，**必须 > 0** | 不给则本 mod 兜底一个付得起的数 ✓`:521-539` |
-| `escorts` | 护航名单（船名数组） | 资格见 [`../mechanics/escorts.md`](../mechanics/escorts.md) |
-| `goodsToSell` | Sell 的选货 `[{goodName, amount}]` | 不给 = **默认全卖**；会自动夹到船上实际数量 ✓`:483-519` |
+| `immediateDelivery` | 产出直接入账 | `:652` ✓ |
+| `goodName` | Trade 的路线名（**必给**） | ★ 不再自动改选 ✗：不在本区域路线里 → 游戏自己报 `NO_ROUTE` ✓`:669-674` |
+| `deposit` | Trade 预付金，**必须 > 0**（必给） | ★ 不再兜底 ✗（缺 → `BAD_REQUEST`）`:675-678` |
+| `escorts` | 护航名单（船名数组） | Trade/Travel 都吃 ✓；资格见 [`../mechanics/escorts.md`](../mechanics/escorts.md) |
+| `goodsToSell` | Sell 的选货 `[{goodName, amount}]` | 不给 = **默认全卖**；会自动夹到船上实际数量 ✓`:682-716` |
 | `sizeX` / `sizeY` | Trade 的矩形形状 | ⚠ **见 [`../mechanics/areas-and-boxes.md`](../mechanics/areas-and-boxes.md) §5（未验证）** |
-| `collected` | Mine/Salvage 的内部必填项 | ★ 本 mod **自动填全 true**，不用你给 ✓`:542-552` |
+| `collected` | Mine/Salvage 的内部必填项 | ★ 本 mod **自动填全 true**，不用你给 ✓`:722-730` |
+
+**★ 回执里现在带 `risk`（2026-10-17 ✓✓）**：`{known, attackChance, baseAttackChance, baseAttackChanceKnown, riskKind, …}`
+= **这一单**的伏击评估，口径与 `fleet_query what=predict` **同一份代码** ✓（Travel 的是**整段航程**的）。
+`known=false` → `attackChance` 是 `null`（**不是 0%** ✗✓）。详见
+[`../mechanics/risk-and-ambush.md`](../mechanics/risk-and-ambush.md) §7-§8。
 
 **会被拒绝的常见情形**（工具会**逐字回报**游戏/本 mod 的原因，读它就好，别猜）：
 
@@ -78,16 +83,15 @@
 | `HOLD_EMPTY` | 空舱却要 Sell | `:491-493` ✓ |
 | `SHIP_NOT_AVAILABLE` | 船忙（或正在被玩家开） | `:367-372` ✓ |
 | `NO_ROUTE` | 这个区域一条贸易路线都没有 | `:478-480` ✓ |
-| `UNKNOWN_ACTION` | 动作名不在本 mod 的 6 个里 | `:358-362` ✓（注意那条错误文本只列了 4 个动作，**过时**；实际支持 6 个，见 §4） |
+| `UNKNOWN_ACTION` | 动作名不在本 mod 的 6 个里 | `link_in.lua:592-593` ✓（错误文本已列全 6 个 ✓） |
 
 ## 4. 动作集合：以**游戏侧**为准（6 个）
 
-`data/scripts/net/link_in.lua:254-264` ✓ 的 UUID 表实读了 6 个：**Mine / Salvage / Trade / Travel / Sell / Scout**。
+`data/scripts/net/link_in.lua:583-594` ✓ 的 UUID 表实读了 6 个：**Mine / Salvage / Trade / Travel / Sell / Scout**。
 
-✗矛盾（要记住）：工具描述与上一条错误文本只列了 4 个（Mine/Salvage/Trade/Travel）
-（`plugin/dsh/src/tools.ts:178-185`、`link_in.lua:360-361`）——
-而那 4 个是**旧版**说法。**Sell 与 Scout 是能下的**（计划的 `orderHint` 也会给它们）。
-真拿不准时：以计划里的 `orderHint`/`action` 为准。
+★ 2026-10-17 已把工具描述与错误文本补齐成这 6 个（`plugin/dsh/src/tools.ts` 的 `fleet_order.action`、
+`fleet_query.action`，以及 `link_in.lua:592-593` / `:5283-5284` 的 `known actions:` 两条 ✓）。
+`fleet_query what=predict` 也认 **Travel**（框 = 1×1 目的地，**不要求框含船** ✓）。
 
 ## 5. 其余工具的使用要点
 

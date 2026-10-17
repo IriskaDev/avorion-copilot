@@ -75,15 +75,24 @@
 
 ### B.2 ★ 核心那颗：`predict` —— 一个框 + 一个动作 + 一组参数 → 预测数字
 
-- **入参**：`{ what="predict", ship, action(Mine|Salvage|Trade|Sell|Scout), x, y, sizeX, sizeY, duration?, safeMode?, escorts[]?, goodName?/deposit?(Trade), goodsToSell?(Sell) }`
+- **入参**：`{ what="predict", ship, action(Mine|Salvage|Trade|Sell|Scout|Travel), x, y, sizeX, sizeY, duration?, safeMode?, escorts[]?, goodName?/deposit?(Trade), goodsToSell?(Sell), swiftness?(Travel, 0..3 默认 2) }`
   —— 批量：`boxes=[{…}]`（N≤24），每个框独立。
-- **出参**（单个框）：`{ box:{x,y,sizeX,sizeY,lower,upper,containsShip}, risk:{attackChance, baseAttackChance, riskKind}, value:{…按动作口径…} }`
+- **出参**（单个框）：`{ box:{x,y,sizeX,sizeY,lower,upper,containsShip}, risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown, baseAttackChanceUnknownReason?, unknownReason?, riskKind}, value:{…按动作口径…} }`
   - Mine：`valueLow/High`（层级加权价值）+ `topTier/topMaterial`（口径 `scoreBasis`）
   - Salvage：`items.from/to` + `rarityTier` + `fieldTier`（+ 废铁 `scrapLow/High`）
   - Trade：`profitPerFlight / flights / netProfitLow/High`（风险调整）+ `bestCaseLow/High`
   - Sell：`yieldLow/High` + 逐货 `perGood[]`（每货 `expectedRevenue / priceDeltaPercent / expectedUnitPrice`）
   - Scout：`unknownCount/knownCount/totalSectors` + `revealsLow/High`
-  - 每个框都带 `containsShip: boolean`（★ 框必须含船，否则预测无效——原版硬约束 `simulation.lua:546`）。
+  - **Travel**：`distance / travelTime / travelTimeHours / routeSectors / swiftness / origin / destination`
+    —— 风险是**整段航程**被伏击的概率（原版 Travel 命令自带评估 ✓，见
+    [`../mechanics/risk-and-ambush.md`](../mechanics/risk-and-ambush.md) §7 ✓）
+  - 每个框都带 `containsShip: boolean`（★ 除 Travel 外框必须含船，否则预测无效——原版硬约束 `simulation.lua:546`）。
+- **★ Travel 的唯一例外**：Travel 的框是 **1×1 目的地**（原版 `travelcommand.lua:454-456 getAreaSize {1,1}`、
+  `:472-474 isShipRequiredInArea → false` ✓），船**当然不在框里** ✓ → 只有 Travel 跳过 `SHIP_NOT_IN_AREA`。
+  其余动作照旧必须含船 ✗✓。
+- **风险字段口径**：`known=true` 表示 `attackChance` **是游戏算出来的数**；`known=false` 时它是
+  **`nil`（绝不是 0）** ✓✓。判断「<10% 吗」只看 `baseAttackChance`；Travel 没有独立 base →
+  `baseAttackChanceKnown=false` + 原因 ✓（见 `risk-and-ambush.md` §7 ⑤）。
 - **单次耗时/体积目标**：一框 = 一次 `run()` + 一次 `calculatePrediction()`，≈0.6 s（`:765`）；Trade 的 `run()` 更贵（PassageMap），单框 ≈1 s。体积 = 一个框的标量（1~2 KB）；批量 N 框 ≈ N 倍。
 - **错误串**：`BAD_REQUEST`（缺 ship/action/x/y/sizeX/sizeY）、`NO_POSITION`、`NO_ANALYSIS_RUN`、`NO_COMMAND`、`SHIP_NOT_IN_AREA`（框不含船）、`NO_ROUTE`（Trade 框内无路线）、`HOLD_EMPTY`（Sell 空舱）、`BAD_ACTION`；预测失败 → 该框 `predictionFailed`（**不中断整批**，照抄 `scanOneArea :1294` 的容错纪律）。
 - **它不做策略** ✗：不生成候选框、不跨框排序、不套 0.10 闸门、不产 `recommendation`/`orderHint`/`riskWarning`。要不要比、怎么比、选哪个，全在决策者侧。
@@ -102,7 +111,7 @@
 
 | 原子 | 入参 | 出参 | 错误 |
 |---|---|---|---|
-| `order` | `{ship, action, x, y, size/sizeX/sizeY, duration?, safeMode?, goodName?, deposit?, escorts[]?, goodsToSell?}` | 下单回执（`:606-615`） | `SHIP_NOT_AVAILABLE` `HOLD_HAS_GOODS` `NO_ROUTE` `HOLD_EMPTY` `UNKNOWN_ACTION` `BAD_REQUEST` |
+| `order` | `{ship, action, x, y, size/sizeX/sizeY, duration?, safeMode?, goodName?, deposit?, escorts[]?, goodsToSell?}`（Travel 不需要 size：x/y = 目的地 ✓） | 下单回执（`:606-615`）+ ★ `risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown, riskKind}`（= 本单的伏击评估，口径与 `predict` **同一份代码** ✓✓） | `SHIP_NOT_AVAILABLE` `HOLD_HAS_GOODS` `NO_ROUTE` `HOLD_EMPTY` `UNKNOWN_ACTION` `BAD_REQUEST` |
 | `recall` | `{ship}` | `{recalled:true}` | `RECALL_FAILED` `BAD_REQUEST` |
 | `escort`（插件工具 `fleet_escort`） | `{escort, target}` | Travel 回执 / 「无需移动」 | 游戏拒绝逐字回报（`tools.ts:344-420`） |
 | `setGoal` | `{ship, text?, options?, clear?}` | 目标描述 | `BAD_REQUEST` |

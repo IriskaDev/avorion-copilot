@@ -41,6 +41,9 @@
 - **不自动选框** ✗：框（`x`/`y` + `size` 或 `sizeX`/`sizeY`）必须显式给，没给就报 `NO_POSITION`/`BAD_REQUEST`。
 - **不自动加参数** ✗：Trade 的 `goodName`/`deposit` 必须显式给，没给就报 `BAD_REQUEST`，绝不自动挑/兜底。
 - **不自动退避** ✗：不再「同步跑一遍区域分析去校验路线并自动改选」—— 路线对不对由游戏侧自己校验并原样报回。
+- ★ **但回执要带风险**（2026-10-17 主人要求 ✓✓）：`order` 会为**这一单**算**一次**预测（口径 = `predict`，
+  **同一份代码**），结果只进回执 `risk` 与 trace 流水 —— **绝不**用它改选/补参/退避 ✓✓。
+  这也正是「算一次」的意义：`run` 恰好 1 次、参数与调用方给的一模一样 ✗✓（harness `_order_risk_selftest.lua` ✓）。
 - 执行类保持**单件**：`recall`（单船召回）、`escort`（单次会合）、`setGoal`（单船目标），都不跨对象复合。
 
 ## 策略与判断永远属于调用方（决策者）
@@ -59,7 +62,10 @@
 ## 落地检查（工程自检守这些）
 
 - `list` 响应**不含**每船完整状态/货舱明细/预测；`ship` 只查一艘。
-- `predict` 单框只算一框、批量 N 只算 N 框；非法框（不含船）明确报错 `SHIP_NOT_IN_AREA`。
+- `predict` 单框只算一框、批量 N 只算 N 框；非法框（不含船）明确报错 `SHIP_NOT_IN_AREA`
+  （★ 唯一例外：**Travel** 的框是 1×1 目的地，原版 `travelcommand.lua:472` 就不要求船在内 ✓）。
 - `predict` 的口径与旧计划路径**逐字一致**（复用同一批内部函数，不重写预测逻辑）。
-- `order` 不含复合/自动补全行为（自检断言：缺框 → `NO_POSITION`、缺尺寸 → `BAD_REQUEST`、Trade 缺 goodName/deposit → `BAD_REQUEST`、下单时不跑同步区域分析）。
+- `order` 不含复合/自动补全行为（自检断言：缺框 → `NO_POSITION`、缺尺寸 → `BAD_REQUEST`、Trade 缺 goodName/deposit → `BAD_REQUEST`）；
+  ★ 它**会**为回执算一次预测（`run` 恰好 1 次、不改单 ✓），且算不出来时 `risk.known=false` + 原因、
+  **绝不填 0** ✓✓（`_order_risk_selftest.lua`）。
 - 工具说明（`fleet_query`/`fleet_order`）把原子接口列为默认，把 legacy 计划标为 legacy。

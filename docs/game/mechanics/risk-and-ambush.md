@@ -116,3 +116,55 @@ attackProbability  = max(baseProbability, attackProbability)
 `getSpecialCargoCategories(cargo)` ✓`simulationutility.lua:1026-1041` 分出 `stolenOrIllegal` /
 `dangerousOrSuspicious`；非 Smuggler 时命令耗时 **×1.15**（Trade/Travel）、Mine/Salvage 的
 `specialGoodsFactor = 0.85` 砍产出（`LLM-OPS.md` §3.6，行号见该文）。
+
+## 7. ★★ Travel 的风险是**另一套模型**（不是 §2 那套）
+
+> 这一条是主人 2026-10-17 点出来的：「你发布旅行命令时，是会有个遇伏击评估的」。
+> Travel **不走** `simulationutility.calculateAttackProbability` ✗ —— 它有自己的
+> `TravelCommand:calculateAttackProbability`（`travelcommand.lua:552-577` ✓）。
+
+**① 分析阶段先给每个航路上的星区一个"会不会在这儿被伏击"的系数**
+（`travelcommand.lua:152-184 onAreaAnalysisSector` → `:165-184 calculateFactionAreaAttackProbability`）：
+
+| 航路星区 | 系数 | 证据 |
+|---|---|---|
+| 无人区（faction == 0） | `0.5` | `:166` ✓ |
+| 交战中 · 中央星区 | `1.0` | `:169-170` ✓ |
+| 交战中 · 外围 | `0.4` | `:172` ✓ |
+| 非交战 · 中央星区 | `0.0` | `:175-176` ✓ |
+| 非交战 · 外围 | `0.3` | `:178` ✓ |
+
+**② 再按"打不打得过"压一次**（`:356-370 calculateAttackProbabilitySingleSector`）：
+`timeAlive = 我方HP / (敌DPS+0.01)`、`timeToKill = 敌HP / (我方DPS+10)`，
+`lerp(timeAlive, timeToKill×0.1, timeToKill×0.5, 1, 0)` ✓（★ 这里的 `0.5` 与
+`simulationutility.lua:719` 的 `timeToKillFactor = 0.75` **不同** ✗ —— 两套模型 ✓）。
+
+**③ 合成一个数**（`:552-577`）：`result = 1 − ∏(1 − p_i)`（**跳过起点星区**，`:560` ✓），
+再 `× probabilityFactor + probabilityOffset`（船+船长强度，`:251-354` ✓：Noble ×1.1、
+Commoner ×0.9、Commodore 先 −0.15 之后每艘 ×0.85、Reckless +0.05、Careful −0.05、
+Stealthy/Intimidating/Cunning 减、Arrogant/Harmless 加），最后 `× swiftnessAttackFactors[swiftness]`
+（`:24-28`：0→0.15 / 1→0.8 / **2→1.0（默认，`:533`）** / 3→1.2 ✓），`min(1, max(0, ·))` ✓。
+
+**④ 所以 Travel 的数是"整段航程"的**：`#route` 越多、穿过的无人区/交战区越多，概率越高
+（原版 UI 的 tooltip 就写着：「Traveling through even a small but dangerous area can increase
+attack chance dramatically!」`travelcommand.lua:700` ✓）。
+
+**⑤ 它**没有**单独暴露"基准概率"** ✗：`calculateAttackProbability` 只 `return` 一个 `result` ✓，
+所以本 mod 的 `predict`/`order` 对 Travel 一律给 `baseAttackChance = nil` +
+`baseAttackChanceKnown = false` + 原因 ✓ —— **不抄一个假的 base 出来** ✗✓。
+
+## 8. ★★ 下单回执里也能看到风险（`order` 的 `risk` 字段）
+
+`fleet_order` 的回执（游戏侧 `data/scripts/net/link_in.lua` 的 `onOrder` → `orderRiskOf` ✓）
+现在带 `risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown, riskKind, …}`：
+
+- **口径 = `fleet_query what=predict` 的同一份代码** ✓（`orderRiskOf` 直接调 `predict` ✓）——
+  所以"下单前查到的数"与"回执里的数"**逐字相同** ✓（harness `_order_risk_selftest.lua` 有对拍断言 ✓）；
+- Travel 的 `risk.attackChance` 就是 §7 那个数 ✓（整段航程），`riskKind` 写明
+  `travelRouteAmbushChance(...)` ✓；
+- **算不出来**（没有船长 / 没有航线 / 分析失败 / 预测失败）→ `known=false` + `unknownReason`，
+  `attackChance = nil` ✓ —— **绝不是 0** ✗✓（0 是"游戏说不会被伏击"，两回事）；
+- 同时写一行 `rpc_trace.log`：`onOrder 风险：<ship> action=<action> attackChance=… baseAttackChance=… riskKind=…` ✓；
+- 插件侧把同一个数写进 `decisions.log` 的 `orderResult.risk` / `receipt.risk`，并在
+  `decisions.live.log` 落一行「伏击 3%（基准 3%）」✓（`plugin/dsh/src/index.ts` 的 `riskText` ✓）。
+
