@@ -54,6 +54,69 @@ end
 M.probe = probe
 
 -- ---------------------------------------------------------------------------
+-- ★★ 船长职业：**读字段**，不猜顺序 ✓✓（2026-10-17 修）
+-- ---------------------------------------------------------------------------
+--
+-- 原版口径（本机实读 ✓）：
+--   · captainutility.lua:452-453  `local primary = classProperties[captain.primaryClass]`
+--                                 `local secondary = classProperties[captain.secondaryClass]`
+--     —— 职业就是 captain 上的**两个数字字段** ✓
+--   · captainutility.lua:774      `if captain.primaryClass ~= CaptainUtility.ClassType.None then`
+--     —— `primaryClass == None(0)` 才叫"没有职业" ✓
+--   · captainclass.lua:5-6        `None = 0`（0 保留；真实职业是 1..9 ✓）
+--   · Documentation/Captain.html  `property int primaryClass` / `property int secondaryClass`
+--
+-- 为什么**不能**再用 `captain:hasClass(ClassType.X)` 逐个试 ✗→✓：
+--   ① `hasClass` 会**同时**看主/副职业，而副职业默认就是 None
+--      （captainutility.lua:800 只有 `captain.secondaryClass ~= ClassType.None` 才显示 ✓）
+--      → 一个**真·Merchant** 的船长，`hasClass(None)` 同样是 true ✗；
+--   ② 循环里谁先命中，取决于 `pairs()` 的**未定义顺序** ✗
+--      （本机 Lua 5.2 对这张 0..9 的表实测顺序是 `2,0,3,1,7,6,9,5,4,8` —— None 在 Merchant 之前 ✓）；
+--   ③ VM 一重建顺序就可能变 → **同一艘船两套答案** ✗（这正是主人抓到的那条错 ✓）。
+--      真机证据：decisions.log 里 Trader-00001 在 18:14:49 / 19:04:03 两次游戏重启处
+--      从 "3" 翻成 "None" 又翻回来 —— 而它一直是能跑 Trade 的 Merchant ✓。
+--   → 读 `primaryClass`：**唯一取值路径**、与任何遍历顺序无关 ✓✓
+--
+-- ★ "没取到" 与 "确实没职业" 在这里被**分开** ✓✓：
+--   · 字段读到了 → captainClassKnown = true，名字照写（真没职业就是 "None" ✓，那是**真值** ✓）
+--   · 字段读不到 → captainClass / captainClassId 都不写 ✗，captainClassKnown = false ✓
+local function readCaptainClass(captain, card, probeNotes)
+    -- 数字 → 名字的反查表（建一次；`pairs` 只用来**填充**，不用来定胜负 ✓）
+    local names = nil
+    local okCU, CaptainUtility = pcall(function() return include("captainutility") end)
+    if okCU and type(CaptainUtility) == "table" and type(CaptainUtility.ClassType) == "table" then
+        names = {}
+        for className, classType in pairs(CaptainUtility.ClassType) do
+            local id = tonumber(classType)
+            if id ~= nil then names[id] = tostring(className) end
+        end
+    else
+        probeNotes.captainUtility = tostring(CaptainUtility)
+    end
+
+    local okP, primary = pcall(function() return captain.primaryClass end)
+    local id = okP and tonumber(primary) or nil
+    if id == nil then
+        -- ★ 船长在、但职业读不到 → **老实说不知道** ✗（绝不填 "None" 再标 known ✓）
+        card.captainClassKnown = false
+        probeNotes.captainClass = "captain present but primaryClass unreadable: " .. tostring(primary)
+        return
+    end
+
+    card.captainClassId = tostring(id)     -- 枚举数字，与名字同一来源 ✓
+    card.captainClassKnown = true          -- 这一次是真的拿到了 ✓
+    local name = (names ~= nil) and names[id] or nil
+    if name ~= nil then
+        card.captainClass = name
+    else
+        -- 拿得到数字、拿不到名字 → 数字照给，名字不瞎编 ✓
+        card.captainClass = "Unknown(" .. tostring(id) .. ")"
+        probeNotes.captainClass = "primaryClass=" .. tostring(id) ..
+            " has no name in CaptainUtility.ClassType"
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- 名单（两份 player value）
 -- ---------------------------------------------------------------------------
 
@@ -112,38 +175,32 @@ function M.shipCard(player, name)
 
     local entry = ShipDatabaseEntry(player.index, name)
     if entry == nil then
+        -- ★ 连数据库条目都没有 → 船长与职业都**没取到** ✓
+        --   以前这里什么也不写，调用方看到"没有 captainClassKnown"只能猜 ✗
+        card.captainClassKnown = false
+        probeNotes.entry = "ShipDatabaseEntry is nil"
         card.probe = probeNotes
         return card
     end
 
     -- 船长（★ 实测在 entry 上可用）
     local okC, captain = probe(entry, "getCaptain")
-    if okC then
+    if not okC then
+        -- ★ 连 getCaptain 都调不动 → "没取到" ✓ 不是"没有船长" ✗
+        card.hasCaptain = nil
+        card.captainClassKnown = false
+        probeNotes.captain = tostring(captain)
+    else
         card.hasCaptain = (captain ~= nil)
         if captain ~= nil then
-            -- ★ 船长职业：**没有 `getClass()`** ✗✓（2026-10-16 实测：调用它会报错并写进服务端日志 ✗）。
-            --   原版的用法是 `captain:hasClass(CaptainUtility.ClassType.Merchant)` ✓
-            --   （见 tradecommand.lua:752 ✓）—— 所以逐个职业试一遍 ✓✓。
-            local okCU, CaptainUtility = pcall(function() return include("captainutility") end)
-            if okCU and type(CaptainUtility) == "table" and type(CaptainUtility.ClassType) == "table" then
-                for className, classType in pairs(CaptainUtility.ClassType) do
-                    local okH, has = pcall(function() return captain:hasClass(classType) end)
-                    if okH and has == true then
-                        -- ★★ 写**职业名字**，不是枚举数字 ✓✓（2026-10-16 修）
-                        --   起因：卡片给的是 "3"/"0"，模型在思维链里反复纠结
-                        --   「captainClass is "3" — unclear」✓，为此浪费大量推理 ✓。
-                        --   ClassType 是 { 名字 = 数字 } ✓ → 循环时把**键**记下来即可 ✓。
-                        card.captainClass = tostring(className)
-                        card.captainClassId = tostring(classType)
-                        break
-                    end
-                end
-            else
-                probeNotes.captainUtility = tostring(CaptainUtility)
-            end
+            -- ★★ 职业：**读 captain.primaryClass**（唯一路径 ✓，见 readCaptainClass 的注释 ✓✓）
+            readCaptainClass(captain, card, probeNotes)
+        else
+            -- 船上**确实没有船长** ✓ —— 但"没有职业"≠"知道职业是 None" ✗
+            --   → 不给 captainClass（没有这回事）、known=false（没拿到）✓✓
+            card.captainClassKnown = false
+            probeNotes.captainClass = "no captain on this ship (hasCaptain=false)"
         end
-    else
-        probeNotes.captain = tostring(captain)
     end
 
     -- 进度描述（`Simulation.getDescription(shipName)` —— 与游戏舰船页显示同一句话）
@@ -340,13 +397,10 @@ function M.shipCard(player, name)
     end
 
     -- ② 船长职业 ✓（Trade 要求 Merchant ✓ —— 这个必须让模型看到 ✓）
-    --    上面已经试过 captain:getClass()；这里再补一个显式的、便于模型读取的字段 ✓
-    if card.captainClass ~= nil then
-        card.captainClassKnown = true
-    elseif card.hasCaptain == true then
-        card.captainClassKnown = false
-        probeNotes.captainClass = "has a captain but getClass() did not answer"
-    end
+    --    ★★ 字段已经由上面的 readCaptainClass **一次写好、同源** ✓✓
+    --      （captainClass / captainClassId / captainClassKnown 三者只在那一个地方赋值 ✓）。
+    --      旧写法在这里"看到 captainClass 有值就把 known 置 true" ✗ ——
+    --      于是把"顺序猜出来的 None"标成"已知" ✓，那正是对主人的**谎报** ✓✓
 
     -- ③ 合法动作与它们的约束 ✓
     --    来源：LLM-OPS.md 的调研（四条后台命令的区域规则、船长要求、距离要求 ✓）
@@ -435,7 +489,11 @@ function M.shipBrief(player, name, card)
             "（完整卡的 depth 采样 / 炮塔构成 / 逐动作长说明没搬过来 ✓）。",
     }
     local keep = {
-        "sector", "busy", "availability", "hasCaptain", "captainClass", "captainClassKnown",
+        -- ★ `captainClassId` 必须在这里 ✗→✓（2026-10-17 修）：
+        --   职业三字段是**一组**（名字 + 枚举数字 + 是否已知 ✓），
+        --   简报少给一个，两个视图就又"口径不一致"了 ✓。
+        "sector", "busy", "availability", "hasCaptain", "captainClass", "captainClassId",
+        "captainClassKnown",
         "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
         "holdHasGoods", "cargoState", "turretCount", "hyperspace", "actionNames", "actions",
         "scoutNote", "cargoNote", "probe",
