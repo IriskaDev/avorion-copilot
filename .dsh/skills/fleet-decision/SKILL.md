@@ -21,6 +21,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 ## 3. 决策必需的机制骨头（每条带出处）
 - 材料阶梯 **Fe < Ti < Na < Tr < Xa < Og < Av**；越靠地图中心矿层级越高、装备越好、**也越危险** → `docs/game/mechanics/depth-and-materials.md:17`、`:54-65`。
 - 采矿激光**只能采「自身材料 +1 级」及以下**（更高阶 `dps=0`）→ 同文件 `:48`。
+- ★ **设备族产出流向**：原版 **「R-」= Raw（粗）**，不是 Refined（净化）。粗采/粗分（R-Mining / R-Salvage）产出原矿/废铁→**货舱**（占舱、需后续精炼，后台命令里再扣 **8% 精炼税** + 有**货舱下限门**）；净化采/分（Mining / Salvaging Laser）产出精炼资源→**全局资源池**（不占舱）。**货舱只对粗变体是瓶颈**；粗料只在被伏击召回时落舱 → `docs/game/mechanics/device-families.md`。
 - 伏击概率**随时长增长**（>1h 后每多 1h 基准 +40%）→ `docs/game/mechanics/risk-and-ambush.md:44-48`。
 - 被伏击 = **强制召回 + 部分结算**（Mine/Salvage 须过 35% 才给 20%~95%；Trade 被中断那班无利润）→ 同文件 `:83-92`。
 - **打捞主角是装备件数**（`items.from/to` + `rarityTier` + `fieldTier`），废铁 `scrapLow/High` 只作审计 → `docs/game/ops/atomic-rpc.md:82`；装备只在 `onFinish` 生成 → `risk-and-ambush.md:88`。
@@ -34,7 +35,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 3. `fleet_query {what:"goal", ship}` → 这船目标/动作边界。
 4. ★ **自己决定要比哪几个框** → `fleet_query {what:"predict", ship, action, x, y, sizeX, sizeY, …}` → **一个框**，返回 `risk.baseAttackChance` / `value` / `box.containsShip`。
    - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）。
-   - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（`unknownCount==0` 时 = true → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
+   - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → ★ 主判据 `value.revealsOffgrid`（隐藏质量物质区**枚举** 0=none/1=some/2=all，**不是计数**）+ `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（无未探索且计数可信 → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
 5. 贸易：`fleet_query {what:"tradeRoutes", ship, x, y, sizeX, sizeY}` → 框内路线（`profitPerSize` 等）→ 再 `predict` 比风险。
 6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
 
@@ -52,5 +53,14 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - ② 看旅途本身（Travel / 长距离移动）是否危险 → 危险才派战斗舰**接应** ✓。
 - ③ 派之前算代价：护航占掉一艘船 + 要 Travel 一段路（期间不产出）→ **没被需要就不派** ✗；已派出但发现不需要 → `fleet_recall` 召回、别占船 ✗。
 - 判据只认原子接口数字（`baseAttackChance` / `riskKind`）✓，不许凭感觉 ✗。
+
+## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）
+- 框**严格包含船**，位移留余量：21×21 用 ±8、15×15 用 ±6；下单前 `predict` 看 `box.containsShip`。
+- 护航生效 = ① 真需要（`baseAttackChance` 超/逼近闸门）② 与行动船**同星区** ③ 有炮塔（`turretCount` 是槽位不是已装炮塔 ✗）④ 订单里带 `escorts:[…]`。
+- `fleet_escort` 只把护航 **Travel** 过去 ≠ 护航生效（真正生效靠订单里的 `escorts`）。
+- 不许给闲船编活：`action=None` 也是决策；战斗舰允许闲置。
+- 侦察看 `revealsOffgrid`（隐藏物质区枚举 0/1/2）**不是** `unknownCount`。
+- 侦察方向：朝中心 → 同级 → 降级；「不可行」= 威胁超闸门 或 实质不可达（航程 / `canPassRifts:false` 不能跨环）。
+- 派单前确认目标船/护航 `busy=false` 且状态落定（刚 recall 就派会被拒）。
 
 拿不准先查、别猜；工具报错把它给的原因当事实。
