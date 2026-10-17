@@ -701,6 +701,21 @@ function self.mountsCommand(player, rest)
                 .. tostring(base.materialName) .. "  type " .. tostring(base.typeValue))
         end
         mountSend(player, tostring(ship.name) .. ": " .. tostring(#bases) .. " turret base(s).")
+
+        -- 现有资源/信用点（对账用；也是“付不付得起”的最直观依据 ✓）
+        local resOk, res = pcall(function() return { player:getResources() } end)
+        local parts = {}
+        if resOk and type(res) == "table" then
+            for i = 1, Mounts.NUM_MATERIALS do
+                local amount = tonumber(res[i]) or 0
+                if amount > 0 then
+                    parts[#parts + 1] = tostring(amount) .. " " .. Mounts.materialName(i - 1)
+                end
+            end
+        end
+        mountSend(player, "you have: " .. tostring(player.money) .. " credits; "
+            .. (#parts > 0 and table.concat(parts, ", ") or "no materials"))
+
         mountSend(player, "Preview: /copilot mounts <material> [ship]   Apply: ... confirm")
         return
     end

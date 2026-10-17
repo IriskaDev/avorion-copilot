@@ -364,7 +364,8 @@ plan:addBlock(position, size, parentIndex, -1, color, Material(m), orientation, 
 * 收费 = 原版修船坞的差价算法（`repairdock.lua:993-1017` / `:1019-1037` / `:1138-1141`），
   即资源差 × 0.5 × 0.5，向上取整；信用点同理。
 * 数据路径 = **路径 B**（附录 C.2）；路径 A 已被真机证伪（附录 C.1）。
-* ★ 仍然只有真机能答的一条：`setMovePlan` 到活实体后炮塔是否完好（附录 C.4）。
+* ★ 真机已跑通一次（Lady，2026-10-17）：材料变、形状不变、资源按报价扣、档案同步 ✓（附录 C.4）。
+  唯一没覆盖的是“船上本来就装着炮塔”时的外观恢复（Lady 没有炮塔）。
 
 ---
 
@@ -504,18 +505,42 @@ plan:setBlockType(i, t)          → call=true delta=0（对照组：索引式 s
 [mounts] Upgrade 24 of 24 turret base(s) to Trinium: 34 Trinium + 52 credits   ← 预览（未执行）
 ```
 
-### C.4 ⚠ 仍然**未验证**的一条（只有真机能回答）
+### C.4 ★ 已在真船上跑通一次（2026-10-17，主人授权用 **Lady**）
 
-**把重建后的 plan `setMovePlan` 到活着的实体上**之后：
+> Lady：当前星区 (-438:79) 的待命船，1570 块、2 个炮塔底座（#219 / #229）、升级前**没有装炮塔**
+> （`TurretBases:getDesigns()` = 0，物理炮塔 `ship:getTurrets()` = 0）。
 
-* 已装炮塔（Turret 实体，按 block index 挂载）是否还在？
-* `TurretBases:setDesigns` 恢复是否成功？
-* 耐久比例、船档案 `ShipDatabaseEntry:setPlan` 是否都按预期？
+**执行**：`/copilot mounts titanium Lady confirm`（先跑过一次预览：`2 Titanium + 1 credits`）
 
-实现里已经按原版修船坞（`repairdock.lua:697-734`）把四件事都做了
-（样式 restore / 炮塔数量掉了就 `restoreTurrets` / 耐久按原比例 / 档案同步），
-但**没有在真船上执行过一次 `confirm`** —— 按“先别动主人的船”的规矩，这一步留给
-玩家自己在一艘**空闲测试船**上点一次确认（面板里两次点击）来收尾。
+```
+Applied. Paid 2 Titanium + 1 credits.
+Verified: 2 base(s) now Titanium, 0 not upgraded.
+Shape: blocks 1570 -> 1570 (unchanged); bounding box unchanged
+Turrets: 0 -> 0; turret designs restored 0
+Ship database plan synced: yes
+```
+
+**独立复核**（升级后再跑只读探针 / `mounts list`）：
+
+| 项 | 升级前 | 升级后 |
+|---|---|---|
+| 底座 #219 / #229 材料 | Iron / Iron | **Titanium / Titanium** ✓ |
+| 方块数 | 1570 | 1570 ✓ |
+| 物理炮塔 `getTurrets()` | 0 | 0 ✓ |
+| 实体炮塔样式 `getDesigns()` | 0 | 0 ✓（本来就没有） |
+| 信用点 | 7.108.052 | **7.108.051**（-1 ✓） |
+| Titanium | 352.909 | **352.907**（-2 ✓） |
+| Iron | 551.679 | 551.679（**不退料**，按原版差价口径 ✓） |
+
+另：升级后 `fleet_query{what="ship", ship="Lady"}` 船卡正常返回（sector / 货舱 / 动作全在），
+`turretCount: 1` 是**档案蓝图**里的炮塔设计数（`card.lua:225-227` 读 `entry:getTurrets()`）；
+`entry:setPlan` 并没有清掉它（若清掉这里会是 0）✓。
+
+→ 结论：**`setMovePlan` 写回活实体这条路在真船上跑通了**，形状/块数/资源/档案四项都对上。
+唯一“没覆盖到”的场景是**船上真装着炮塔**时的外观恢复（Lady 本来就没有炮塔）；
+样式重映射逻辑有离线断言（`native/harness/_mounts_selftest.lua` 的 remap 组），
+真机最后一条建议主人在一艘**有炮塔的空闲船**上验一次（Raven 正被主人开着，本鱼没碰）。
+
 
 ### C.5 要不要重启游戏？—— 命令不用，**面板 UI 要一次**
 
