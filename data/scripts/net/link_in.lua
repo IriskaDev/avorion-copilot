@@ -4909,6 +4909,7 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         if entry.error ~= nil or entry.predictionFailed ~= nil then
             return { box = boxInfo, predictionFailed = entry.predictionFailed or entry.error, value = nil, risk = nil }
         end
+        local u = entry.unknown or {}
         return {
             box = boxInfo,
             risk = {
@@ -4920,6 +4921,15 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
                 unknownCount = entry.unknownCount,
                 knownCount = entry.knownCount,
                 totalSectors = entry.totalSectors,
+                share = u.share,
+                -- ★ "这个框要不要去"的客观标记（口径与 legacy scoutPlan 的 markAcceptable 一致 ✓，
+                --   直接复用 scoutSurveyArea 已算好的字段，不重写 ✗）：
+                --   · revealsNothingNew = 框里没有未探索星区（且计数可信）→ 揭不出新地图 ✗
+                --   · unreliable       = getKnownSector 调用失败 → 计数不可信，别当 0 用 ✗
+                --   · hasUnknown       = 计数不可信 OR 还有未探索（= 是否值得揭 ✓）
+                revealsNothingNew = (u.revealsNothingNew == true),
+                unreliable = (u.unreliable == true),
+                hasUnknown = (u.unreliable == true) or ((tonumber(entry.unknownCount) or 0) > 0),
                 revealsLow = entry.revealsLow,
                 revealsHigh = entry.revealsHigh,
                 revealsOffgridEnum = entry.revealsOffgridEnum,
