@@ -28,8 +28,8 @@
 | 「每次都值得先回答这个长期问题」整段 | [`../mechanics/depth-and-materials.md`](../mechanics/depth-and-materials.md) §5 |
 | 输出格式里每个字段的长解释 | 保留一行字段名；解释进 [`../ops/tools-cheatsheet.md`](../ops/tools-cheatsheet.md) §3 |
 
-★ 不搬走、也不能删的：**「大目标」段**（主人钦定的目标）与**答案必须在第一行**（实机事故：
-想太久会把额度烧光、动作行根本吐不出来 —— `plugin/src/index.ts:1197` 的记录）。
+★ 不搬走、也不能删的：**「大目标」段**（主人钦定的目标）与**答案必须在第一行**（便于解析；
+实机事故：正文被 maxTokens 截断、动作行根本吐不出来 —— `plugin/src/index.ts:1197` 的记录）。
 
 ## 2. 待粘贴的提示词块（可直接粘贴）
 
