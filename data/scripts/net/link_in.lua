@@ -365,6 +365,11 @@ function CopilotLinkIn.onQuery(data)
             "没有任何'该不该去'的结论 ✓；要不要走、什么时候走、走多远，由决策方自己判断 ✓。"
         return true, res
 
+    elseif what == "orderStatus" then
+        -- ★★ 某一单的**实测结论**（2026-10-17 ✓✓）—— 按 orderId 或 ship（该船最近一单 ✓）
+        --   形状见 CopilotLinkIn.orderStatus 头上 ✓；`verify.pending=true` = 还没到采样点 ✓
+        return CopilotLinkIn.orderStatus(player, data)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -414,10 +419,17 @@ local COMMAND_TYPES = {
     Sell    = "6bf2d9af-255b-4108-a1e1-dc83ace49819",
     --   · CommandType.Scout = "7619ca9c-3f26-4b89-a4a4-10fd9aca5c60"（commandtype.lua L? ✓ 实读核对 ✓）
     Scout   = "7619ca9c-3f26-4b89-a4a4-10fd9aca5c60",
+    -- ★★ Refine（2026-10-17 加 ✓✓）：UUID **实读**自原版
+    --   data/scripts/player/background/simulation/commandtype.lua:15
+    --   （`Refine = "77110b44-b327-4747-b618-69a82a5789cf"` ✓），不是猜的 ✓。
+    --   原版命令实现：data/scripts/player/background/simulation/refinecommand.lua（743 行，全文实读 ✓）
+    Refine  = "77110b44-b327-4747-b618-69a82a5789cf",
 }
 
 -- 各命令的默认区域边长（与 LLM-OPS.md 的调研一致 ✓）
-local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15, Scout = 21 }   -- ★ Scout 原版 getAreaSize = 21x21（scoutcommand.lua:416 ✓ 实读）
+local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15, Scout = 21, Refine = 31 }   -- ★ Scout 原版 getAreaSize = 21x21（scoutcommand.lua:416 ✓ 实读）
+-- ★ Refine 原版 getAreaSize = {x=31,y=31}（refinecommand.lua:318-320 ✓ 实读）；且 isAreaFixed=true（:326-328 ✓）
+--   → 框心会被 startAreaAnalysis 按船**重算**（simulation.lua:790-801 ✓），调用方给的框心不作数 ✓。
 
 -- 排队中的第二阶段：{ {at=时刻, ...}, ... }
 CopilotLinkIn.pendingOrders = CopilotLinkIn.pendingOrders or {}
@@ -470,6 +482,135 @@ local function readHoldGoods(player, ship)
         end
     end
     return list, nil, used
+end
+
+-- ★★★ 「这些货里**哪些真的卖得掉**」—— 判据 = **原版自己的 getErrors** ✓✓（2026-10-17 实机血案后加）
+--
+-- 血案（今晚实机 ✓）：`Salvager-00001` 舱里 2889 单位 / 24 种，含 **`Rift Naonite Ore`** 1369 单位 ✗。
+--   `fleet_order{Sell}` 回执 `accepted:true executed:true` ✓，可 **一件没卖** ✗，
+--   `busy:false` + `cargoUsed` 不变 ✗ —— 因为原版在 `startCommand` 里**整单拒绝**了：
+--     `simulation.lua:557-566` → `command:getErrors(...)` 有错就 `sendChatMessage(Error)` 然后 `return` ✗
+--     `sellcommand.lua:397-411` → **只要有一种货"这里没有需求"就 return 错误** ✗（不是跳过 ✗✓）
+--   ⇒ 所以**必须在订单里预先过滤** ✓，命令本身**没有**"只卖能卖的"这种正规做法 ✗✓。
+--
+-- ★ 为什么直接调原版 `getErrors` 而不是重写判据 ✗→✓：
+--   判据有六道（货在 goodsindex ✓ / amount>0 ✓ / 货在船上 ✓ / stolen/illegal 要 Smuggler ✓ /
+--   dangerous/suspicious 要 Merchant ✓ / **区域里有需求**（或走私者的供应路线）✓ ——
+--   `sellcommand.lua:326-412`）。重写一遍就是**两套口径** ✗；直接问原版则**逐字一致** ✓✓，
+--   而且被拒时的 `reason` 是原版**原话**（"There is no demand for 'X' here." ✓），不是我编的 ✗。
+--   过滤用的市场分析也来自 `run(...)`（与 `predict` / `sellPlan` **同一份** ✓✓）。
+--
+-- 返回：verdict = { sellable = {...}, skipped = { {goodName, amount, reason}, ... }, analysis }, nil
+--       失败           → nil, 错误码, 明细
+local function sellableHoldOf(player, ship, ctype, area, hold)
+    local okInc = pcall(function() return include("areaanalysis") end)
+    if not okInc or type(run) ~= "function" then
+        return nil, "NO_ANALYSIS_SCRIPT", "areaanalysis.lua did not define run()"
+    end
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF or type(factory) ~= "table" then
+        return nil, "NO_COMMAND_FACTORY", tostring(factory)
+    end
+    local okC, command = pcall(function() return factory.makeCommand(ctype) end)
+    if not okC or command == nil then
+        return nil, "NO_COMMAND", tostring(command)
+    end
+
+    -- ★ 同一份局部市场分析（口径与 scanSellArea / predict 完全一致 ✓）
+    local okRun, rShip, _rType, rArea, results = pcall(function()
+        return run(player.index, ship, ctype, area, player.index)
+    end)
+    if not okRun then
+        return nil, "ANALYSIS_FAILED", "area analysis failed: " .. tostring(rShip)
+    end
+    if type(rArea) ~= "table" then rArea = area end
+    local analysis = results or rArea
+    if type(analysis) ~= "table" then
+        return nil, "ANALYSIS_FAILED", "area analysis returned nothing"
+    end
+    rArea.analysis = analysis
+
+    local sellable, skipped = {}, {}
+    for _, g in ipairs(hold) do
+        local amount = math.floor(tonumber(g.amount) or 0)
+        local one = { goodName = g.goodName, amount = amount, stolen = (g.stolen == true) }
+        local okE, err = pcall(function()
+            -- ★ 单独试这一种货：原版 getErrors 只看 config 里给的货 ✓，
+            --   所以"单独放它进 config 会不会被拒"就是**它自己能卖吗**的精确答案 ✓✓
+            return command:getErrors(player.index, ship, rArea, { goodsToSell = { one } })
+        end)
+        if not okE then
+            skipped[#skipped + 1] = {
+                goodName = one.goodName, amount = amount,
+                reason = "vanilla getErrors threw: " .. tostring(err),
+            }
+        elseif err ~= nil then
+            skipped[#skipped + 1] = {
+                goodName = one.goodName, amount = amount,
+                reason = tostring(err),     -- ★ 原版原话（不翻译、不猜 ✓）
+            }
+        else
+            sellable[#sellable + 1] = one
+        end
+    end
+
+    return { sellable = sellable, skipped = skipped, analysis = analysis }, nil, nil
+end
+
+-- ★★★ 读船上的**原矿**（Refine 的原料 ✓，2026-10-17 加）
+--
+-- 口径**逐字照抄原版**（refinecommand.lua:187-209 / :408-441 ✓）：按货物 tag 认材料 ——
+--   `iron/titanium/naonite/trinium/xanion/ogonite/avorion` → 材料 1..7 ✓；`rich` → 富矿（产出 ×4 ✓）。
+--   ⚠️ 原版就是按 tag 认的，**不是**按货物名 ✗ —— 所以 "Rift Naonite Ore"（tags.naonite+ore+rich ✓，
+--      goodsindex.lua:110 ✓）也算 Naonite 原矿 ✓。这里跟着原版走，不自己加白名单 ✗✓。
+-- 返回 list（按材料索引排序） / 原矿总单位 / 富矿单位 / 错误串（读不到才给 ✓）。
+local ORE_TAGS = { iron = 1, titanium = 2, naonite = 3, trinium = 4, xanion = 5, ogonite = 6, avorion = 7 }
+local ORE_MATERIAL_NAMES = { "Iron", "Titanium", "Naonite", "Trinium", "Xanion", "Ogonite", "Avorion" }
+
+local function readHoldOres(player, ship)
+    local okE, entry = pcall(function() return ShipDatabaseEntry(player.index, ship) end)
+    if not okE or entry == nil then
+        return nil, nil, nil, "no ShipDatabaseEntry for " .. tostring(ship)
+    end
+    local okG, cargo = pcall(function() return entry:getCargo() end)
+    if not okG or type(cargo) ~= "table" then
+        return nil, nil, nil, "cannot read hold: " .. tostring(cargo)
+    end
+    local list, total, richTotal = {}, 0, 0
+    for g, amount in pairs(cargo) do
+        local a = math.floor(tonumber(amount) or 0)
+        if a > 0 then
+            local material, isRich = nil, false
+            local okT, tags = pcall(function() return g.tags end)
+            if okT and type(tags) == "table" then
+                for tag, index in pairs(ORE_TAGS) do
+                    -- ★ 原版写法是 `if tags.iron then`（refinecommand.lua:190 ✓）—— 判**真值**，不判 == true ✓
+                    if tags[tag] then material = index; break end
+                end
+                isRich = tags.rich and true or false
+            end
+            if material ~= nil then
+                local name = nil
+                local okN, nm = pcall(function() return g.name end)
+                if okN and type(nm) == "string" and nm ~= "" then name = nm end
+                if name == nil then name = ORE_MATERIAL_NAMES[material] or ("Material" .. tostring(material)) end
+                list[#list + 1] = {
+                    goodName = name,
+                    amount = a,
+                    materialIndex = material,
+                    material = ORE_MATERIAL_NAMES[material] or ("Material" .. tostring(material)),
+                    rich = isRich,
+                }
+                total = total + a
+                if isRich then richTotal = richTotal + a end
+            end
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.materialIndex ~= b.materialIndex then return a.materialIndex < b.materialIndex end
+        return tostring(a.goodName) < tostring(b.goodName)
+    end)
+    return list, total, richTotal, nil
 end
 
 -- 取一个"数值"（原版 yield 可能是 number，也可能是 {from,to} 或 {value} ✓ —— 三种都兜 ✓）
@@ -535,7 +676,9 @@ end
 --
 -- ★ 算不出来时：`known=false` + `unknownReason`，`attackChance=nil` ✓ ——
 --   **绝不填 0 装懂** ✗✓（0 = "游戏说不会遇到伏击"，和"游戏没算出来"是两回事 ✓）。
-local function orderRiskOf(player, ship, action, area, config)
+-- ★ `prePredict`（可选）：Travel 的预检**已经**用 predict 算过一份（含 jump route ✓）——
+--   直接复用，别为了回执再跑一遍整条航线的分析 ✓（同一份代码、同一个数 ✓）。
+local function orderRiskOf(player, ship, action, area, config, prePredict)
     local function unknown(reason)
         return {
             known = false,
@@ -545,6 +688,10 @@ local function orderRiskOf(player, ship, action, area, config)
             riskKind = nil,
             unknownReason = tostring(reason),
         }
+    end
+
+    if type(prePredict) == "table" and type(prePredict.risk) == "table" then
+        return prePredict.risk
     end
 
     -- ★ 框心（predict 的 x/y 是**框心**，而 order 的 area 是 lower/upper ✗）——
@@ -575,6 +722,656 @@ local function orderRiskOf(player, ship, action, area, config)
     return unknown(r.error or r.predictionFailed or "predict returned no risk")
 end
 
+-- ===========================================================================
+-- ★★★ 预检（preflight）+ 实测（verify）—— 2026-10-17 主人钦点 ✓✓
+-- ===========================================================================
+--
+-- 主人原话（本段的唯一需求）：
+--   「你下的指令似乎你都不知道是有没有正常执行啊，回执没法带结果吗？」
+--
+-- 今晚实测的四种「接了却没做」★ 它们的回执**全是** `accepted:true executed:true` ✗：
+--   ① `Sell` 清单里混了**没人收**的货（`Rift Naonite Ore`）→ 一件没卖 ✗
+--   ② `Sell` 在**没买家**的星区框 → 空转 ✗
+--   ③ trace 里 `startCommand -> ok=true` 只是"**启动成功**"，不是"做成了" ✗
+--   ④ `Travel` 目的地只有 **1 跳** → 接单但**不动** ✗
+--
+-- ★ 根因（一句话）：**回执只反映了 RPC 队列那一步** ✗✓。
+--   order 是两段式的（startAreaAnalysis → 6s 后 startCommand ✓），而原版的**所有拒绝**
+--   都发生在第二段里，形式统一是 `player:sendChatMessage(Error); return` ✗ ——
+--   **不抛错、不回调、RPC 早就答复过了** ✓（simulation.lua:443-462 船不可用 /
+--   :472-476 没有分析 / :490-522 护航 / :528-543 区域尺寸 / :546-554 船不在框内 /
+--   :557-566 getErrors / :569-578 initialize —— 七道闸门，七次"静默 return" ✗）。
+--
+-- 所以本段做两件事（一件都不多做 ✗）：
+--   A. **预检**：下单**之前**把原版会拒绝的条件问清楚 ✓；
+--      不过 → 回执 `accepted:false` + `preflight{ok:false, code, reason, detail}` ✓✓，
+--      **绝不发明"成功"** ✗✓（也不发起区域分析、不排 startCommand ✓）。
+--   B. **实测**：startCommand 之后**延迟重读实体状态**（位置/busy/货舱 ✓），
+--      结论进回执（通过 `query what=orderStatus` 取 ✓ —— RPC 是一次问答，没法同步等 ✓）。
+--
+-- ★ 判据来源的优先级（重要 ✗✓）：
+--   ① 能用**原版自己的函数**就用原版的 —— `command:isShipRequiredInArea` ✓、
+--      `command:getConfigurableValues` 的 duration 区间 ✓、`command:getErrors`（Sell 过滤）✓、
+--      Travel 的 jump route（`run()` + predict 同一份分析 ✓）；
+--   ② 问不到才用**实读过的常量/判据**，且每条都带 文件:行 ✓；
+--   ③ **查不到** ≠ **没通过** ✗✓ —— 查不到的项记 warning（写明"没查"），绝不假装已查 ✓。
+
+-- 实测的两个采样点（秒）：startCommand 之后 6s 采一次；看不出证据 → 15s 再采一次 ✓
+local VERIFY_SAMPLE_AFTER_START = 6
+local VERIFY_SAMPLE_SECOND = 15
+local ORDER_RECORD_LIMIT = 40
+
+local function isoNow()
+    local ok, s = pcall(os.date, "!%Y-%m-%dT%H:%M:%SZ")
+    if ok and type(s) == "string" then return s end
+    return string.format("clock=%.2fs", os.clock())
+end
+
+-- 框是否含某星区 —— 与 simulation.lua:548 的判据逐字一致 ✓。
+-- ★ 为什么不直接调本文件的 `areaContainsShip`：它定义在 **onOrder 之后**（:1287），
+--   而 Lua 的 local 是**词法作用域** ✗ → 这里看不到 ✓（同 450 行那个坑 ✓）。
+local function sectorInside(area, x, y)
+    if type(area) ~= "table" or type(area.lower) ~= "table" or type(area.upper) ~= "table" then
+        return nil
+    end
+    if x == nil or y == nil then return nil end
+    return (x >= area.lower.x and y >= area.lower.y and x <= area.upper.x and y <= area.upper.y)
+end
+
+-- 船的**可观测状态**（预检与实测**同一份**读取 ✓ —— 口径不会漂 ✓）
+--   x/y           = player:getShipPosition（card.lua:781 同款 ✓）
+--   busy          = availability == ShipAvailability.InBackground（card.lua:151-156 同款 ✓）
+--   cargoUsed/... = 货舱（readHoldGoods ✓）
+local function shipStateOf(player, ship)
+    local st = { known = false }
+    local okP, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if okP and tonumber(px) ~= nil and tonumber(py) ~= nil then
+        st.x, st.y = math.floor(tonumber(px)), math.floor(tonumber(py))
+        st.positionKnown = true
+    end
+    local okA, avail = pcall(function() return player:getShipAvailability(ship) end)
+    if okA and avail ~= nil and type(ShipAvailability) == "table" then
+        st.busy = (avail == ShipAvailability.InBackground)
+        st.availability = tonumber(avail) or avail
+        st.busyKnown = true
+    end
+    local hold, herr, used = readHoldGoods(player, ship)
+    if hold ~= nil then
+        st.cargoUsed = math.floor(tonumber(used) or 0)
+        st.cargoKinds = #hold
+        st.holdHasGoods = (st.cargoUsed > 0)
+        st.cargoKnown = true
+    else
+        st.cargoError = tostring(herr)
+    end
+    st.known = (st.positionKnown == true) or (st.busyKnown == true) or (st.cargoKnown == true)
+    return st
+end
+
+-- 船长职业（判据 = 原版 `captain:hasClass` ✓，见 tradecommand.lua:636-637）
+--   来源与 card.lua:83-117 一致（include("captainutility") 的 ClassType 反查 ✓）
+local function captainFacts(player, ship)
+    local out = { known = false }
+    local okE, entry = pcall(function() return ShipDatabaseEntry(player.index, ship) end)
+    if not okE or entry == nil then
+        out.error = "no ShipDatabaseEntry for " .. tostring(ship)
+        return out
+    end
+    local okC, captain = pcall(function() return entry:getCaptain() end)
+    if not okC then
+        out.error = "getCaptain() failed: " .. tostring(captain)
+        return out
+    end
+    if captain == nil then
+        out.hasCaptain = false
+        out.known = true
+        return out
+    end
+    out.hasCaptain = true
+    out.known = true
+
+    local okP, primary = pcall(function() return captain.primaryClass end)
+    local id = okP and tonumber(primary) or nil
+    if id ~= nil then out.classId = id end
+
+    local okU, CU = pcall(function() return include("captainutility") end)
+    if not (okU and type(CU) == "table" and type(CU.ClassType) == "table") then
+        out.classError = "captainutility.CaptainUtility unavailable: " .. tostring(CU)
+        return out
+    end
+    local names = {}
+    for k, v in pairs(CU.ClassType) do names[tonumber(v)] = tostring(k) end
+    if id ~= nil and names[id] ~= nil then out.className = names[id] end
+
+    -- ★ 与贸易命令**同一判据**：`captain:hasClass(CaptainUtility.ClassType.Merchant)` ✓
+    local function hasClass(className)
+        local want = CU.ClassType[className]
+        if want == nil then return nil end
+        local okH, h = pcall(function() return captain:hasClass(want) end)
+        if not okH then return nil end
+        return (h == true)
+    end
+    out.hasClass = hasClass
+    out.isMerchant = hasClass("Merchant")
+    return out
+end
+
+-- 护航事实（判据 = 原版 `SimulationUtility.isShipUsableAsEscort` 的**同一套事实** ✓）
+--   simulationutility.lua:145-176：不是自己 ✓ / 必须 Available（:152-154）✓ /
+--   必须在**护航自己的一跳之内**（:156-163 `distance2 > reach*reach → TooFarAway`）✓ /
+--   不能穿裂隙者必须与行动船同环侧（:165-169）✓ / 还得过 isShipUsable（:171-174）✓。
+--   ★ 「必须同星区」**不是**原版判据 ✗✓（同星区只是"一跳之内"的一个子集 ✓，
+--     本仓库 card.lua:760-768 已实读过同一个结论 ✓）→ 这里只记 warning ✓。
+--   ★ 「有武装」原版**根本没查** ✗（isShipUsable :28-105 全文无炮塔/舰载机判据 ✓）
+--     → 也只记 warning（但**据实报数**：armedTurrets / armedFighters / torpedoes ✓）。
+local function escortFacts(player, ship, escorts)
+    local list = {}
+    if type(escorts) ~= "table" then return list end
+
+    local okShipP, sx, sy = pcall(function() return player:getShipPosition(ship) end)
+    if not okShipP or sx == nil then sx, sy = nil, nil end
+
+    local Card = nil
+    do
+        local okCard, c = pcall(function() return include("copilot/card") end)
+        if okCard and type(c) == "table" then Card = c end
+    end
+
+    for _, name in ipairs(escorts) do
+        if type(name) == "string" and name ~= "" then
+            local f = { name = name }
+
+            local okAv, avail = pcall(function() return player:getShipAvailability(name) end)
+            if okAv and avail ~= nil and type(ShipAvailability) == "table" then
+                f.available = (avail == ShipAvailability.Available)
+            end
+
+            local okPos, ex, ey = pcall(function() return player:getShipPosition(name) end)
+            if okPos and ex ~= nil and ey ~= nil and sx ~= nil then
+                ex, ey = math.floor(tonumber(ex)), math.floor(tonumber(ey))
+                f.x, f.y = ex, ey
+                f.sameSector = (ex == math.floor(tonumber(sx)) and ey == math.floor(tonumber(sy)))
+                local dx, dy = ex - math.floor(tonumber(sx)), ey - math.floor(tonumber(sy))
+                f.distance = math.sqrt(dx * dx + dy * dy)
+            end
+
+            local okE, entry = pcall(function() return ShipDatabaseEntry(player.index, name) end)
+            if okE and entry ~= nil then
+                local okH, reach, canPassRifts = pcall(function() return entry:getHyperspaceProperties() end)
+                if okH then
+                    f.reach, f.canPassRifts = tonumber(reach), canPassRifts
+                end
+                if Card ~= nil and type(Card.equipmentFacts) == "function" then
+                    local scratch, notes = {}, {}
+                    local okF = pcall(Card.equipmentFacts, player, entry, scratch, notes)
+                    if okF then
+                        f.canFight = scratch.canFight
+                        f.canFightKnown = scratch.canFightKnown
+                        f.armedTurrets = scratch.armedTurrets
+                        f.armedFighters = scratch.armedFighters
+                        f.torpedoes = scratch.torpedoes
+                    end
+                end
+            end
+
+            list[#list + 1] = f
+        end
+    end
+    return list
+end
+
+-- ★★★ 预检主体 —— 返回 { ok, code?, reason?, detail?, checks[], warnings[], applied, state }
+--
+--   ctx.sellFilter = Sell 的**订单前过滤**结论（sellableHoldOf ✓，同一份分析 ✓）
+--   ctx.prePredict = Travel 用 predict 算出来的那一份（回执 risk 直接复用它 ✓ 不重复分析 ✓）
+local function preflightOf(player, ship, action, ctype, area, config, ctx)
+    ctx = ctx or {}
+    local pf = { ok = true, checks = {}, warnings = {}, applied = {} }
+
+    local function pass(name, detail)
+        pf.checks[#pf.checks + 1] = { name = name, ok = true, detail = detail }
+    end
+    local function fail(code, reason, detail)
+        pf.ok = false
+        pf.code = code
+        pf.reason = reason
+        pf.detail = detail
+        pf.checks[#pf.checks + 1] = { name = code, ok = false, reason = reason, detail = detail }
+        return false
+    end
+    local function warn(code, detail)
+        pf.warnings[#pf.warnings + 1] = { code = code, detail = detail }
+    end
+
+    -- ① 可观测状态（后面每条都用它 ✓）
+    local st = shipStateOf(player, ship)
+    pf.state = {
+        x = st.x, y = st.y, busy = st.busy,
+        cargoUsed = st.cargoUsed, cargoKinds = st.cargoKinds,
+        positionKnown = st.positionKnown, busyKnown = st.busyKnown, cargoKnown = st.cargoKnown,
+    }
+    if st.known ~= true then
+        return pf, fail("STATE_UNREADABLE",
+            "cannot read the ship's state (position / availability / hold all unreadable)")
+    end
+    pass("SHIP_STATE", string.format("pos=(%s,%s) busy=%s cargo=%s",
+        tostring(st.x), tostring(st.y), tostring(st.busy), tostring(st.cargoUsed)))
+
+    -- ② 动作前置：船在框内吗 —— **问原版命令自己** ✓
+    --    `command:isShipRequiredInArea` 的实现（实读 ✓）：
+    --      minecommand.lua:502-504 true / salvagecommand.lua:584-586 true /
+    --      sellcommand.lua:430-432 true / tradecommand.lua:596 true /
+    --      scoutcommand.lua:428 true / refinecommand.lua:330-332 true /
+    --      travelcommand.lua:472-474 **false**（Travel 的框是目的地，船当然不在里 ✓）
+    --    服务端在 startAreaAnalysis（simulation.lua:822-831）与 startCommand（:545-554）
+    --    **各查一次**，不过就 `sendChatMessage + return` ✗（静默拒绝 ✓）。
+    local command = ctx.command
+    if command == nil then
+        local okF, factory = pcall(function() return include("commandfactory") end)
+        if okF and type(factory) == "table" then
+            local okC, c = pcall(function() return factory.makeCommand(ctype) end)
+            if okC then command = c end
+        end
+    end
+    pf.commandReadable = (command ~= nil)
+
+    local needInside = nil
+    if command ~= nil then
+        local okI, v = pcall(function() return command:isShipRequiredInArea(player.index, ship) end)
+        if okI and type(v) == "boolean" then needInside = v end
+    end
+    if needInside == nil then
+        needInside = (action ~= "Travel")   -- 退路：与上面各命令的实读值一致 ✓
+        warn("AREA_RULE_UNREADABLE",
+            "command:isShipRequiredInArea() unreadable — falling back to the vanilla values " ..
+            "(true for every action except Travel: travelcommand.lua:472-474)")
+    end
+    if needInside == true then
+        local inside = sectorInside(area, st.x, st.y)
+        if inside == nil then
+            warn("AREA_NOT_CHECKED", "cannot compare the ship position with the box (position unreadable)")
+        elseif inside ~= true then
+            return pf, fail("SHIP_NOT_IN_AREA", string.format(
+                "the ship is at (%s,%s) but the box is [%d,%d]-[%d,%d] — vanilla refuses this in "
+                .. "startAreaAnalysis/startCommand (simulation.lua:822-831 / :545-554) and says "
+                .. "'Ship is not inside the target area.'",
+                tostring(st.x), tostring(st.y),
+                area.lower.x, area.lower.y, area.upper.x, area.upper.y))
+        else
+            pass("SHIP_IN_AREA", string.format("(%s,%s) is inside [%d,%d]-[%d,%d]",
+                tostring(st.x), tostring(st.y),
+                area.lower.x, area.lower.y, area.upper.x, area.upper.y))
+        end
+    else
+        pass("SHIP_IN_AREA", "not required for this action (vanilla isShipRequiredInArea=false)")
+    end
+
+    -- ③ duration / safeMode 合法性
+    --    原版口径（simulation.lua:52-72 clampConfig ✓）：只对 **getConfigurableValues 里有的键**
+    --    做 default / from / to 夹紧；**没有的键原样留在 config 里、命令根本不读** ✓。
+    --    duration 的合法区间是**命令自己给的**（minecommand.lua:510-527 例如 0.5..2+boss ✓）
+    --    → 所以这里问命令，不自造区间 ✓。
+    local cfgVals = nil
+    if command ~= nil then
+        local okV, v = pcall(function() return command:getConfigurableValues(player.index, ship) end)
+        if okV and type(v) == "table" then cfgVals = v end
+    end
+    local dur = tonumber(config.duration)
+    if cfgVals == nil then
+        warn("CONFIG_UNREADABLE", "command:getConfigurableValues() unreadable — duration not validated")
+    elseif type(cfgVals.duration) == "table" then
+        local from = tonumber(cfgVals.duration.from)
+        local to = tonumber(cfgVals.duration.to)
+        if dur == nil or dur ~= dur then
+            return pf, fail("BAD_DURATION", "duration is not a number (got " .. tostring(config.duration) .. ")")
+        end
+        if dur <= 0 then
+            return pf, fail("BAD_DURATION", "duration must be > 0 (got " .. tostring(dur) .. ")")
+        end
+        if from ~= nil and dur < from then
+            config.duration = from
+            pf.applied.duration = from
+            warn("DURATION_CLAMPED", string.format(
+                "duration %s < command minimum %s → clamped to %s (what vanilla does: simulation.lua:62-65)",
+                tostring(dur), tostring(from), tostring(from)))
+        elseif to ~= nil and dur > to then
+            config.duration = to
+            pf.applied.duration = to
+            warn("DURATION_CLAMPED", string.format(
+                "duration %s > command maximum %s → clamped to %s (simulation.lua:66-68)",
+                tostring(dur), tostring(to), tostring(to)))
+        else
+            pass("DURATION_OK", string.format("%s is inside the command's [%s, %s]",
+                tostring(dur), tostring(from), tostring(to)))
+        end
+    else
+        -- 命令没有 duration 这个配置项 → 原版**不读它**（clampConfig 只处理已知键 ✓）
+        if config.duration ~= nil then
+            warn("DURATION_IGNORED",
+                "this command has no `duration` in getConfigurableValues (simulation.lua:52-72 only "
+                .. "touches known keys) — vanilla ignores the value you sent")
+        end
+        pass("DURATION_NA", "this command takes no duration")
+    end
+    if config.safeMode == true then
+        if cfgVals ~= nil and cfgVals.safeMode == nil then
+            warn("SAFE_MODE_IGNORED",
+                "this command has no `safeMode` config (only Mine/Salvage do: minecommand.lua:525) — "
+                .. "vanilla ignores it, so no ambush bonus will apply")
+        else
+            pass("SAFE_MODE_OK", "safeMode is a config of this command")
+        end
+    end
+
+    -- ④ 动作特有的前置
+    if action == "Travel" then
+        -- ★ 原版**服务端**也会拒（不是只有客户端 ✗✓ —— MECHANICS.md 旧说法要改 ✓）：
+        --   `TravelCommand:initialize`（travelcommand.lua:67-90 ✓）:
+        --     :71-73  `area.lower == 船所在星区` → "The ship is already in this sector."
+        --     :75-77  `#area.analysis.route <= 2` → "This route is too short."   ← **1 跳就中** ✓
+        --   route 的第 1 个元素是**起点**、最后一个是**目的地**（:109-137 getAreaAnalysisSectors ✓）
+        --   → route 长度 = 跳数 + 1，所以 `<= 2` 就是"**一跳之内**" ✓✓。
+        --   （客户端另有 `isValidAreaSelection` :482-512 判 `d <= reach` + 单跳门/虫洞 ✗，
+        --     mapcommands.lua:1173-1175 只在客户端选区时调 —— 所以**不能**只靠客户端 ✓）
+        local dest = { x = area.lower.x, y = area.lower.y }
+        if st.x == dest.x and st.y == dest.y then
+            return pf, fail("ALREADY_THERE",
+                "the ship is already in the destination sector — vanilla initialize() refuses it: "
+                .. "'The ship is already in this sector.' (travelcommand.lua:71-73)")
+        end
+
+        -- ★ 用**与 predict 同一份**分析拿路由（travelcommand.lua:109-137 ✓）
+        local okP, ok, r = pcall(function()
+            return self.predict(player, {
+                what = "predict", ship = ship, action = "Travel",
+                x = dest.x, y = dest.y, sizeX = 1, sizeY = 1,
+                escorts = config.escorts,
+            })
+        end)
+        if okP and ok == true and type(r) == "table" then
+            ctx.prePredict = r
+        end
+        local routeSectors = nil
+        local predictFail = nil
+        if not okP then
+            predictFail = "predict pcall: " .. tostring(ok)
+        elseif ok ~= true then
+            predictFail = tostring(r)
+        elseif type(r) ~= "table" then
+            predictFail = "predict returned no table"
+        else
+            predictFail = r.predictionFailed or r.error or nil
+            local v = r.value or {}
+            routeSectors = tonumber(v.routeSectors)
+            pf.travel = {
+                distance = v.distance,
+                routeSectors = v.routeSectors,
+                travelTime = v.travelTime,
+                origin = v.origin,
+                destination = v.destination,
+            }
+        end
+        if predictFail ~= nil then
+            -- ★ 分析都没成 → 原版第二段会 "No area analyzed for X."（simulation.lua:472-476）静默拒 ✗
+            return pf, fail("ANALYSIS_FAILED", string.format(
+                "the Travel analysis could not produce a jump route (%s) — vanilla would then refuse "
+                .. "startCommand with 'No area analyzed for %s.' (simulation.lua:472-476)",
+                tostring(predictFail), ship))
+        end
+        if routeSectors == nil then
+            warn("ROUTE_UNKNOWN",
+                "Travel predict returned no value.routeSectors — cannot check the vanilla route length rule")
+        elseif routeSectors <= 2 then
+            -- ★ 今晚翻车 ④ 的**正主**：1 跳目的地在这里就该被拒 ✓✓
+            return pf, fail("MIN_DISTANCE", string.format(
+                "the destination is reachable in ONE jump (jump route = %s sectors, so hops = %s) — "
+                .. "vanilla TravelCommand:initialize refuses it: 'This route is too short.' "
+                .. "(travelcommand.lua:75-77; the route includes origin+destination, so <= 2 means <= 1 jump). "
+                .. "Pick a destination at least 2 jumps away (card: minDistance=2).",
+                tostring(routeSectors), tostring(math.max(0, routeSectors - 1))))
+        else
+            pass("MIN_DISTANCE", string.format("%s jump sectors = %s hops (vanilla needs > 1)",
+                tostring(routeSectors), tostring(routeSectors - 1)))
+        end
+
+    elseif action == "Trade" then
+        -- ⑤ 船长必须是 Merchant（tradecommand.lua:632-637 ✓ 原版原话：
+        --    "I don't know enough about trading. You should task a merchant to do this job."）
+        local cf = captainFacts(player, ship)
+        if cf.known ~= true then
+            warn("CAPTAIN_UNREADABLE", "cannot read the captain (" .. tostring(cf.error) .. ")")
+        elseif cf.hasCaptain ~= true then
+            return pf, fail("NO_CAPTAIN",
+                "the ship has no captain — vanilla refuses every background command without one "
+                .. "(simulation.lua:449-450 'Ship doesn't have a captain.'; simulationutility.lua:57-61)")
+        elseif cf.isMerchant == nil then
+            warn("CAPTAIN_CLASS_UNREADABLE",
+                "hasClass(Merchant) unreadable (" .. tostring(cf.classError) .. "); carrier class="
+                .. tostring(cf.className))
+        elseif cf.isMerchant ~= true then
+            return pf, fail("CAPTAIN_NOT_MERCHANT", string.format(
+                "the captain is '%s', not a Merchant — vanilla TradeCommand:getErrors refuses it: "
+                .. "'I don't know enough about trading. You should task a merchant to do this job.' "
+                .. "(tradecommand.lua:632-637; merchant also needed to bypass the demand check "
+                .. "sellcommand.lua:397-411)", tostring(cf.className)))
+        else
+            pass("CAPTAIN_MERCHANT", "captain has class Merchant")
+        end
+        -- 货舱：空舱才算"能装满"（Issue B 的 HOLD_HAS_GOODS 已在 onOrder 前面拦了 ✓；
+        --   原版自己的判据是 getFreeCargoSpace()==0 → "Not enough cargo space!"
+        --   tradecommand.lua:640-641 ✓ —— 这里把**剩余舱位**报出来 ✓）
+        if st.cargoUsed ~= nil then
+            pass("HOLD_FOR_TRADE", string.format("cargo used = %d units (vanilla only rejects a FULL hold)", st.cargoUsed))
+        end
+
+    elseif action == "Sell" then
+        -- ⑥ 卖不掉货（今晚翻车 ①②）：结论来自 sellableHoldOf ✓（= 原版 getErrors 逐货单试 ✓）
+        --    原版对"清单里有货没人收"是**整单拒绝**（sellcommand.lua:397-411 +
+        --    simulation.lua:557-566）→ 所以订单前已过滤：只有有买家的货进了 config ✓。
+        if ctx.sellFilter ~= nil then
+            local sf = ctx.sellFilter
+            local sellableUnits, skippedUnits = 0, 0
+            for _, g in ipairs(sf.sellable) do sellableUnits = sellableUnits + (tonumber(g.amount) or 0) end
+            for _, s in ipairs(sf.skipped) do skippedUnits = skippedUnits + (tonumber(s.amount) or 0) end
+            pf.sell = {
+                sellableKinds = #sf.sellable,
+                sellableUnits = sellableUnits,
+                skippedKinds = #sf.skipped,
+                skippedUnits = skippedUnits,
+                skipped = sf.skipped,
+            }
+            if #sf.sellable == 0 then
+                return pf, fail("NO_BUYER",
+                    "none of the requested goods has a buyer in this box — vanilla refuses the WHOLE "
+                    .. "order ('There is no demand for X here.', sellcommand.lua:397-411)")
+            end
+            pass("SELL_BUYERS", string.format("%d kind(s) / %d units WILL be sold (they are in config.goodsToSell)",
+                #sf.sellable, sellableUnits))
+            if #sf.skipped > 0 then
+                local lines = {}
+                for _, s in ipairs(sf.skipped) do
+                    lines[#lines + 1] = string.format("%s (%s): %s",
+                        tostring(s.goodName), tostring(s.amount), tostring(s.reason))
+                end
+                warn("SELL_SKIPPED", string.format(
+                    "%d kind(s) / %d units are NOT sold here and were dropped from the order (%s) — "
+                    .. "vanilla would have rejected the WHOLE order because just one unsellable good "
+                    .. "kills it (sellcommand.lua:397-411)",
+                    #sf.skipped, skippedUnits, table.concat(lines, "; ")))
+            end
+        else
+            warn("SELL_FILTER_MISSING", "no sell filter result was passed to preflight")
+        end
+
+    elseif action == "Mine" or action == "Salvage" then
+        -- ⑦ 船长（simulation.lua:449-450）—— 动作本身的原版判据（getErrors）还有
+        --    "有没有采矿/打捞设备"（minecommand.lua:464-478），那需要原版属性接口，这里只报事实 ✓
+        local cf = captainFacts(player, ship)
+        if cf.known ~= true then
+            warn("CAPTAIN_UNREADABLE", "cannot read the captain (" .. tostring(cf.error) .. ")")
+        elseif cf.hasCaptain ~= true then
+            return pf, fail("NO_CAPTAIN",
+                "the ship has no captain — vanilla refuses every background command without one "
+                .. "(simulation.lua:449-450; simulationutility.lua:57-61)")
+        else
+            pass("CAPTAIN_OK", "captain present (class=" .. tostring(cf.className) .. ")")
+        end
+
+    elseif action == "Refine" then
+        -- Refine 的原矿前置已在 onOrder 前面拦了（refinecommand.lua:443-446 ✓）
+        pass("REFINE_ORES", "ore pre-check already passed in onOrder (refinecommand.lua:443-446)")
+
+    elseif action == "Scout" then
+        pass("SCOUT_AREA", "Scout has no config besides addCaptainsNote (scoutcommand.lua:446)")
+    end
+
+    -- ⑧ 护航：只把**原版真的会拒**的判据当失败 ✓（TooFarAway / Unavailable ✓）；
+    --    「不同星区」「没武装」**不是**原版判据 → warning（见 escortFacts 头上 ✓）。
+    local ef = escortFacts(player, ship, config.escorts)
+    pf.escorts = (#ef > 0) and ef or nil
+    for _, f in ipairs(ef) do
+        if f.available == false then
+            return pf, fail("ESCORT_NOT_AVAILABLE", string.format(
+                "escort '%s' is not available (busy) — vanilla SimulationUtility.isShipUsableAsEscort "
+                .. "returns Unavailable (simulationutility.lua:152-154) and startCommand aborts the "
+                .. "whole order (simulation.lua:490-522)", f.name))
+        end
+        if f.reach ~= nil and f.distance ~= nil and f.distance > f.reach then
+            return pf, fail("ESCORT_TOO_FAR", string.format(
+                "escort '%s' is %.2f sectors away but its own hyperspace reach is %s — vanilla returns "
+                .. "TooFarAway (simulationutility.lua:156-163) and startCommand aborts "
+                .. "('Escorting ship %s is too far away.', simulation.lua:496-499)",
+                f.name, f.distance, tostring(f.reach), f.name))
+        end
+        if f.sameSector == false then
+            warn("ESCORT_NOT_SAME_SECTOR", string.format(
+                "escort '%s' is NOT in the action ship's sector (distance %.2f, reach %s) — vanilla "
+                .. "ACCEPTS this (only TooFarAway is refused: simulationutility.lua:161-163), but the "
+                .. "owner's rule says an escort only counts when it is in the SAME sector",
+                f.name, tonumber(f.distance) or -1, tostring(f.reach)))
+        end
+        if f.canFightKnown == true and f.canFight == false then
+            warn("ESCORT_UNARMED", string.format(
+                "escort '%s' has NO weapons (armedTurrets=%s, armedFighters=%s, torpedoes=%s) — vanilla "
+                .. "never checks armament (simulationutility.lua:28-105), so it will be accepted, but it "
+                .. "adds no firepower",
+                f.name, tostring(f.armedTurrets), tostring(f.armedFighters), tostring(f.torpedoes)))
+        elseif f.canFight == nil then
+            warn("ESCORT_ARMAMENT_UNKNOWN", string.format(
+                "cannot read the armament of escort '%s' (canFight unknown) — not a failure, just unread", f.name))
+        end
+        if f.available == true and f.distance ~= nil and (f.reach == nil or f.distance <= f.reach) then
+            pass("ESCORT_OK", string.format("escort '%s' usable (available, within reach=%s, armed=%s)",
+                f.name, tostring(f.reach), tostring(f.canFight)))
+        end
+    end
+
+    return pf, nil
+end
+
+-- ★★★ 实测（verify）—— startCommand 之后**延迟重读实体状态** ✓✓
+--
+-- 为什么必须延迟 + 为什么不能只看 startCommand 的返回值 ✗✓：
+--   `CopilotLinkIn.tickOrders` 调的 `invokeSimulation("startCommand", …)` 只是
+--   `player:invokeFunction(...)` **成功进了队列** ✓ —— 原版下一步可能**静默 return** ✗
+--   （七道闸门见文件头 ✓）。所以"启动成功"≠"做成了"。
+--
+-- ★ 成功证据按动作（**都来自原版实读** ✓，绝不发明 ✗）：
+--   · 通用：`faction:setShipAvailability(ship, InBackground)`（simulation.lua:584 ✓）——
+--     这一行在**所有**闸门**之后**才执行 ✓ → `busy:true` 就说明命令**真的起来了** ✓✓
+--     （闸门拒绝的路径都在 :584 之前 return ✗）。
+--   · Travel：位置/终点 —— 但 ★ 原版**只在 `onRecall`（travelcommand.lua:373-397）与
+--     `onFinish`（:400-408）里才 `entry:setCoordinates(...)` ✗✓ —— 航程中间**坐标不动** ✓。
+--     所以"刚下单几秒位置就变了"是**不可能**的（除非刚好跑完/被召回）✓；
+--     短窗口里 `busy:true` 才是"它真的在跑"的证据 ✓。
+--   · Sell：★ 货舱**只在 `onFinish` 才结算**（sellcommand.lua:161 → `finishSellCommand`
+--     :235-267 `entry:setCargo(...)` ✓）—— 所以"Sell → cargoUsed 下降"在**短窗口里通常不成立** ✗✓，
+--     它是"跑完"的证据，不是"跑起来了"的证据 ✓。这里两个都收 ✓。
+--   · Refine：原矿也在 `onFinish` 才扣（refinecommand.lua:180-228 ✓）→ 同上 ✓。
+--   · Mine/Salvage：产出进**派系资源池**（minecommand.lua:868 / salvagecommand 同款 ✓），
+--     货舱不是产出口 → 短窗口证据只有 `busy:true` ✓。
+--   · Trade：`busy:true`（货在结束时才变动 ✓）。
+--   ⇒ ★ 判定的**主证据 = busy:true**；若 busy=false 且状态也毫无变化 →
+--     `ok=false` + reason（"接了就完"的情形 ✓✓）。
+
+local function verifyVerdict(rec, v)
+    local action = rec.action
+    if action == "Travel" then
+        if v.atDestination == true then return true, "atDestination", nil end
+        if v.moved == true then return true, "moved", nil end
+        if v.busy == true then
+            return true, "busy",
+                "命令在后台跑（busy=InBackground，simulation.lua:584 ✓）；"
+                .. "★ 原版只在 `onFinish`（travelcommand.lua:400-408）与 `onRecall`（:373-397）"
+                .. "才 `entry:setCoordinates(...)` → 航程中间**坐标不动**是正常的 ✓"
+        end
+        return false, nil,
+            "位置没变、也不在后台运行（busy=false）—— 命令没有被原版接住。"
+            .. "Travel 的 1 跳目的地会在 initialize 里被拒：'This route is too short.'"
+            .. "（travelcommand.lua:75-77，静默 return ✗）"
+    elseif action == "Sell" or action == "Refine" then
+        if v.cargoUsedDelta ~= nil and v.cargoUsedDelta < 0 then return true, "cargoUsedDecreased", nil end
+        if v.busy == true then
+            return true, "busy",
+                "货舱要等命令**跑完**才结算（sellcommand.lua:161/235-267、refinecommand.lua:180-228 ✓）"
+        end
+        return false, nil,
+            "货舱没少、也不在后台运行（busy=false）—— 这单多半被原版整单拒了"
+            .. "（卖不掉的货：sellcommand.lua:397-411 + simulation.lua:557-566 ✗）"
+    elseif action == "Mine" or action == "Salvage" then
+        if v.busy == true then return true, "busy", nil end
+        if v.cargoUsedDelta ~= nil and v.cargoUsedDelta > 0 then return true, "cargoUsedIncreased", nil end
+        return false, nil,
+            "不在后台运行（busy=false）也没有任何产出变化 —— 命令没真的起来"
+            .. "（很可能卡在 getErrors：minecommand.lua:464-492 ✗）"
+    else -- Trade / Scout
+        if v.busy == true then return true, "busy", nil end
+        if v.cargoUsedDelta ~= nil and v.cargoUsedDelta ~= 0 then return true, "cargoChanged", nil end
+        return false, nil,
+            "不在后台运行（busy=false）也没有任何变化 —— 命令没真的起来"
+    end
+end
+
+-- 采一次样 → 写进 rec.verify ✓（返回 verify 表）
+local function sampleVerify(player, rec)
+    local st = shipStateOf(player, rec.ship)
+    local pre = rec.pre or {}
+    local v = {
+        at = isoNow(),
+        afterStartSec = (rec.startedAt ~= nil) and tonumber(string.format("%.1f", os.clock() - rec.startedAt)) or nil,
+        started = (rec.started == true),
+        -- ★ startCommand 的**队列**结果（只是"进队列成功"，不是"做成了" ✗✓）
+        startCommandQueued = rec.startCommandOk,
+        busy = st.busy,
+        busyKnown = st.busyKnown,
+        availability = st.availability,
+        position = (st.positionKnown == true) and { x = st.x, y = st.y } or nil,
+        positionBefore = (pre.x ~= nil) and { x = pre.x, y = pre.y } or nil,
+        moved = (st.positionKnown == true and pre.x ~= nil) and ((st.x ~= pre.x) or (st.y ~= pre.y)) or nil,
+        cargoUsed = st.cargoUsed,
+        cargoUsedBefore = pre.cargoUsed,
+        cargoUsedDelta = (st.cargoUsed ~= nil and pre.cargoUsed ~= nil) and (st.cargoUsed - pre.cargoUsed) or nil,
+        cargoKinds = st.cargoKinds,
+        cargoKindsBefore = pre.cargoKinds,
+        holdHasGoods = st.holdHasGoods,
+        destination = rec.destination,
+    }
+    -- atDestination：只对 Travel 有意义（area.lower 就是目的地 ✓）
+    if rec.destination ~= nil and st.positionKnown == true then
+        v.atDestination = (st.x == rec.destination.x and st.y == rec.destination.y)
+    end
+    local ok, evidence, note = verifyVerdict(rec, v)
+    v.ok = ok
+    v.evidence = evidence
+    v.reason = (ok ~= true) and note or nil
+    v.note = (ok == true and note ~= nil) and note or nil
+    if ok ~= true then
+        v.hint = "★ 这只说明**启动后的短窗口里没有成功证据** ✓（原版拒绝是静默 sendChatMessage + return ✗）；"
+            .. "证据口径见 link_in.lua 的 verifyVerdict 注释 ✓"
+    end
+    return v
+end
+
 function CopilotLinkIn.onOrder(data)
     data = data or {}
     local ship = data.ship
@@ -590,11 +1387,15 @@ function CopilotLinkIn.onOrder(data)
     local ctype = COMMAND_TYPES[action]
     if ctype == nil then
         return false, "UNKNOWN_ACTION",
-            "known actions: Mine, Salvage, Trade, Travel, Sell, Scout (got '" .. tostring(action) .. "')"
+            "known actions: Mine, Salvage, Trade, Travel, Sell, Scout, Refine (got '" .. tostring(action) .. "')"
     end
 
     local player = Player()
     if player == nil then return false, "NO_PLAYER", "no player object" end
+
+    -- ★★★ Sell 的**过滤结论**（2026-10-17 加 ✓✓）：过滤只发生一次、就在下单前 ✓，
+    --   结论进回执（sellable / skipped ✓）—— 见下面 Sell 分支与回执 ✓。
+    local sellFilter = nil
 
     -- ★★★ 永不向玩家正在开的船下令（防御性硬排除 ✗✓ 2026-10-17）
     --   玩家自己的船由实体层（player/ai/autopilot.lua）接管；后台命令
@@ -637,21 +1438,38 @@ function CopilotLinkIn.onOrder(data)
             "order needs an explicit area: data.size (square) or data.sizeX + data.sizeY (rectangle)"
     end
 
-    -- ① 异步分析
-    local ok1, err1 = invokeSimulation("startAreaAnalysis", ship, ctype, area)
-    if not ok1 then
-        return false, "ANALYSIS_FAILED", tostring(err1)
+    -- ★★★ Refine 的框是**固定区域**（2026-10-17 加 ✓✓）：
+    --   原版 `isAreaFixed → true`（refinecommand.lua:326-328 ✓）→ startAreaAnalysis 会**无视**框心、
+    --   按船所在星区重算成 31x31（simulation.lua:790-801 ✓）；startCommand 再按 getAreaSize 核尺寸
+    --   （simulation.lua:528-543 → 别的尺寸会被拒："Area size for X changed." ✗）。
+    --   → 这里**只**核对尺寸（31x31）✓；框心由游戏按船重算 ✓，本函数不替它算 ✗✓。
+    if ctype == COMMAND_TYPES.Refine then
+        local w = area.upper.x - area.lower.x + 1
+        local h = area.upper.y - area.lower.y + 1
+        if w ~= 31 or h ~= 31 then
+            return false, "REFINE_AREA_FIXED", string.format(
+                "Refine's area is FIXED at 31x31 (refinecommand.lua:318-320 getAreaSize, :326-328 isAreaFixed; "
+                .. "simulation.lua:528-543 rejects any other size). Pass size=31 (or sizeX=31 + sizeY=31); "
+                .. "the game itself re-centres the box on the ship.")
+        end
     end
 
-    self.lastOrder = data
-    self.orders = (self.orders or 0) + 1
-
-    -- ② 排队第二阶段（等分析落地 ✓ —— 给 6 秒）
+    -- ② 最小参数（**先**校验/组装，再发起异步分析 ✓ —— 免得给一个必然被拒的单白跑一次分析 ✗）
     local config = {
         duration = tonumber(data.duration) or 1,
         safeMode = data.safeMode == true,
         immediateDelivery = data.immediateDelivery == true,
     }
+
+    -- ★ Refine **没有**可配置参数：getConfigurableValues 返回空表（refinecommand.lua:334-337 ✓）
+    --   → 不往 config 里塞 duration / safeMode / immediateDelivery ✗（那是"顺手补参数" ✗）。
+    --   （clampConfig 只按 getConfigurableValues 的键 clamp —— simulation.lua:52-72 ✓ —— 多塞的键会被无视，
+    --    但"被无视"不等于"该塞" ✓；原子化要求只给该动作真正需要的参数 ✓。）
+    if ctype == COMMAND_TYPES.Refine then
+        config.duration = nil
+        config.safeMode = nil
+        config.immediateDelivery = nil
+    end
 
     -- ★★★ Trade 的**货舱感知**（Issue B ✓✓，保留——这是**拒绝**不是复合 ✗）：船上有货 → 先卖 ✗→✓
     if ctype == COMMAND_TYPES.Trade then
@@ -681,7 +1499,13 @@ function CopilotLinkIn.onOrder(data)
 
     -- ★★★ Sell：把 config.goodsToSell 装上（Issue B ✓✓ 2026-10-17）
     --   形状由原版决定 ✓：`{ {goodName=…, amount=…, stolen=…} }`（sellcommand.lua:243/:326-343 ✓）
-    --   默认**卖掉船上的全部货** ✓；若显式给了 goodsToSell 就按它来（并按船上实际数量夹紧 ✓）。
+    --   ★ **默认值（2026-10-17 改 ✓✓）**：没给 goodsToSell 时**不是**"整舱全塞"✗，
+    --     而是"整舱里**有买家的那些**"✓ —— 因为原版 UI 的「Select All」本来就只勾**可卖**的货
+    --     （sellcommand.lua:764-898：`cargoToUse` 只收 demand/supply 满足的货 ✓，
+    --      不可卖的连 checkbox 都不给 `:859-872` ✓）。所以"全选"= 只卖能卖的 ✓✓ ——
+    --     旧的"全舱全塞"既不对齐原版、又会被 getErrors 整单拒 ✗。
+    --   ★ 显式给了 goodsToSell（白名单）就按它来（并按船上实际数量夹紧 ✓），**同样过滤** ✓。
+    --   ★ 过滤后一件都卖不掉 → `NO_BUYER` 明确失败（不下单 ✗✓）。
     if ctype == COMMAND_TYPES.Sell then
         local hold, herr, used = readHoldGoods(player, ship)
         if hold == nil then
@@ -694,11 +1518,21 @@ function CopilotLinkIn.onOrder(data)
         if type(data.goodsToSell) == "table" and #data.goodsToSell > 0 then
             wanted = {}
             for _, want in ipairs(data.goodsToSell) do
-                local wn = type(want) == "table" and want.goodName or nil
-                if type(wn) == "string" then
+                -- ★ 两种形状都收 ✓（2026-10-17）：`{goodName=…, amount=…}` 或**纯字符串**货名 ✓
+                --   （工具参数是 array，模型很可能直接写 `["Drill","Oxygen"]` ✓ ——
+                --    只认 table 元素的话，字符串会被**静默无视** ✗ → 变成"整舱全卖" ✗✓）。
+                local wn = nil
+                local wantAmount = nil
+                if type(want) == "string" then
+                    if want ~= "" then wn = want end
+                elseif type(want) == "table" then
+                    if type(want.goodName) == "string" and want.goodName ~= "" then wn = want.goodName end
+                    wantAmount = tonumber(want.amount)
+                end
+                if wn ~= nil then
                     for _, have in ipairs(hold) do
                         if have.goodName == wn then
-                            local amt = tonumber(want.amount) or have.amount
+                            local amt = wantAmount or have.amount
                             if amt > have.amount then amt = have.amount end
                             if amt > 0 then
                                 wanted[#wanted + 1] = { goodName = wn, amount = math.floor(amt), stolen = have.stolen }
@@ -708,12 +1542,78 @@ function CopilotLinkIn.onOrder(data)
                     end
                 end
             end
-            if #wanted > 0 then hold = wanted end
+            if #wanted > 0 then
+                hold = wanted
+            else
+                -- ★ 点名要卖的货**一样都不在船上** → 明确拒 ✓（别静默退回"整舱全卖" ✗✓）
+                return false, "BAD_REQUEST",
+                    "none of the goods named in data.goodsToSell is in the hold " ..
+                    "(names must match the cargo keys exactly)"
+            end
         end
-        config.goodsToSell = hold
-        CopilotRpc.trace(string.format("onOrder Sell：goodsToSell = %d 种 / %d 单位 ✓（船上共 %d 单位 ✓）",
-            #hold, (function() local n = 0 for _, g in ipairs(hold) do n = n + g.amount end return n end)(),
-            math.floor(used or 0)))
+        -- ★★★ **订单前过滤**（2026-10-17 实机血案 ✓✓，见 sellableHoldOf 头上）：
+        --   原版对"清单里有货没人收"的处理是**整单拒绝**（sellcommand.lua:397-411 +
+        --   simulation.lua:557-566）✗ —— 所以把卖不掉的货塞进 config = 一件也卖不掉 ✗。
+        --   → 这里先用**同一份局部市场分析**算出"哪些有买家" ✓，**只把能卖的**发下去 ✓✓。
+        local verdict, verr, vdetail = sellableHoldOf(player, ship, ctype, area, hold)
+        if verdict == nil then
+            return false, verr or "SELL_FILTER_FAILED",
+                "cannot decide which goods have a buyer: " .. tostring(vdetail)
+        end
+        if #verdict.sellable == 0 then
+            local lines = {}
+            for _, s in ipairs(verdict.skipped) do
+                lines[#lines + 1] = string.format("%s (%d): %s",
+                    tostring(s.goodName), tonumber(s.amount) or 0, tostring(s.reason))
+            end
+            -- ★ 明确失败 ✓（绝不假装成功 ✗✓）：全都卖不掉时**不下单**，把原版的原话带回去 ✓
+            return false, "NO_BUYER",
+                "none of the requested goods has a buyer in this box: " .. table.concat(lines, "; ")
+        end
+        config.goodsToSell = verdict.sellable
+        sellFilter = verdict
+        CopilotRpc.trace(string.format(
+            "onOrder Sell：船上 %d 单位 → 能卖 %d 种 / %d 单位 ✓、卖不掉 %d 种（%d 单位）✗（已按原版 getErrors 过滤 ✓）",
+            math.floor(used or 0), #verdict.sellable,
+            (function() local n = 0 for _, g in ipairs(verdict.sellable) do n = n + g.amount end return n end)(),
+            #verdict.skipped,
+            (function() local n = 0 for _, s in ipairs(verdict.skipped) do n = n + (tonumber(s.amount) or 0) end return n end)()))
+        for _, s in ipairs(verdict.skipped) do
+            CopilotRpc.trace(string.format("  ✗ 卖不掉：%s（%s 单位）—— 原版理由：%s",
+                tostring(s.goodName), tostring(s.amount), tostring(s.reason)))
+        end
+    end
+
+    -- ★★★ Refine：原料 + 唯一必需参数（2026-10-17 加 ✓✓）
+    --
+    -- 前置条件（全部**实读** refinecommand.lua ✓）：
+    --   · **货舱里必须有原矿**（:443-446 → "There are no ores or scrap metal on board the ship."）——
+    --     没有则 initialize 直接失败、命令起不来（simulation.lua:568-573 ✓）。这里先拒 ✓（拒绝，不是替玩家补矿 ✗）。
+    --   · **不需要**指定精炼厂 / 阵营 / 友好度 ✓（:101-172 的 onAreaAnalysisFinished 只是**找**附近精炼厂：
+    --     找到自有/友方 → 时长 ÷2（:463-465）、税率更低（:161-164）；一个都没有 → 时长 ×2（:466-468）✓。
+    --     找不到精炼厂**不是错误** ✓ —— 只是慢一点 ✓。
+    --   · `config.refined[material]` = 精炼哪些材料（:206-209、:427-435 ✓）。原版 UI 缺省**全选**
+    --     （buildConfig :714-717 ✓）→ 这里与 `collected` 同款：全 7 级 ✓（不是替玩家挑材料 ✓）。
+    if ctype == COMMAND_TYPES.Refine then
+        local ores, oreUnits, richUnits, oerr = readHoldOres(player, ship)
+        if ores == nil then
+            return false, "HOLD_UNREADABLE", tostring(oerr)
+        end
+        if oreUnits <= 0 then
+            return false, "NO_ORES",
+                "the hold holds no ore — RefineCommand:calculatePrediction would return "
+                .. "'There are no ores or scrap metal on board the ship.' (refinecommand.lua:443-446), "
+                .. "so the command cannot start. Salvage/Mine first (or buy ore), then Refine."
+        end
+        local nMat = 7
+        local okN, nm = pcall(function() return NumMaterials() end)
+        if okN and tonumber(nm) ~= nil and tonumber(nm) > 0 then nMat = tonumber(nm) end
+        local refined = {}
+        for i = 1, nMat do refined[i] = true end
+        config.refined = refined
+        CopilotRpc.trace(string.format(
+            "onOrder Refine：舱内原矿 %d 单位（富矿 %d，%d 种）→ config.refined = 全 %d 级 ✓",
+            oreUnits, richUnits, #ores, nMat))
     end
 
     if type(data.escorts) == "table" then config.escorts = data.escorts end
@@ -729,21 +1629,111 @@ function CopilotLinkIn.onOrder(data)
             config.collected = collected
         end
     end
+
+    -- ★★★ 预检（preflight）—— **下单之前**把原版会拒绝的条件问清楚 ✓✓（2026-10-17）
+    --
+    --   为什么必须在**发起区域分析之前** ✗→✓：原版的两段式里，
+    --   ① `startAreaAnalysis` 本身就会静默拒绝（船不 Available / 不在框内 /
+    --      `canStartNewAnalysis` 限流 —— simulation.lua:761-838 ✓），
+    --   ② `startCommand`（6s 后）还有**七道闸门**（simulation.lua:443-578 ✓）。
+    --   两处都是 `sendChatMessage + return` ✗（不抛错、不回调 ✓）——
+    --   所以**只要预检不过，就一个字节都别发**，回执直接 `accepted:false` ✓✓。
+    local pfCtx = {
+        sellFilter = sellFilter,
+        command = nil,          -- 让 preflightOf 自己 include/commandfactory 造一个 ✓
+    }
+    local pf = preflightOf(player, ship, action, ctype, area, config, pfCtx)
+    if pf.ok ~= true then
+        CopilotRpc.trace(string.format(
+            "onOrder **预检不过** %s action=%s code=%s —— 没有下单 ✗（未发起区域分析、未排 startCommand ✓）",
+            ship, action, tostring(pf.code)))
+        CopilotRpc.trace("  理由：" .. tostring(pf.reason))
+        for _, w in ipairs(pf.warnings or {}) do
+            CopilotRpc.trace("  · 预检提示 " .. tostring(w.code) .. "：" .. tostring(w.detail))
+        end
+        return true, {
+            accepted = false,
+            executed = false,
+            preflight = pf,
+            error = tostring(pf.code) .. ": " .. tostring(pf.reason),
+            note = tostring(pf.reason),
+            ship = ship,
+            action = action,
+            area = area,
+            config = config,
+            hint = "★ 预检没过 → **没有下单** ✗：既没发起区域分析，也没排 startCommand 队列 ✓" ..
+                "（原版这些拒绝路径都是静默的：simulation.lua:761-838 / :443-578 ✓）" ..
+                "—— 改参数/换框/换船后可以再来一次 ✓",
+        }
+    end
+    for _, w in ipairs(pf.warnings or {}) do
+        CopilotRpc.trace("  预检提示 " .. tostring(w.code) .. "：" .. tostring(w.detail))
+    end
+
+    -- ② 异步分析（参数已校验完 ✓）
+    local ok1, err1 = invokeSimulation("startAreaAnalysis", ship, ctype, area)
+    if not ok1 then
+        return false, "ANALYSIS_FAILED", tostring(err1)
+    end
+
+    self.lastOrder = data
+    self.orders = (self.orders or 0) + 1
+
+    -- ③ 排队第二阶段（等分析落地 ✓ —— 给 6 秒）+ 建**实测记录** ✓
+    --
+    --   ★ 回执里给 `orderId`：RPC 是一次问答，**没法**在这个答复里等到 startCommand 之后 ✗ →
+    --     所以实测结论靠 `query what=orderStatus`（按 orderId / ship 取 ✓）来拿 ✓✓。
+    self.orderRecords = self.orderRecords or {}
+    self.lastOrderOf = self.lastOrderOf or {}
+    self.orderSeq = (self.orderSeq or 0) + 1
+    local orderId = self.orderSeq
+
+    -- 预检时的状态 = **实测的基线**（同一份 shipStateOf ✓，口径不会漂 ✓）
+    local preState = shipStateOf(player, ship)
+    self.orderRecords[orderId] = {
+        orderId = orderId,
+        ship = ship,
+        action = action,
+        area = area,
+        config = config,
+        at = os.clock(),
+        atIso = isoNow(),
+        accepted = true,
+        pre = {
+            x = preState.x, y = preState.y,
+            cargoUsed = preState.cargoUsed, cargoKinds = preState.cargoKinds,
+            holdHasGoods = preState.holdHasGoods,
+        },
+        destination = (action == "Travel") and { x = area.lower.x, y = area.lower.y } or nil,
+        started = false,
+        startCommandOk = nil,
+        verify = nil,
+    }
+    self.lastOrderOf[ship] = orderId
+    -- 只留最近 ORDER_RECORD_LIMIT 条（别让长期运行的会话无限涨 ✓）
+    for id in pairs(self.orderRecords) do
+        if tonumber(id) ~= nil and tonumber(id) <= orderId - ORDER_RECORD_LIMIT then
+            self.orderRecords[id] = nil
+        end
+    end
+
     table.insert(CopilotLinkIn.pendingOrders, {
         at = os.clock() + 6,
         ship = ship,
         ctype = ctype,
         action = action,
         config = config,
+        orderId = orderId,
     })
 
     CopilotRpc.trace(string.format(
         "onOrder 真下单：%s action=%s area=[%d,%d]-[%d,%d] duration=%s（分析已发起，6 秒后下令 ✓）",
-        ship, action, area.lower.x, area.lower.y, area.upper.x, area.upper.y, tostring(config.duration)))
+        ship, action, area.lower.x, area.lower.y, area.upper.x, area.upper.y,
+        (config.duration ~= nil) and tostring(config.duration) or "none(自算)"))
 
     -- ★★★ 回执风险（2026-10-17 主人要求 ✓✓）：订单**已经排进队列**才开始算 ✓ ——
     --   所以这段再慢/再出错都**不会**影响下单 ✓（只影响回执里的那个数 ✓）。
-    local risk = orderRiskOf(player, ship, action, area, config)
+    local risk = orderRiskOf(player, ship, action, area, config, pfCtx.prePredict)
 
     -- ★ 同一个数写进 **Trace 流水** ✓（`rpc_trace.log`，主人可以在场看到 ✓✓）
     CopilotRpc.trace(string.format(
@@ -754,7 +1744,34 @@ function CopilotLinkIn.onOrder(data)
         tostring(risk.riskKind or "nil"),
         (risk.known == true) and "" or ("  未知原因=" .. tostring(risk.unknownReason))))
 
-    return true, {
+    -- ★★★ Sell 的**过滤回执**（2026-10-17 加 ✓✓）：主人要求 —— "真卖了几种几件" + "卖不掉的货 + 原因"
+    --   必须**看得见**（否则又变成"回执说成功、舱量没动"那种骗局 ✗✓）。
+    local sellReceipt = nil
+    if sellFilter ~= nil then
+        local sellUnits = 0
+        for _, g in ipairs(sellFilter.sellable) do sellUnits = sellUnits + (tonumber(g.amount) or 0) end
+        local skipUnits = 0
+        for _, s in ipairs(sellFilter.skipped) do skipUnits = skipUnits + (tonumber(s.amount) or 0) end
+        sellReceipt = {
+            -- ★ `sellable` = **真会卖出去的那些**（config 里就是它们 ✓）
+            sellable = {
+                kinds = #sellFilter.sellable,
+                units = sellUnits,
+                goods = sellFilter.sellable,
+            },
+            -- ★ `skipped` = 卖不掉的货 + **原版给的理由**（不翻译、不猜 ✓）
+            skipped = sellFilter.skipped,
+            skippedKinds = #sellFilter.skipped,
+            skippedUnits = skipUnits,
+            basis = "sellcommand.lua:326-412 getErrors（逐货单试；判据 = 原版自己的 ✓）+ " ..
+                "simulation.lua:557-566（原版对卖不掉的货是**整单拒绝** ✗ → 所以必须先过滤 ✓）",
+            note = "★ 这些货是**订单前**用同一份局部市场分析筛出来的 ✓；" ..
+                "原版命令**不会**跳过卖不掉的货 ✗ —— 它会把整单拒掉（一件都不卖 ✗）✓；" ..
+                "所以只有 sellable 里的货被写进 config.goodsToSell ✓。",
+        }
+    end
+
+    local receipt = {
         accepted = true,
         executed = true,
         ship = ship,
@@ -765,10 +1782,34 @@ function CopilotLinkIn.onOrder(data)
         risk = risk,
         riskNote = "★ 与本单调用 predict 拿到的数**逐字相同** ✓（同一份代码 ✓）；" ..
             "Travel 的数是**整段航程**被伏击的概率 ✓（原版 Travel 命令自带评估 ✓）；" ..
+            "Refine 的 0 是原版**硬编码**的 0 ✓（refinecommand.lua:364；该命令从不 registerForAttack → 真不会遇伏击 ✓）；" ..
             "known=false 表示游戏侧没算出来 → **没有数字**，别当 0 用 ✗✓",
         note = "area analysis started; startCommand is queued ~6s later",
         count = self.orders,
+        -- ★★★ 预检结论（**下单前**的事实 ✓）：ok=false 时压根不会走到这里（上面就 return 了 ✓）
+        preflight = pf,
+        -- ★★★ 下单号：实测（verify）用它取 ✓（`query what=orderStatus&orderId=…` 或 `&ship=…`）
+        orderId = orderId,
+        -- ★★★ 实测**待回**（RPC 是一次问答，此刻 startCommand 还没发 ✗✓）——
+        --   之后用 `query what=orderStatus` 取结论 ✓；`accepted:true` 只代表"订单进队列了" ✗。
+        verify = {
+            pending = true,
+            etaSeconds = VERIFY_SAMPLE_AFTER_START + 6,   -- 6s 后 startCommand、再过 6s 采样
+            how = "query {what:'orderStatus', orderId:" .. tostring(orderId) ..
+                "}（或 ship:'" .. ship .. "'）",
+            note = "★ 这个字段此刻**没有结果** ✗✓：startCommand 还没发（两段式 ✓）。" ..
+                "采样在 startCommand 之后 ~" .. tostring(VERIFY_SAMPLE_AFTER_START) .. "s，" ..
+                "必要时 ~" .. tostring(VERIFY_SAMPLE_SECOND) .. "s 再采一次 ✓。",
+        },
     }
+    if sellReceipt ~= nil then
+        receipt.sellable = sellReceipt.sellable
+        receipt.skipped = sellReceipt.skipped
+        receipt.skippedKinds = sellReceipt.skippedKinds
+        receipt.skippedUnits = sellReceipt.skippedUnits
+        receipt.sellFilterNote = sellReceipt.basis .. "\n" .. sellReceipt.note
+    end
+    return true, receipt
 end
 
 -- ===========================================================================
@@ -4245,7 +5286,7 @@ function CopilotLinkIn.dossier(player, data)
     local gate = tonumber(data.maxAttackChance) or 0.10
 
     local dossierData = { ship = ship, top = top, maxAttackChance = gate, compact = true }
-    local actions = card.actionNames or { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout" }
+    local actions = card.actionNames or { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine" }
 
     -- 只拉**这艘船真的能做**的计划 ✓（少一次没意义的扫描 ✓，也少一份体积 ✓）
     local planSpecs = {
@@ -4305,10 +5346,21 @@ function CopilotLinkIn.dossier(player, data)
     }
 end
 
--- 由 tick 泵驱动：把到点的第二阶段发出去 ✓
+-- 由 tick 泵驱动：把到点的第二阶段发出去 ✓，并对**已发出**的命令做延迟实测 ✓
+--
+-- ★ 为什么实测必须由 tick 泵驱动（不能用定时器 ✓）：Lua 没有定时器（同 pendingOrders ✓）；
+--   本函数每秒被 net.lua:141-143 调一次 ✓，够用 ✓。
+-- ★ 两段式之后**再加一段**：startCommand 之后 `VERIFY_SAMPLE_AFTER_START`(6s) 采一次，
+--   若没有成功证据 → `VERIFY_SAMPLE_SECOND`(15s) 再采一次 → 定稿 ✓（只多一次，不做轮询风暴 ✓）。
 function CopilotLinkIn.tickOrders()
-    if #CopilotLinkIn.pendingOrders == 0 then return end
+    local orders = CopilotLinkIn.pendingOrders
+    local verifies = CopilotLinkIn.pendingVerifies
+    if (orders == nil or #orders == 0) and (verifies == nil or #verifies == 0) then return end
+
     local now = os.clock()
+    local records = CopilotLinkIn.orderRecords
+
+    -- ① 第二阶段：startCommand（只是"进队列成功"，**不是**"做成了" ✗✓）
     local i = 1
     while i <= #CopilotLinkIn.pendingOrders do
         local job = CopilotLinkIn.pendingOrders[i]
@@ -4317,10 +5369,120 @@ function CopilotLinkIn.tickOrders()
             local ok, err = invokeSimulation("startCommand", job.ship, job.ctype, job.config)
             CopilotRpc.trace(string.format("onOrder 第二阶段 startCommand %s -> ok=%s %s",
                 job.ship, tostring(ok), ok and "" or tostring(err)))
+
+            local rec = (records ~= nil and job.orderId ~= nil) and records[job.orderId] or nil
+            if rec ~= nil then
+                rec.started = true
+                rec.startedAt = os.clock()
+                rec.startCommandOk = (ok == true)
+                rec.verifyAt = rec.startedAt + VERIFY_SAMPLE_AFTER_START
+                rec.verifyStage = 1
+                CopilotLinkIn.pendingVerifies = CopilotLinkIn.pendingVerifies or {}
+                table.insert(CopilotLinkIn.pendingVerifies, job.orderId)
+                CopilotRpc.trace(string.format(
+                    "onOrder 实测排队：%s orderId=%s（startCommand 之后 %ds 采样 ✓）",
+                    job.ship, tostring(job.orderId), VERIFY_SAMPLE_AFTER_START))
+            end
         else
             i = i + 1
         end
     end
+
+    -- ② 实测采样（到点的）
+    local pv = CopilotLinkIn.pendingVerifies
+    if pv == nil or #pv == 0 then return end
+    local player = Player()
+    if player == nil then return end
+
+    local j = 1
+    while j <= #pv do
+        local rec = (records ~= nil) and records[pv[j]] or nil
+        if rec == nil or rec.finalized == true then
+            table.remove(pv, j)
+        elseif now >= (rec.verifyAt or 0) then
+            local v = sampleVerify(player, rec)
+            rec.verify = v
+            rec.verifyStage = (rec.verifyStage or 1) + 1
+            CopilotRpc.trace(string.format(
+                "onOrder 实测：%s orderId=%s action=%s ok=%s evidence=%s busy=%s moved=%s cargoΔ=%s%s",
+                rec.ship, tostring(rec.orderId), tostring(rec.action), tostring(v.ok),
+                tostring(v.evidence), tostring(v.busy), tostring(v.moved), tostring(v.cargoUsedDelta),
+                (v.ok == true) and "" or ("  ✗ " .. tostring(v.reason))))
+            if v.ok == true or (rec.verifyStage or 0) >= 3 then
+                rec.finalized = true
+                table.remove(pv, j)
+                if v.ok ~= true and v.reason ~= nil then
+                    CopilotRpc.trace("onOrder 实测定稿：**没有成功证据** ✗ —— " .. tostring(v.reason))
+                end
+            else
+                -- 第一次没证据 → 再等一会儿再采一次（★ 不是无限轮询 ✓）
+                rec.verifyAt = (rec.startedAt or now) + VERIFY_SAMPLE_SECOND
+                j = j + 1
+            end
+        else
+            j = j + 1
+        end
+    end
+end
+
+-- orderStatus：取某一单的**实测结论**（2026-10-17 ✓✓）
+--
+--   为什么单开一个查询 ✗→✓：order 是 RPC 的一次问答 ✓ —— 它的答复必须立刻回 ✗，
+--   而"做没做成"要等 startCommand（6s）之后才有证据 ✓。所以：
+--     order 回执 = accepted + preflight + orderId + verify{pending}
+--     orderStatus = accepted + started + verify{...}（真证据 ✓）
+--   取法：`{orderId=…}`（精确 ✓）或 `{ship=…}`（该船**最近一单** ✓ —— 会话里最常用 ✓）。
+function CopilotLinkIn.orderStatus(player, data)
+    data = data or {}
+    local records = self.orderRecords or {}
+    local rec = nil
+
+    local id = tonumber(data.orderId)
+    if id ~= nil then rec = records[id] end
+    if rec == nil and type(data.ship) == "string" and data.ship ~= "" then
+        local last = (self.lastOrderOf or {})[data.ship]
+        if last ~= nil then rec = records[last] end
+    end
+    if rec == nil then
+        return false, "NO_ORDER",
+            "no order record for " .. (data.orderId ~= nil and ("orderId=" .. tostring(data.orderId)) or
+            ("ship=" .. tostring(data.ship))) ..
+            "（记录只存本次游戏会话里的最近 " .. tostring(ORDER_RECORD_LIMIT) .. " 单 ✓）"
+    end
+
+    local verify = rec.verify
+    if verify == nil then
+        local eta = nil
+        if rec.verifyAt ~= nil then
+            eta = math.max(0, math.ceil(rec.verifyAt - os.clock()))
+        elseif rec.started ~= true then
+            eta = VERIFY_SAMPLE_AFTER_START + math.max(0, math.ceil((rec.at or os.clock()) + 6 - os.clock()))
+        end
+        verify = {
+            pending = true,
+            etaSeconds = eta,
+            stage = rec.verifyStage,
+            note = "实测还没到点（startCommand 之后 ~" .. tostring(VERIFY_SAMPLE_AFTER_START) ..
+                "s 采样一次、必要时 ~" .. tostring(VERIFY_SAMPLE_SECOND) .. "s 再采一次 ✓）",
+        }
+    end
+
+    return true, {
+        orderId = rec.orderId,
+        ship = rec.ship,
+        action = rec.action,
+        area = rec.area,
+        accepted = rec.accepted,
+        started = rec.started,
+        -- ★ 这个 true 只代表"invokeFunction 进了队列"，**不是**"命令在跑" ✗✓
+        startCommandQueued = rec.startCommandOk,
+        startedAt = rec.startedAt,
+        orderedAt = rec.at,
+        pre = rec.pre,
+        verify = verify,
+        note = "★ `started:true` 只代表 startCommand 被**投出去**了（Lua 的 invokeFunction 进队列 ✓）；" ..
+            "真证据只看 `verify` ✓（busy/位置/货舱 ✓ —— 见 verifyVerdict 的判据 ✓）",
+    }
 end
 
 -- setGoal：DSH 设定/清除某船的运营目标（真实现 ✓，用 lib/copilot/goal）
@@ -4867,14 +6029,44 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
                  error = "BAD_REQUEST: each box needs x, y, sizeX, sizeY" }
     end
     cx, cy = math.floor(cx), math.floor(cy)
+    sizeX, sizeY = math.floor(sizeX), math.floor(sizeY)
+
+    -- ★★★ Refine 的框 = **原版固定框**（2026-10-17 加 ✓✓）
+    --
+    --   实读 refinecommand.lua：`getAreaSize → {31,31}`（:318-320 ✓）、`isAreaFixed → true`（:326-328 ✓）、
+    --   `isShipRequiredInArea → true`（:330-332 ✓）。
+    --   固定框的后果（simulation.lua:790-801 ✓）：startAreaAnalysis **无视**调用方给的框心，
+    --   直接按船所在星区重算 31x31；startCommand 再核尺寸（:528-543 → 别的尺寸会被拒 ✗）。
+    --   → predict 必须算**游戏实际会用的那个框**（船所在星区 ±15），否则税额/精炼厂/时长都是另一框的数 ✗✓。
+    --   ⚠️ 这**不是**"帮调用方选框" ✗ —— 是如实反映原版"框被固定"的行为 ✓；尺寸仍由调用方给（必须 31 ✓）。
+    local requestedCentre = nil
+    if action == "Refine" then
+        if sizeX ~= 31 or sizeY ~= 31 then
+            return { box = { x = cx, y = cy, sizeX = sizeX, sizeY = sizeY, containsShip = nil },
+                     error = "REFINE_AREA_FIXED: Refine's area is fixed at 31x31 "
+                         .. "(refinecommand.lua:318-320 getAreaSize, :326-328 isAreaFixed; "
+                         .. "simulation.lua:528-543 rejects any other size). Pass sizeX=31, sizeY=31." }
+        end
+        if cx ~= shipX or cy ~= shipY then
+            requestedCentre = { x = cx, y = cy }
+            cx, cy = shipX, shipY        -- ★ 与 simulation.lua:790-801 的"按船重新居中"同口径 ✓
+        end
+    end
+
     local area = buildAreaWH(cx, cy, sizeX, sizeY)
     local containsShip = areaContainsShip(area, shipX, shipY)
     local boxInfo = {
-        x = cx, y = cy, sizeX = math.floor(sizeX), sizeY = math.floor(sizeY),
+        x = cx, y = cy, sizeX = sizeX, sizeY = sizeY,
         lower = { x = area.lower.x, y = area.lower.y },
         upper = { x = area.upper.x, y = area.upper.y },
         containsShip = containsShip,
     }
+    if requestedCentre ~= nil then
+        boxInfo.requestedCentre = requestedCentre
+        boxInfo.recentredOnShip = true
+        boxInfo.note = "★ Refine 的框被原版固定成 31x31 并以**船所在星区**为中心（isAreaFixed ✓）；" ..
+            "这里报告的 lower/upper 就是游戏实际会用的那个框 ✓（你给的中心被原版重算了 —— 如实回显在 requestedCentre ✓）。"
+    end
     -- ★ Travel 例外：它的框是 **1×1 终点** ✓（原版 travelcommand.lua:472 isShipRequiredInArea=false ✓）；
     --   其余动作的框是工作区，**必须含船**（simulation.lua:546 ✓）。
     if not containsShip and action ~= "Travel" then
@@ -5121,6 +6313,136 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
             },
         }
 
+    elseif action == "Refine" then
+        -- ★★★ Refine 的原子预测（2026-10-17 加 ✓✓）
+        --
+        -- 口径 = **原版自己的预测**（不重写、不改写 ✗✓）：
+        --   `RefineCommand:calculatePrediction`（refinecommand.lua:355-498 ✓）需要：
+        --     · `area.analysis`（税额/精炼厂标记来自 onAreaAnalysisFinished :95-174 ✓）
+        --     · 船上的原矿（按 tag 认材料 :408-441 ✓）
+        --     · `config.refined[]`（精炼哪些材料 :427-435 ✓；原版 UI 缺省全选 :714-717 ✓）
+        --   产出 = `yields[]`（按材料 1..7 索引，富矿 ×4 ✓，已扣税 :429-434 ✓）；
+        --   时长 = 自算（:457-492 ✓）；**attackChance 恒 0**（:364 硬编码；全文件无 calculateAttackProbability，
+        --   也从不 registerForAttack → 真不会遇伏击 ✓✓）。
+        --
+        -- ★ 产出**去哪**：`onFinish` 先扣掉货舱里的原矿（:185-211 ✓），再
+        --   `addYield(…, 0, self.data.yields)` → **派系资源池**（钱 0、资源 = yields ✓，:217 ✓）。
+        local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+            return run(player.index, ship, ctype, area, player.index)
+        end)
+        if not okRun then
+            return { box = boxInfo, error = "area analysis failed: " .. tostring(rShipName), value = nil, risk = nil }
+        end
+        local results = rResults or rArea
+        if type(rArea) == "table" then area = rArea end
+        if type(results) ~= "table" then
+            return { box = boxInfo, error = "area analysis returned nothing", value = nil, risk = nil }
+        end
+        area.analysis = results       -- ★ 与 Trade/Mine 同一道：预测前必须把分析挂回 area ✓
+
+        local nMat = 7
+        local okN, nm = pcall(function() return NumMaterials() end)
+        if okN and tonumber(nm) ~= nil and tonumber(nm) > 0 then nMat = tonumber(nm) end
+        local refined = {}
+        for i = 1, nMat do refined[i] = true end
+
+        local ores, oreUnits, richUnits, oreErr = readHoldOres(player, ship)
+        if ores == nil then
+            return { box = boxInfo, error = "HOLD_UNREADABLE: " .. tostring(oreErr), value = nil, risk = nil }
+        end
+        local escorts = {}
+        if type(b.escorts) == "table" then
+            for _, n in ipairs(b.escorts) do
+                if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
+            end
+        end
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, area,
+                { refined = refined, escorts = escorts })
+        end)
+        if not (okP and type(pred) == "table") then
+            return { box = boxInfo, predictionFailed = "prediction failed: " .. tostring(pred), value = nil, risk = nil }
+        end
+        if pred.error ~= nil then
+            -- ★ 原版算不出来（典型：舱里没有原矿 :443-446；或勾选的材料都不产出 :448-451）——
+            --   **不给数字** ✗✓：risk.known=false、attackChance=nil（**绝不填 0** ✗✓）。
+            return {
+                box = boxInfo,
+                predictionFailed = tostring(pred.error),
+                value = {
+                    oresOnBoard = oreUnits,
+                    richOresOnBoard = richUnits,
+                    oreGoods = ores,
+                },
+                risk = {
+                    known = false,
+                    attackChance = nil,
+                    baseAttackChance = nil,
+                    baseAttackChanceKnown = false,
+                    riskKind = "refineVanillaPrediction(no number: prediction returned an error)",
+                    unknownReason = tostring(pred.error),
+                },
+            }
+        end
+
+        -- yields 是**数组**（1..NumMaterials，refinecommand.lua:342-347/:402-404 ✓）；只列 >0 的 ✓。
+        local yieldList, totalYield = {}, 0
+        local yieldsRaw = (type(pred.yields) == "table") and pred.yields or {}
+        for i = 1, nMat do
+            local v = tonumber(yieldsRaw[i])
+            if v ~= nil and v > 0 then
+                totalYield = totalYield + v
+                yieldList[#yieldList + 1] = {
+                    materialIndex = i,
+                    material = ORE_MATERIAL_NAMES[i] or ("Material" .. tostring(i)),
+                    units = v,
+                }
+            end
+        end
+        local chance = tonumber(pred.attackChance)
+        local duration = tonumber(pred.duration)
+        local tax = tonumber(pred.tax)
+        return {
+            box = boxInfo,
+            risk = {
+                known = (chance ~= nil),
+                attackChance = chance,
+                -- ★ 原版 Refine **没有** base/effective 之分：:364 直接一个 attackChance=0，
+                --   也没有任何 strength/safeMode 修正（safeMode 不是 Refine 的参数 ✓）。
+                --   所以 base 与 effective 是同一个数 —— 这不是猜，是原版只有一个数 ✓。
+                baseAttackChance = chance,
+                baseAttackChanceKnown = (chance ~= nil),
+                riskKind = "refineVanillaHardcodedZero(no ambush model; command never registers for attack)",
+                note = "★ 0 是原版**算出来的数**（refinecommand.lua:364 `results.attackChance = 0`），" ..
+                    "而且该命令从不 registerForAttack（:51 只有框架注释，无调用 ✗）→ 精炼期间不会被伏击 ✓。",
+                unknownReason = (chance == nil)
+                    and "RefineCommand:calculatePrediction returned no attackChance" or nil,
+            },
+            value = {
+                duration = duration,
+                durationMinutes = (duration ~= nil) and math.ceil(duration / 60) or nil,
+                tax = tax,
+                taxPercent = (tax ~= nil) and (tax * 100) or nil,
+                yields = yieldList,
+                totalYield = totalYield,
+                output = "factionResources",
+                outputNote = "产出按 addYield(…, 0, yields) 进**派系资源池**（refinecommand.lua:217 ✓）；" ..
+                    "货舱里的原矿会被扣掉（:185-211 ✓）—— **不是**换成货舱里的成品 ✓",
+                oresToConsume = oreUnits,
+                richOresToConsume = richUnits,
+                oreGoods = ores,
+                nearbyRefinery = (pred.nearbyRefinery == true),
+                friendlySectorsFound = (pred.friendlySectorsFound == true),
+                ownedRefineryFound = (pred.ownedRefineryFound == true),
+                safeModeSupported = false,
+                configurableParams = {},
+                durationRule = "base 600s；区域里有自有/友方精炼厂 → ÷2；没有友方星区 → ×2；" ..
+                    "+ 原矿单位/2000；特殊货 ×1.15；再乘船长专长（refinecommand.lua:457-492 ✓）",
+                note = "★ Refine **不需要**精炼厂也能跑（只是更慢：没有友方星区 → 时长 ×2 ✓）；" ..
+                    "精炼厂只影响时长与税率 ✓（:463-468）。没有任何精炼厂**不是错误** ✓。",
+            },
+        }
+
     elseif action == "Scout" then
         local knownCache, knownErrors = {}, { n = 0 }
         local function isKnown(x, y)
@@ -5276,12 +6598,12 @@ function CopilotLinkIn.predict(player, data)
     end
     local action = data.action
     if type(action) ~= "string" or action == "" then
-        return false, "BAD_REQUEST", "predict needs data.action (Mine | Salvage | Trade | Sell | Scout | Travel)"
+        return false, "BAD_REQUEST", "predict needs data.action (Mine | Salvage | Trade | Sell | Scout | Travel | Refine)"
     end
     local ctype = COMMAND_TYPES[action]
     if ctype == nil then
         return false, "BAD_ACTION",
-            "known actions: Mine, Salvage, Trade, Sell, Scout, Travel (got " .. tostring(action) .. ")"
+            "known actions: Mine, Salvage, Trade, Sell, Scout, Travel, Refine (got " .. tostring(action) .. ")"
     end
 
     local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
