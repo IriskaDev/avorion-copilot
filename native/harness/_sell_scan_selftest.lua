@@ -359,7 +359,11 @@ local src = fh and fh:read("*a") or ""
 if fh then fh:close() end
 check("S8 源码里的 Sell UUID 与实读的 commandtype.lua 一致 ✓",
     src:find("6bf2d9af-255b-4108-a1e1-dc83ace49819", 1, true) ~= nil)
-check("S8 onOrder 里确实装了 config.goodsToSell ✓", src:find("config.goodsToSell = hold", 1, true) ~= nil)
+-- ★ 2026-10-17 改：onOrder 的 Sell 现在装的是**过滤后的**清单（只装有买家的货 ✓）——
+--   见 link_in.lua 的 sellableHoldOf（原版 getErrors 整单拒绝 → 必须先过滤 ✓）。
+check("S8 onOrder 里确实装了 config.goodsToSell ✓（2026-10-17 起 = 过滤后的能卖清单 ✓）",
+    src:find("config.goodsToSell = verdict.sellable", 1, true) ~= nil
+    or src:find("config.goodsToSell = hold", 1, true) ~= nil)
 
 -- ---------------------------------------------------------------------------
 -- 9) 逐货数字（主人 2026-10-17 要求）：每个候选框、每种货 --
