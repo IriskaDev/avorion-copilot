@@ -414,6 +414,16 @@ function CopilotLinkIn.onOrder(data)
     local player = Player()
     if player == nil then return false, "NO_PLAYER", "no player object" end
 
+    -- ★★★ 永不向玩家正在开的船下令（防御性硬排除 ✗✓ 2026-10-17）
+    --   玩家自己的船由实体层（player/ai/autopilot.lua）接管；后台命令
+    --   （startAreaAnalysis/startCommand）会把它塞进后台模拟，抢走玩家控制、打断跃迁 ✗。
+    --   即使 DSH 误下单，也必须在这里拒掉，绝不触碰 player.craft ✗✓。
+    local piloted = player.craft
+    if piloted ~= nil and valid(piloted) and piloted.name == ship then
+        return false, "PILOTED_SHIP",
+            "cannot order the ship you are currently flying"
+    end
+
     -- 船可用吗（忙的船必然被原版拒绝 ✓ —— 这里先给个清楚的错误 ✓）
     local okAvail, avail = pcall(function() return player:getShipAvailability(ship) end)
     if okAvail and avail ~= nil and avail ~= ShipAvailability.Available then
