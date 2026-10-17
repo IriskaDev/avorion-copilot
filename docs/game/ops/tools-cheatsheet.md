@@ -3,6 +3,8 @@
 > 上一级：[`index.md`](../mechanics/index.md) · 命令机制见 [`../mechanics/commands.md`](../mechanics/commands.md) ·
 > 引用约定见 [`../README.md`](../README.md) §4。
 > ★ 本文件只讲**怎么用工具拿事实**；怎么决策是你的事。
+> ★ 玩家侧的**聊天命令**（`/copilot mounts …`、`/copilot reload` 等）不看工具，看
+> [`chat-commands.md`](chat-commands.md)（含炮塔底座材料升级的完整用法与安全边界）。
 
 ## 1. 工具总表
 

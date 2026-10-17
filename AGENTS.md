@@ -23,6 +23,7 @@ Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略�
 | git 与仓库规矩 | [`docs/dev/git-and-repo.md`](docs/dev/git-and-repo.md) |
 | 当前状态 / 待办 | [`docs/dev/current-status.md`](docs/dev/current-status.md) |
 | 原生 DLL / ABI 实测结论（动 DLL 前必读） | [`NATIVE.md`](NATIVE.md) |
+| ★ `/copilot` 聊天命令速查（含炮塔底座材料升级：列表/报价/confirm/面板/探针） | [`docs/game/ops/chat-commands.md`](docs/game/ops/chat-commands.md) |
 | 游戏 ⇄ DSH 的 TCP 协议 | [`PROTOCOL.md`](PROTOCOL.md) |
 | 自行验证手册（开游戏/截图/点击/按键/看日志） | [`VERIFY.md`](VERIFY.md) |
 | 面向用户的说明 | [`README.md`](README.md) |
