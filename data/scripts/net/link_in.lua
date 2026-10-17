@@ -517,13 +517,19 @@ local function sellableHoldOf(player, ship, ctype, area, hold)
     end
 
     -- ★ 同一份局部市场分析（口径与 scanSellArea / predict 完全一致 ✓）
+    --   ★★ 用**副本**：`run()` 会把分析结果挂回传入的 area（`area.analysis` ✓）——
+    --      直接用调用方的 area 会让**回执**里也带上整份分析（真机实测 50 KB ✗ → 回执/decisions.log 全被它撑爆 ✗✓）。
+    local runArea = {
+        lower = { x = area.lower.x, y = area.lower.y },
+        upper = { x = area.upper.x, y = area.upper.y },
+    }
     local okRun, rShip, _rType, rArea, results = pcall(function()
-        return run(player.index, ship, ctype, area, player.index)
+        return run(player.index, ship, ctype, runArea, player.index)
     end)
     if not okRun then
         return nil, "ANALYSIS_FAILED", "area analysis failed: " .. tostring(rShip)
     end
-    if type(rArea) ~= "table" then rArea = area end
+    if type(rArea) ~= "table" then rArea = runArea end
     local analysis = results or rArea
     if type(analysis) ~= "table" then
         return nil, "ANALYSIS_FAILED", "area analysis returned nothing"
@@ -5471,7 +5477,12 @@ function CopilotLinkIn.orderStatus(player, data)
         orderId = rec.orderId,
         ship = rec.ship,
         action = rec.action,
-        area = rec.area,
+        -- ★ 框**只给 lower/upper** ✗：原版区域分析会把整份 results 挂到 area 上（`area.analysis` ✓），
+        --   原样回传会变成几十 KB 的 RPC 载荷（真机实测：Sell 一单 50 KB ✗✓）。
+        area = (type(rec.area) == "table" and rec.area.lower ~= nil) and {
+            lower = { x = rec.area.lower.x, y = rec.area.lower.y },
+            upper = { x = rec.area.upper.x, y = rec.area.upper.y },
+        } or nil,
         accepted = rec.accepted,
         started = rec.started,
         -- ★ 这个 true 只代表"invokeFunction 进了队列"，**不是**"命令在跑" ✗✓
