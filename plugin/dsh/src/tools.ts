@@ -134,7 +134,14 @@ export function registerFleetTools(
         '★ what=list returns an INDEX-LEVEL roster: only name / idle / has captain / sector per ship ' +
         '(NO per-ship full state, NO cargo detail, NO prediction) -- use it FIRST to pick which ship ' +
         'to look at, then query that one. what=ship returns ONE ship capability card (brief=true for ' +
-        'the SHORT view). what=goal returns that ship operating goal. what=sectorFacts returns FACTS ' +
+        'the SHORT view). ★ Identity fields on every ship card (both full and brief, same source): ' +
+        'shipTitle / shipTitleRaw / shipTitleKnown / shipTitleNote = the vanilla per-ship TITLE read ' +
+        'from ShipDatabaseEntry:getTitle() (the same string the fleet UI shows under the ship name, ' +
+        'e.g. "Combat", "Miner", "Carrier"); shipTitle "" with shipTitleKnown=true means the ship ' +
+        'genuinely has no title -- that is NOT "unreadable" (that case omits shipTitle and sets ' +
+        'shipTitleKnown=false). entityType / entityTypeId = vanilla EntityType (Ship/Drone/Station/...). ' +
+        'Do NOT invent a role from the name: if shipTitle is empty, judge the job from turrets + ' +
+        'captainClass. what=goal returns that ship operating goal. what=sectorFacts returns FACTS ' +
         'about any sector (pass x,y): richness/material probabilities/ring side/distance, PLUS ' +
         'faction ownership + friendliness -- factionIndex (0 = no faction), factionName, hasFaction, ' +
         'relation (unowned/self/friendly/neutral/ceasefire/hostile, vanilla RelationStatus), isFriendly ' +
@@ -190,8 +197,9 @@ export function registerFleetTools(
         brief: {
           type: 'boolean',
           description:
-            'ship/fleet: return the SHORT view (name/sector/captain/cargo/actions + current-sector ' +
-            'numbers; no depth sampling, no long per-action prose). Answers "what can it do now".',
+            'ship/fleet: return the SHORT view (name/shipTitle/entityType/sector/captain/cargo/actions ' +
+            '+ current-sector numbers; no depth sampling, no long per-action prose). Answers "what can ' +
+            'it do now". The identity fields are copied verbatim from the full card (same source).',
         },
         action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout' },
       },
