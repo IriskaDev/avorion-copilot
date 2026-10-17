@@ -1097,6 +1097,7 @@ M.WHATS = {
     "sectorFacts",      -- ★ 任意星区的事实（富饶度/材料概率/环侧/离中心距离 ✓ 2026-10-17 补 ✓）
     "predict",          -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓；含 Travel ✓）
     "tradeRoutes",      -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序/推荐 ✗）
+    "tradeEvaluate",    -- ★★ 原子：多框 × 多商品 × 多本金 → 单位时间净利矩阵（只计算、不推荐 ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1144,6 +1145,20 @@ M.TRADE_ROUTES_PARAMS = {
     y = "number：框心绝对星区 y（必填 ✓）",
     sizeX = "number：框宽（必填 ✓）",
     sizeY = "number：框高（必填 ✓）",
+}
+-- ★★ tradeEvaluate 的参数（2026-10-18 加 ✓✓ —— "全商品 × 多本金 × 多框"一次算完 ✓）
+--   只**计算**、不推荐 ✓：排序键 = netProfitLow / 停留小时数（主人定的口径 ✓，orders.md L17 §③）；
+--   丢掉的全部进 rejected[] 并带原因（空跑 / 超闸门 / 风险算不出来 / 预测失败 ✓）。
+M.TRADE_EVALUATE_PARAMS = {
+    ship = "string：必填 ✓（哪艘船 ✓）",
+    boxes = "array：1..6 个框 {x,y,sizeX,sizeY} ✓；形状必须是原版合法 Trade 形状 17x17 / 29x11 / 11x29 ✓" ..
+        "（tradecommand.lua:584-585 ✓，别的尺寸原版不接受 ✗）",
+    deposits = "array<number>：1..3 档本金（都 > 0 ✓）—— 本金同时改**带货量**与**伏击概率** ✓",
+    goodsFilter = "array<string>：可选 ✓ —— 只算这些商品（缺省 = 框里全部路线 ✓；原版每框最多给 4 条 ✓）",
+    escorts = "array<string>：可选 ✓ —— 护航（与 predict 同口径 ✓）",
+    maxAttackChance = "number：可选 ✓ —— 闸门（缺省 0.10 ✓；**只用于把超限项放进 rejected** ✓，不改数字 ✗）",
+    note = "组合总数上限 60（框×商品×本金 ✓）；超了回 TOO_MANY_COMBINATIONS 并给缩参建议 ✓。" ..
+        "出参 results 按 profitPerHour（= netProfitLow / durationHours）降序 ✓；算不出来的字段留 nil（不填 0 ✗✓）。",
 }
 -- ★★ sectorFacts 的参数与**新增输出字段**（2026-10-17 补 ✓✓ —— 主人规则「Trader 只走友好星区」✓）
 --   每个星区事实（sector 与 towardCentre 里的每一条）现在多带阵营/友好度 ✓：

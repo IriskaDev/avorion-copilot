@@ -232,6 +232,12 @@ function CopilotLinkIn.onQuery(data)
         -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序、不含推荐 ✗）
         return CopilotLinkIn.tradeRoutes(player, data)
 
+    elseif what == "tradeEvaluate" then
+        -- ★★★ 原子：多框 × 多商品 × 多本金 → **一次调用**算完单位时间净利（2026-10-18 加 ✓✓）
+        --   只计算、不推荐 ✓：排序键由主人给定（netProfitLow / 停留小时数 ✓），
+        --   不产 recommendation / orderHint / "该选哪条" ✗（见函数头 ✓）。
+        return CopilotLinkIn.tradeEvaluate(player, data)
+
     elseif what == "dossier" then
         -- ★★ 单发路径的**有界档案**（2026-10-17 加 ✓✓）：
         --   那条路是**没有工具、没有文件访问**的模型调用 ✓ → 它不能自己查 ✗ →
@@ -380,7 +386,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），
@@ -6043,6 +6049,104 @@ end
 -- 错误串：BAD_REQUEST / NO_POSITION / NO_ANALYSIS_RUN / NO_COMMAND / SHIP_NOT_IN_AREA /
 --          NO_ROUTE / HOLD_EMPTY / BAD_ACTION；预测失败 → 该框 predictionFailed（不中断整批 ✓）
 
+-- ---------------------------------------------------------------------------
+-- ★★★ Trade 的「同一份预测」：一个**已分析**的框 + 一件商品 + 一个本金 → 预测结果
+-- ---------------------------------------------------------------------------
+--
+-- 为什么抽出来 ✗→✓（2026-10-18 ✓）：
+--   `predict`（一个框一个商品）与 `tradeEvaluate`（多框 × 多商品 × 多本金）**必须是同一份口径** ✓。
+--   各写一份 = 两套数字 ✗✗ —— 决策者按 A 排序、回执照 B 打脸 ✓。
+--   → 「route 查找 + 原版 calculatePrediction + fillPrediction + profitModel」整段**原样**搬到这里，
+--     两个调用方都调它 ✓（predict 的入参与出参**逐字不变** ✓；harness 有对拍断言 ✓）。
+--
+-- ★ 入参 `area` / `results` 必须是**已经跑过 run()** 的那一份（analysis 已挂好 ✓）：
+--     · predict：一个框跑一次 run() → 调本函数一次 ✓
+--     · tradeEvaluate：一个框跑一次 run() → 对 (商品 × 本金) 调本函数 N 次 ✓✓
+--   ★ 省掉的正是"N×M 次重复区域分析" —— `run()` 才是贵的那一步（Trade 每框 ≈1 s ✓，
+--     见 docs/game/ops/atomic-rpc.md §A.3；单次 calculatePrediction 只读已算好的分析，很便宜 ✓）。
+--
+-- ★ escorts 由调用方规整好传进来（predict 从 b.escorts 来、tradeEvaluate 从 data.escorts 来 ✓）：
+--   护航会**多跑一次** calculatePrediction 拿"带护航的伏击概率"（原版自带的数 ✓），口径见下 ✓。
+local function tradePredictFromAnalysis(command, player, ship, area, results, boxInfo, goodName, deposit, escorts, goodsLib)
+    if type(goodName) ~= "string" or goodName == "" then
+        return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs goodName (from tradeRoutes)" }
+    end
+    local dep = tonumber(deposit)
+    if dep == nil or dep <= 0 then
+        return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs deposit > 0" }
+    end
+    if type(escorts) ~= "table" then escorts = {} end
+
+    local routes = (type(results.routes) == "table") and results.routes or {}
+    attachGoodsPrices(goodsLib, routes)   -- 幂等 ✓（tradeEvaluate 已挂过，再挂一次只补字段 ✓）
+    local route = nil
+    for _, r in ipairs(routes) do if r.name == goodName then route = r break end end
+    if route == nil then
+        return { box = boxInfo, error = "NO_ROUTE: no route named '" .. tostring(goodName) .. "' in this box" }
+    end
+    local cand = {
+        name = route.name, lowest = route.lowest, highest = route.highest,
+        basePrice = route.basePrice, unitSize = route.unitSize,
+        profitPerSize = route.profitPerSize, from = route.from, to = route.to,
+    }
+    cand.unitProfit = (route.basePrice and route.basePrice * ((route.highest or 0) - (route.lowest or 0))) or nil
+    cand.deposit = math.floor(dep)
+    local okP, pred = pcall(function()
+        return command:calculatePrediction(player.index, ship, area,
+            { goodName = goodName, deposit = cand.deposit, escorts = {} })
+    end)
+    if not (okP and type(pred) == "table") then
+        return { box = boxInfo, error = nil, predictionFailed = "prediction failed: " .. tostring(pred), value = nil, risk = nil }
+    end
+    fillPrediction(cand, pred)
+    if #escorts > 0 then
+        local ok2, p2 = pcall(function()
+            return command:calculatePrediction(player.index, ship, area,
+                { goodName = goodName, deposit = cand.deposit, escorts = escorts })
+        end)
+        if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
+            cand.attackChanceWithEscorts = tonumber(p2.attackChance.value)
+        end
+    end
+    local base = tonumber(cand.attackChance)
+    local we = tonumber(cand.attackChanceWithEscorts)
+    if we ~= nil and (base == nil or we < base) then cand.attackChanceEffective = we
+    else cand.attackChanceEffective = base end
+    -- ★ 最终口径与 summariseArea 一致：用 attackChanceEffective 重算 netProfit ✓
+    local bl, bh, el, eh, basis = profitModel(cand)
+    cand.bestCaseLow, cand.bestCaseHigh = bl, bh
+    cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = el, eh, basis
+    return {
+        box = boxInfo,
+        risk = {
+            known = true,
+            attackChance = cand.attackChanceEffective,
+            baseAttackChance = cand.attackChance,
+            baseAttackChanceKnown = true,
+            attackChanceWithEscorts = cand.attackChanceWithEscorts,
+            riskKind = "tradeAmbushChance(whole task, this box)",
+        },
+        value = {
+            routeName = cand.name,
+            profitPerFlight = cand.profitPerFlight,
+            flights = cand.flights,
+            flightTime = cand.flightTime,
+            netProfitLow = cand.netProfitLow,
+            netProfitHigh = cand.netProfitHigh,
+            bestCaseLow = cand.bestCaseLow,
+            bestCaseHigh = cand.bestCaseHigh,
+            profitBasis = cand.profitBasis,
+            deposit = cand.deposit,
+            profitPerSize = cand.profitPerSize,
+            maxAvailable = cand.maxAvailable,
+            transportedPerFlight = cand.transportedPerFlight,
+            from = cand.from,
+            to = cand.to,
+            escorts = escorts,
+        },
+    }
+end
+
 local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job)
     local cx, cy = tonumber(b.x), tonumber(b.y)
     local sizeX, sizeY = tonumber(b.sizeX), tonumber(b.sizeY)
@@ -6117,80 +6221,15 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         end
         -- ★ 与 scanOneArea 同一道：把分析结果挂回 area（否则 calculatePrediction 报 analysis nil ✗）
         area.analysis = results
-        local routes = (type(results.routes) == "table") and results.routes or {}
-        attachGoodsPrices(goodsLib, routes)
-        local route = nil
-        for _, r in ipairs(routes) do if r.name == goodName then route = r break end end
-        if route == nil then
-            return { box = boxInfo, error = "NO_ROUTE: no route named '" .. tostring(goodName) .. "' in this box" }
-        end
         local escorts = {}
         if type(b.escorts) == "table" then
             for _, n in ipairs(b.escorts) do
                 if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
             end
         end
-        local cand = {
-            name = route.name, lowest = route.lowest, highest = route.highest,
-            basePrice = route.basePrice, unitSize = route.unitSize,
-            profitPerSize = route.profitPerSize, from = route.from, to = route.to,
-        }
-        cand.unitProfit = (route.basePrice and route.basePrice * ((route.highest or 0) - (route.lowest or 0))) or nil
-        cand.deposit = math.floor(deposit)
-        local okP, pred = pcall(function()
-            return command:calculatePrediction(player.index, ship, area,
-                { goodName = goodName, deposit = cand.deposit, escorts = {} })
-        end)
-        if not (okP and type(pred) == "table") then
-            return { box = boxInfo, error = nil, predictionFailed = "prediction failed: " .. tostring(pred), value = nil, risk = nil }
-        end
-        fillPrediction(cand, pred)
-        if #escorts > 0 then
-            local ok2, p2 = pcall(function()
-                return command:calculatePrediction(player.index, ship, area,
-                    { goodName = goodName, deposit = cand.deposit, escorts = escorts })
-            end)
-            if ok2 and type(p2) == "table" and p2.attackChance ~= nil then
-                cand.attackChanceWithEscorts = tonumber(p2.attackChance.value)
-            end
-        end
-        local base = tonumber(cand.attackChance)
-        local we = tonumber(cand.attackChanceWithEscorts)
-        if we ~= nil and (base == nil or we < base) then cand.attackChanceEffective = we
-        else cand.attackChanceEffective = base end
-        -- ★ 最终口径与 summariseArea 一致：用 attackChanceEffective 重算 netProfit ✓
-        local bl, bh, el, eh, basis = profitModel(cand)
-        cand.bestCaseLow, cand.bestCaseHigh = bl, bh
-        cand.netProfitLow, cand.netProfitHigh, cand.profitBasis = el, eh, basis
-        return {
-            box = boxInfo,
-            risk = {
-                known = true,
-                attackChance = cand.attackChanceEffective,
-                baseAttackChance = cand.attackChance,
-                baseAttackChanceKnown = true,
-                attackChanceWithEscorts = cand.attackChanceWithEscorts,
-                riskKind = "tradeAmbushChance(whole task, this box)",
-            },
-            value = {
-                routeName = cand.name,
-                profitPerFlight = cand.profitPerFlight,
-                flights = cand.flights,
-                flightTime = cand.flightTime,
-                netProfitLow = cand.netProfitLow,
-                netProfitHigh = cand.netProfitHigh,
-                bestCaseLow = cand.bestCaseLow,
-                bestCaseHigh = cand.bestCaseHigh,
-                profitBasis = cand.profitBasis,
-                deposit = cand.deposit,
-                profitPerSize = cand.profitPerSize,
-                maxAvailable = cand.maxAvailable,
-                transportedPerFlight = cand.transportedPerFlight,
-                from = cand.from,
-                to = cand.to,
-                escorts = escorts,
-            },
-        }
+        -- ★★ 计算本体 = tradePredictFromAnalysis（与 tradeEvaluate **同一份** ✓，不重写 ✗）
+        return tradePredictFromAnalysis(command, player, ship, area, results, boxInfo,
+            goodName, deposit, escorts, goodsLib)
 
     elseif action == "Mine" or action == "Salvage" then
         if type(Job) ~= "table" then
@@ -6744,6 +6783,381 @@ function CopilotLinkIn.tradeRoutes(player, data)
         routes = routes,
         note = "★ 只有这个框里的路线与逐货数字 ✓；不挑路线、不算预付金、不排序、不推荐 ✗。"
             .. "要某条路线的风险/净收益，用 predict 单独算 ✓。",
+    }
+end
+
+-- ===========================================================================
+-- ★★★ 原子接口：tradeEvaluate —— 多框 × 多商品 × 多本金，一次算完（只计算、不推荐）
+-- ===========================================================================
+--
+-- 为什么需要它 ✓（主人原话 2026-10-18）：
+--   「Trader 选的线路的效率还是太差了，你应大胆一点，多做些计算，不要看见有得赚就上」
+--   病根：决策者每轮只 `tradeRoutes` 拿清单 → 只 `predict` 一两条 → 看见"能赚"就下单 ✗——
+--   于是跑出 6.3 万/小时、32~36 万/小时的线路 ✗，而同一片**曾经有过 154 万/小时** ✓。
+--   「全商品 × 多本金 × 多框」这套组合搜索**人肉做不到**（20+ 次 RPC ✗）
+--   → 这里把它变成**一次调用** ✓✓：一个框只付**一次** `run()`（贵的那步 ✓），
+--     然后逐 (商品 × 本金) 跑原版 `calculatePrediction`（便宜 ✓）。
+--
+-- ★ 它**只计算、不推荐** ✓✗：
+--   · 排序键 = `netProfitLow / 停留小时数`（= `profitPerHour` ✓）—— 这是**主人定的口径**
+--     （docs/game/lessons/orders.md L17 §③「单位时间利润最高才是最好」✓），
+--     不是本鱼替决策者挑线路 ✗。
+--   · 没有 recommendation / orderHint / bestRouteName / "建议下单" ✗✓。
+--   · 选哪个框、哪件商品、哪档本金（或者都不选）由决策方自己判断 ✓。
+--
+-- ★ 口径 = `predict` 的 Trade 分支**同一份代码** ✓（`tradePredictFromAnalysis` ✓）：
+--   同一个 harness 对拍断言：同框同商品同本金 → 净收益/风险/航班数**逐字相同** ✓。
+--
+-- ★★ 排序键的分母（"停留小时数"）怎么来的 ✓：
+--   原版 Trade 命令只跑 `flights.to` 班（tradecommand.lua:131 `self.data.flights >= prediction.flights.to`），
+--   每班 `flightTime.value` 秒（:826/:844 ✓）→ 整单在外的时长 = `flights.to × flightTime` ✓。
+--   所以 `durationHours = flights.to × flightTime / 3600`、`profitPerHour = netProfitLow / durationHours` ✓。
+--
+-- 入参：
+--   { what="tradeEvaluate", ship,
+--     boxes = [ {x, y, sizeX, sizeY}, … ],     -- ★ 1..6 个框；形状必须是原版合法 Trade 形状之一
+--     deposits = [200000, 500000, …],          -- ★ 1..3 档本金（都 > 0）
+--     goodsFilter = ["Drill", …]?,             -- 可选：只算这些商品（缺省 = 框里**全部**路线 ✓）
+--     escorts = ["Combat-00001", …]?,          -- 可选：护航（与 predict 同口径 ✓）
+--     maxAttackChance = 0.10 }                 -- 可选：闸门（**只用于把超限项放进 rejected** ✓）
+--   ★ 单框也可以直接给 x/y/sizeX/sizeY（等价 boxes 只含一个 ✓）。
+--
+-- 出参：
+--   { ship, shipSector, boxCount, depositTiers, goodsFilter?, combinationCount, combinationLimit,
+--     boxes   = [ {x,y,sizeX,sizeY,lower,upper,containsShip,routeCount,routeCountAfterGoodsFilter,
+--                  error?, reason?}, … ],       -- 每框只分析一次 ✓（错误不中断整批 ✓）
+--     results = [ {x,y,sizeX,sizeY, goodName, deposit,
+--                  netProfitLow, netProfitHigh, flightsFrom, flightsTo,
+--                  profitPerFlightFrom, profitPerFlightHigh, maxAvailable,
+--                  attackChance, baseAttackChance, riskKnown,
+--                  flightTime, transportedPerFlight, durationHours, profitPerHour, profitBasis}, … ],
+--     rejected = [ {…同上可算的字段…, reasonKind, reason}, … ],
+--     sortKey, timingMs, note }
+--   · results 按 `profitPerHour` 降序 ✓（同分短任务优先 ✓）；`profitPerHour=nil` 的排最后（**不填 0** ✗✓）
+--   · rejected.reasonKind 只有这几种 ✓：
+--       EMPTY_RUN         —— `flights.from == 0`（空跑 ✗，L17 ①）
+--       RISK_OVER_GATE    —— 伏击概率 > 闸门 ✗
+--       RISK_UNKNOWN      —— 游戏没给出概率（attackChance 留 **nil**，绝不填 0 ✗✓）
+--       PREDICTION_FAILED —— 原版预测失败（带原版原因 ✓）
+--       ERROR             —— 路线/分析错误（NO_ROUTE 等 ✓）
+-- 错误串：BAD_REQUEST（缺参/形状非法/框太多/本金档太多）/ TOO_MANY_COMBINATIONS（组合超上限）/
+--          NO_POSITION / NO_ANALYSIS_SCRIPT / NO_ANALYSIS_RUN / NO_COMMAND_FACTORY / NO_COMMAND
+
+-- ★ 硬上限（防"一次调用把主线程卡住" ✗✓）—— 超限**明确报错**，绝不静默截断 ✗✓：
+--   · 框 ≤ 6 ✓（原版每个框最多给 4 条路线 —— tradecommand.lua:403-437 ✓，
+--     所以物理上限 = 6 框 × 4 商品 × 3 本金 = 72 组合 ✓）
+--   · 本金档 ≤ 3 ✓
+--   · **组合总数 ≤ 60** ✓（一个组合 = 一次原版 calculatePrediction ✓）
+--   实测：单框 run() ≈1 s（Trade 最贵 ✓），60 组合 = ≤6 次分析 + ≤60 次预测 ≈ 秒级 ✓；
+--   再往上没有边际价值（一个框就 4 条路线 ✓）。
+local TRADE_EVAL_MAX_BOXES = 6
+local TRADE_EVAL_MAX_DEPOSITS = 3
+local TRADE_EVAL_MAX_COMBOS = 60
+-- 原版 Trade 命令的合法形状（tradecommand.lua:584-585 `getAreaSize` ✓）——别的尺寸原版根本不接受 ✓
+local TRADE_EVAL_SHAPES = { ["17x17"] = true, ["29x11"] = true, ["11x29"] = true }
+
+function CopilotLinkIn.tradeEvaluate(player, data)
+    data = data or {}
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "tradeEvaluate needs data.ship"
+    end
+
+    -- ---- 本金档（1..3 档，>0）--------------------------------------------
+    local deposits = {}
+    if type(data.deposits) == "table" and #data.deposits > 0 then
+        for _, d in ipairs(data.deposits) do
+            local v = tonumber(d)
+            if v ~= nil and v > 0 then deposits[#deposits + 1] = math.floor(v) end
+        end
+    else
+        local d = tonumber(data.deposit)
+        if d ~= nil and d > 0 then deposits[1] = math.floor(d) end
+    end
+    if #deposits == 0 then
+        return false, "BAD_REQUEST",
+            "tradeEvaluate needs data.deposits (1.." .. TRADE_EVAL_MAX_DEPOSITS .. " tiers, each > 0)"
+    end
+    if #deposits > TRADE_EVAL_MAX_DEPOSITS then
+        return false, "BAD_REQUEST", "tradeEvaluate: at most " .. TRADE_EVAL_MAX_DEPOSITS
+            .. " deposit tiers (got " .. #deposits .. ")"
+    end
+
+    -- ---- 框（1..6；单框也可直接 x/y/sizeX/sizeY）------------------------
+    local boxes = data.boxes
+    if type(boxes) ~= "table" or #boxes == 0 then
+        boxes = { data }
+    end
+    if #boxes > TRADE_EVAL_MAX_BOXES then
+        return false, "BAD_REQUEST", "tradeEvaluate: at most " .. TRADE_EVAL_MAX_BOXES
+            .. " boxes (got " .. #boxes .. ")"
+    end
+
+    -- ---- 商品过滤（缺省全商品 ✓）----------------------------------------
+    local goodsFilter, filterList = nil, nil
+    if type(data.goodsFilter) == "table" and #data.goodsFilter > 0 then
+        goodsFilter, filterList = {}, {}
+        for _, g in ipairs(data.goodsFilter) do
+            if type(g) == "string" and g ~= "" and goodsFilter[g] ~= true then
+                goodsFilter[g] = true
+                filterList[#filterList + 1] = g
+            end
+        end
+        if #filterList == 0 then goodsFilter, filterList = nil, nil end
+    end
+
+    local escorts = {}
+    if type(data.escorts) == "table" then
+        for _, n in ipairs(data.escorts) do
+            if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
+        end
+    end
+    local gate = tonumber(data.maxAttackChance) or 0.10
+
+    local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)
+    if not okPos or tonumber(px) == nil or tonumber(py) == nil then
+        return false, "NO_POSITION", "cannot read ship position for " .. ship
+    end
+    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+
+    local okInc, incErr = pcall(function() return include("areaanalysis") end)
+    if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
+    if type(run) ~= "function" then return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define run()" end
+    local okF, factory = pcall(function() return include("commandfactory") end)
+    if not okF or type(factory) ~= "table" then return false, "NO_COMMAND_FACTORY", tostring(factory) end
+    local okCmd, command = pcall(function() return factory.makeCommand(COMMAND_TYPES.Trade) end)
+    if not okCmd or command == nil then return false, "NO_COMMAND", tostring(command) end
+    local okGoods, goodsLib = pcall(function() return include("goods") end)
+    if not okGoods then goodsLib = nil end
+
+    -- ===== ① 每个框**恰好一次**区域分析（最贵的那一步 ✓）→ 真实路线清单 =====
+    local t0 = os.clock()
+    local prepared, boxOut = {}, {}
+    local totalCombos = 0
+    for i, b in ipairs(boxes) do
+        local cx, cy = tonumber(b.x), tonumber(b.y)
+        local sizeX, sizeY = tonumber(b.sizeX), tonumber(b.sizeY)
+        if cx == nil or cy == nil or sizeX == nil or sizeY == nil then
+            return false, "BAD_REQUEST", "tradeEvaluate: boxes[" .. tostring(i) .. "] needs x, y, sizeX, sizeY"
+        end
+        cx, cy = math.floor(cx), math.floor(cy)
+        sizeX, sizeY = math.floor(sizeX), math.floor(sizeY)
+        local shapeKey = sizeX .. "x" .. sizeY
+        if not TRADE_EVAL_SHAPES[shapeKey] then
+            return false, "BAD_REQUEST", "tradeEvaluate: illegal Trade shape " .. shapeKey
+                .. " (vanilla tradecommand.lua:584-585 allows 17x17 / 29x11 / 11x29 only)"
+        end
+        local area = buildAreaWH(cx, cy, sizeX, sizeY)
+        local containsShip = areaContainsShip(area, shipX, shipY)
+        local boxInfo = {
+            x = cx, y = cy, sizeX = sizeX, sizeY = sizeY,
+            lower = { x = area.lower.x, y = area.lower.y },
+            upper = { x = area.upper.x, y = area.upper.y },
+            containsShip = containsShip,
+        }
+        local fact = { box = boxInfo }
+        local entry = {
+            x = cx, y = cy, sizeX = sizeX, sizeY = sizeY,
+            lower = boxInfo.lower, upper = boxInfo.upper, containsShip = containsShip,
+        }
+        boxOut[#boxOut + 1] = entry
+        if not containsShip then
+            -- ★ 原版硬约束：工作框必须含船（simulation.lua:546 ✓）—— 不含就不分析 ✓
+            entry.error = "SHIP_NOT_IN_AREA"
+            entry.reason = "工作框不含船（原版 simulation.lua:546 要求框内含船 ✓）—— 这个框算不了 ✓"
+        else
+            local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+                return run(player.index, ship, COMMAND_TYPES.Trade, area, player.index)
+            end)
+            if not okRun then
+                entry.error = "ANALYSIS_FAILED"
+                entry.reason = tostring(rShipName)
+            else
+                local results = rResults or rArea
+                if type(rArea) == "table" then area = rArea end
+                if type(results) ~= "table" then
+                    entry.error = "ANALYSIS_RETURNED_NOTHING"
+                else
+                    area.analysis = results
+                    local routes = (type(results.routes) == "table") and results.routes or {}
+                    if goodsLib ~= nil then attachGoodsPrices(goodsLib, routes) end
+                    local kept = {}
+                    for _, r in ipairs(routes) do
+                        if goodsFilter == nil or goodsFilter[r.name] == true then kept[#kept + 1] = r end
+                    end
+                    entry.routeCount = #routes
+                    entry.routeCountAfterGoodsFilter = #kept
+                    if #routes == 0 then
+                        entry.error = "NO_ROUTE"
+                        entry.reason = "这个框里原版没给出任何贸易路线（routeCount=0）✓"
+                    elseif #kept == 0 then
+                        entry.error = "GOODS_FILTER_MATCHED_NOTHING"
+                        entry.reason = "goodsFilter 里的商品在这个框里都没有路线 ✓"
+                    else
+                        fact.area, fact.results, fact.routes = area, results, kept
+                        totalCombos = totalCombos + #kept * #deposits
+                    end
+                end
+            end
+        end
+        prepared[#prepared + 1] = fact
+    end
+    local analysisMs = math.floor((os.clock() - t0) * 1000 + 0.5)
+
+    -- ★★ 组合上限：**先分析完再数**（因为路线清单要跑完 run() 才知道 ✓）——
+    --   此时还**一次预测都没跑** ✓，所以超限时啥也没浪费 ✓✓。
+    if totalCombos > TRADE_EVAL_MAX_COMBOS then
+        return false, "TOO_MANY_COMBINATIONS",
+            "tradeEvaluate: boxes x goods x deposits = " .. tostring(totalCombos)
+            .. " > " .. tostring(TRADE_EVAL_MAX_COMBOS) .. " (each combination is one vanilla calculatePrediction). "
+            .. "Reduce it: fewer boxes (max " .. tostring(TRADE_EVAL_MAX_BOXES) .. "), "
+            .. "fewer deposit tiers (max " .. tostring(TRADE_EVAL_MAX_DEPOSITS) .. "), "
+            .. "or pass goodsFilter[] to evaluate only the goods you care about."
+    end
+
+    -- ===== ② 逐 (框 × 商品 × 本金) 跑**同一份**预测（predict 的内核 ✓） =====
+    local t1 = os.clock()
+    local results, rejected = {}, {}
+    for _, fact in ipairs(prepared) do
+        if fact.routes ~= nil then
+            for _, route in ipairs(fact.routes) do
+                for _, dep in ipairs(deposits) do
+                    local r = tradePredictFromAnalysis(command, player, ship, fact.area, fact.results,
+                        fact.box, route.name, dep, escorts, goodsLib)
+                    local e = {
+                        x = fact.box.x, y = fact.box.y,
+                        sizeX = fact.box.sizeX, sizeY = fact.box.sizeY,
+                        goodName = route.name, deposit = dep,
+                    }
+                    local v = (type(r.value) == "table") and r.value or nil
+                    local rk = (type(r.risk) == "table") and r.risk or nil
+                    if v ~= nil then
+                        local fl = v.flights
+                        e.flightsFrom = (type(fl) == "table") and tonumber(fl.from) or tonumber(fl)
+                        e.flightsTo = (type(fl) == "table") and tonumber(fl.to) or tonumber(fl)
+                        local ppf = v.profitPerFlight
+                        e.profitPerFlightFrom = (type(ppf) == "table") and tonumber(ppf.from) or tonumber(ppf)
+                        e.profitPerFlightHigh = (type(ppf) == "table") and tonumber(ppf.to) or tonumber(ppf)
+                        e.netProfitLow = tonumber(v.netProfitLow)
+                        e.netProfitHigh = tonumber(v.netProfitHigh)
+                        e.maxAvailable = tonumber(v.maxAvailable)
+                        e.flightTime = tonumber(v.flightTime)
+                        e.transportedPerFlight = tonumber(v.transportedPerFlight)
+                        e.profitBasis = v.profitBasis
+                    end
+                    if rk ~= nil then
+                        e.attackChance = tonumber(rk.attackChance)
+                        e.baseAttackChance = tonumber(rk.baseAttackChance)
+                        -- ★ riskKnown = "游戏**真的**给了伏击概率"（known=true **且** attackChance 不是 nil ✓）
+                        --   —— predict 的 risk.known 对 Trade 是固定 true ✓，这里再核一次数字本身 ✓；
+                        --   没数字就是**算不出来**（不是 0 ✗✓）。
+                        e.riskKnown = (rk.known == true) and (tonumber(rk.attackChance) ~= nil)
+                        if e.riskKnown ~= true and rk.unknownReason ~= nil then
+                            e.riskUnknownReason = tostring(rk.unknownReason)
+                        end
+                    else
+                        e.riskKnown = false
+                    end
+                    -- ★ 停留小时数 / 单位时间净利（主人定的排序键 ✓，见函数头 ✓）
+                    if e.flightsTo ~= nil and e.flightTime ~= nil and e.flightsTo > 0 and e.flightTime > 0 then
+                        e.durationHours = e.flightsTo * e.flightTime / 3600
+                    end
+                    if e.durationHours ~= nil and e.netProfitLow ~= nil then
+                        e.profitPerHour = e.netProfitLow / e.durationHours
+                    end
+
+                    -- ★★ 丢掉的**必须说明** ✓✓（rejected[] 带 reasonKind + reason ✓）
+                    if r.error ~= nil then
+                        e.reasonKind = "ERROR"
+                        e.reason = tostring(r.error)
+                        rejected[#rejected + 1] = e
+                    elseif r.predictionFailed ~= nil then
+                        e.reasonKind = "PREDICTION_FAILED"
+                        e.reason = tostring(r.predictionFailed)
+                        rejected[#rejected + 1] = e
+                    elseif e.flightsFrom == nil or e.flightsFrom <= 0 then
+                        e.reasonKind = "EMPTY_RUN"
+                        e.reason = "flights.from=" .. tostring(e.flightsFrom)
+                            .. " → 空跑 ✗（原版没有可跑的航班，净收益会退化成 profitPerSize fallback ✓）"
+                        rejected[#rejected + 1] = e
+                    elseif e.riskKnown ~= true then
+                        e.reasonKind = "RISK_UNKNOWN"
+                        e.reason = "游戏没算出伏击概率（risk.known=false / attackChance=nil）→ 闸门（≤"
+                            .. tostring(gate) .. "）无法核验 ✗；attackChance 留 nil（**不填 0** ✗✓）"
+                            .. (e.riskUnknownReason and ("；原版原因：" .. e.riskUnknownReason) or "")
+                        rejected[#rejected + 1] = e
+                    elseif e.attackChance ~= nil and e.attackChance > gate then
+                        e.reasonKind = "RISK_OVER_GATE"
+                        e.reason = "伏击概率 " .. tostring(e.attackChance) .. " > 闸门 " .. tostring(gate) .. " ✗"
+                        rejected[#rejected + 1] = e
+                    else
+                        e.reasonKind = nil
+                        results[#results + 1] = e
+                    end
+                end
+            end
+        end
+    end
+    local predictMs = math.floor((os.clock() - t1) * 1000 + 0.5)
+
+    -- ★ 排序：只按主人给的键（单位时间净利）降序 ✓；同分**短任务优先**（L17 ⑦，伏击概率随时长涨 ✓）。
+    --   算不出 profitPerHour 的排最后 ✓ —— 字段本身仍是 nil（**绝不填 0** ✗✓）。
+    table.sort(results, function(a, b)
+        local pa, pb = tonumber(a.profitPerHour), tonumber(b.profitPerHour)
+        if pa ~= pb then
+            if pa == nil then return false end
+            if pb == nil then return true end
+            return pa > pb
+        end
+        local da, db = tonumber(a.durationHours), tonumber(b.durationHours)
+        if da ~= db and da ~= nil and db ~= nil then return da < db end
+        if tostring(a.goodName) ~= tostring(b.goodName) then
+            return tostring(a.goodName) < tostring(b.goodName)
+        end
+        return (tonumber(a.deposit) or 0) < (tonumber(b.deposit) or 0)
+    end)
+    -- rejected 的次序只是**可审计**（净收益从高到低）—— 不是推荐 ✓
+    table.sort(rejected, function(a, b)
+        local na, nb = tonumber(a.netProfitLow), tonumber(b.netProfitLow)
+        if na ~= nb then
+            if na == nil then return false end
+            if nb == nil then return true end
+            return na > nb
+        end
+        if a.reasonKind ~= b.reasonKind then
+            return tostring(a.reasonKind) < tostring(b.reasonKind)
+        end
+        if tostring(a.goodName) ~= tostring(b.goodName) then
+            return tostring(a.goodName) < tostring(b.goodName)
+        end
+        return (tonumber(a.deposit) or 0) < (tonumber(b.deposit) or 0)
+    end)
+
+    CopilotRpc.trace(string.format(
+        "tradeEvaluate %s boxes=%d deposits=%d combos=%d analysisMs=%d predictMs=%d results=%d rejected=%d",
+        ship, #prepared, #deposits, totalCombos, analysisMs, predictMs, #results, #rejected))
+
+    return true, {
+        ship = ship,
+        shipSector = { x = shipX, y = shipY },
+        boxCount = #prepared,
+        depositTiers = deposits,
+        goodsFilter = filterList,
+        combinationCount = totalCombos,
+        combinationLimit = TRADE_EVAL_MAX_COMBOS,
+        boxes = boxOut,
+        results = results,
+        rejected = rejected,
+        sortKey = "profitPerHour = netProfitLow / durationHours (desc); ties -> shorter durationHours",
+        sortKeySource = "主人定：单位时间利润最高才是最好（docs/game/lessons/orders.md L17 §③）",
+        timingMs = { analysis = analysisMs, predictions = predictMs, total = analysisMs + predictMs },
+        note = "★ **只计算、不推荐** ✗✓：results 已按主人定的**单位时间净利**（profitPerHour = "
+            .. "netProfitLow / durationHours）降序 ✓ —— 这是排序口径，不是'该选哪条'的结论 ✗。"
+            .. "每个框只做**一次**区域分析 ✓（与 predict 同一份计算内核 ✓，所以数字逐字一致 ✓）；"
+            .. "丢掉的全部在 rejected[] 里并带原因 ✓（flights.from=0 空跑 / 风险超闸门 / 风险算不出来 / 预测失败 ✓）；"
+            .. "算不出来的字段**留 nil**（绝不填 0 ✗✓）。选哪个框/商品/本金、要不要下单，由你自己判断 ✓。"
+            .. "★ 实测提醒：同一框的路线清单**会变**（原版实时经济 ✓）—— 查到满意的就**立刻**下单 ✓。",
     }
 end
 
