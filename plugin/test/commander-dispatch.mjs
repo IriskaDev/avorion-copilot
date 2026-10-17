@@ -165,7 +165,7 @@ await test('① 会话健康：采纳会话答案，单发一次都不跑', asyn
   return '会话的答案是唯一来源，单发没被碰'
 })
 
-await test('② 主人在聊天（会话忙）：不插队 → 单发，舰队照样有决策', async (log) => {
+await test('② 主人在聊天（会话忙）：不插队 → 兜底 None（★ 不许单发替它拍板 ✗）', async (log) => {
   const agent = makeAgent({ busy: true, script: [] })
   const single = makeSingleShot('action=Salvage\nx=8\ny=8\nsize=15\nduration=2\ntask=t-0001')
   const out = await dispatchDecision({
@@ -173,14 +173,14 @@ await test('② 主人在聊天（会话忙）：不插队 → 单发，舰队�
     followup, singleShot: single.run, allowedActions: ALLOWED, budgets: FAST, log,
   }, REQ)
   console.log('  result:', JSON.stringify(out))
-  assert.equal(out.source, 'single-shot')
-  assert.equal(out.action, 'Salvage')
-  assert.equal(single.calls, 1)
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(out.action, 'None')
+  assert.equal(single.calls, 0, '★ 指挥官会话在线但忙 → 单发**一次都不许跑** ✗（兜底不许下单 ✓）')
   assert.equal(agent.inbox.length, 0, '忙会话**不该**收到投递（不插队 ✓）')
-  return '主人在聊天完全没拖住舰队'
+  return '主人在聊天：不插队、也不让单发替她拍板'
 })
 
-await test('③ 会话挂死：硬闸内 cancel() + 放弃这一级 → 单发，且不超预算', async (log) => {
+await test('③ ★ 会话在线但超时（挂死）：cancel + 兜底 None，单发零次调用（主人铁律 ✓）', async (log) => {
   const agent = makeAgent({ hang: true })
   const single = makeSingleShot('action=Mine\nx=1\ny=1\ntask=t-0001')
   const t0 = Date.now()
@@ -189,8 +189,10 @@ await test('③ 会话挂死：硬闸内 cancel() + 放弃这一级 → 单发�
     followup, singleShot: single.run, allowedActions: ALLOWED, budgets: FAST, log,
   }, REQ)
   const took = Date.now() - t0
-  console.log(`  result: ${JSON.stringify(out)}   took ${took}ms`)
-  assert.equal(out.source, 'single-shot')
+  console.log(`  result: ${JSON.stringify(out)}   took ${took}ms   singleShotCalls=${single.calls}`)
+  assert.equal(out.action, 'None')
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(single.calls, 0, '★ 会话在线但超时 → **单发一次都不许跑**（兜底不许下单 ✗✓）')
   assert.equal(agent.cancelled, 1, '挂死的一轮必须被 cancel ✓')
   // ★ cause 必须是宿主认得的 kind（user | parent | disposed | hook ✓）。
   //   原先传的是 'timeout' ✗ —— 宿主的 abortedCancelCause 会落到 assertNever 抛错，
@@ -200,10 +202,10 @@ await test('③ 会话挂死：硬闸内 cancel() + 放弃这一级 → 单发�
   assert.equal(agent.cancelCause.kind, 'hook')
   assert.equal(agent.inbox.length, 1, '★ 失败**绝不重递** ✓（同一艘船只递一次 ✓）')
   assert.ok(took < FAST.sessionDeadlineMs + FAST.singleShotTimeoutMs + 500, `耗时失控: ${took}ms`)
-  return `掐掉挂死的一轮，仍在 ${took}ms 内给出了决策`
+  return `掐掉挂死的一轮，兜底 None（单发零次），仍在 ${took}ms 内给出决策`
 })
 
-await test('④ 两条路都废：action=None，绝不悬着', async (log) => {
+await test('④ 会话没答成（live 模式）→ 兜底 None，不落单发、绝不悬着', async (log) => {
   const agent = makeAgent({ script: ['嗯嗯~本鱼今天不想干活。'] })
   const single = makeSingleShot('', { fail: null })
   const t0 = Date.now()
@@ -213,12 +215,13 @@ await test('④ 两条路都废：action=None，绝不悬着', async (log) => {
   }, REQ)
   console.log(`  result: ${JSON.stringify(out)}   took ${Date.now() - t0}ms`)
   assert.equal(out.action, 'None')
-  assert.equal(out.source, 'none')
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(single.calls, 0, '★ 会话在线但没答成 → 不落单发（兜底不许下单 ✗）')
   assert.ok((out.reason ?? '').length > 0, '必须写清为什么没有决策 ✓')
   return '梯子自己终止，失败是"明说的 None"而不是挂住'
 })
 
-await test('⑤ 任务号对不上：拒绝采纳 → 单发（绝不把别船的答案用在它身上）', async (log) => {
+await test('⑤ 任务号对不上：拒绝采纳 → 兜底 None（绝不把别船的答案用在它身上）', async (log) => {
   const agent = makeAgent({ script: ['action=Mine\nx=99\ny=99\ntask=t-9999'] })
   const single = makeSingleShot('action=Mine\nx=30\ny=-12\ntask=t-0001')
   const out = await dispatchDecision({
@@ -226,10 +229,11 @@ await test('⑤ 任务号对不上：拒绝采纳 → 单发（绝不把别船�
     followup, singleShot: single.run, allowedActions: ALLOWED, budgets: FAST, log,
   }, REQ)
   console.log('  result:', JSON.stringify(out))
-  assert.equal(out.source, 'single-shot')
-  assert.equal(out.params.x, 30, '绝不能采纳 x=99（那是别的任务的答案 ✓）')
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(out.action, 'None')
+  assert.equal(single.calls, 0, '★ 答错船 → 不采纳、也不让单发替它拍板（兜底不许下单 ✗）')
   assert.equal(out.session.code, 'TASK_MISMATCH')
-  return '回显写错 → 判 TASK_MISMATCH 并落到单发'
+  return '回显写错 → 判 TASK_MISMATCH 并兜底 None'
 })
 
 await test('⑥ 会话在问主人：显式延期（ASKED_OWNER），不派单、不落单发', async (log) => {
@@ -306,14 +310,15 @@ await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞（锁�
   const done = await first
   console.log('  second:', JSON.stringify(second))
   console.log('  first :', JSON.stringify(done))
-  assert.equal(second.source, 'single-shot', '抢不到会话 → 直接落单发（**不排队** ✗）')
+  assert.equal(second.source, 'fallbackNone', '★ 抢不到会话 → 兜底 None（**不排队**、也不许单发替它拍板 ✗）')
+  assert.equal(single.calls, 0, '★ 锁被占时**不许**落单发（兜底不许下单 ✗）')
   assert.equal(second.session?.code, 'SESSION_BUSY_ELSEWHERE', '★ 锁拦住了并发投递 ✓')
   assert.equal(agent.inbox.length, 1, '同一个会话绝不许同时飞两条任务 ✓')
   assert.equal(done.source, 'session', '第一条照常由会话定 ✓')
   return '一个会话同一刻只有一条任务（TAKEOVER.md 的铁律 ✓）'
 })
 
-await test('⑧b 会话**正忙**时：连锁都不碰，直接落单发（绝不插进主人的聊天 ✗）', async (log) => {
+await test('⑧b 会话**正忙**时：连锁都不碰，兜底 None（绝不插进主人的聊天 ✗）', async (log) => {
   const agent = makeAgent({ busy: true, script: ['action=Mine\nx=1\ny=1\ntask=A'] })
   let claimed = 0
   const single = makeSingleShot('action=Salvage\nx=2\ny=2\ntask=B')
@@ -323,11 +328,12 @@ await test('⑧b 会话**正忙**时：连锁都不碰，直接落单发（绝�
     lock: { tryClaim() { claimed += 1; return () => {} } }, log,
   }, REQ)
   console.log('  result:', JSON.stringify(out))
-  assert.equal(out.source, 'single-shot')
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(single.calls, 0, '★ 忙会话在线 → 不落单发（兜底不许下单 ✗）')
   assert.equal(claimed, 0, '★ 忙会话压根不该走到"投递"这一步 ✓（主人的聊天优先 ✓）')
   assert.equal(agent.inbox.length, 0, '绝不许往主人正在聊的会话里塞任务 ✗')
   assert.equal(out.session, undefined, '连"会话那一级"都没开始 ✓')
-  return '主人的对话优先：忙就完全不打扰，直接走单发'
+  return '主人的对话优先：忙就完全不打扰、也不让单发替她拍板'
 })
 
 await test('⑨ 单发硬期限：挂住的单发也能被闸住（今天没有这道闸 ✗）', async (log) => {
@@ -355,7 +361,8 @@ await test('⑩ 任务块契约 + 校验器：回显、允许集合、问题、�
   assert.match(block, /^<fleet_task id="t-0001" ship="Miner-00002" deadline_hint="20s">/)
   assert.match(block, /<\/fleet_task>$/)
   assert.match(block, /task=t-0001/)
-  assert.match(block, /第一行\*\*就是结论/, '★ 结论行必须在最前（被截断时丢掉的是散文 ✓）')
+  assert.match(block, /第一行\*\*请直接写结论行/, '★ 结论行必须在最前（便于解析 ✓）')
+  assert.doesNotMatch(block, /额度|想太久|烧光|节省|时间紧|别犹豫/, '★ 块里绝不含"额度/想太久"类施压措辞 ✗')
   assert.match(block, /不是主人在说话/, '★ 必须说清"这条是舰队任务、不是主人说话" ✓')
   assert.match(block, /唯一凭据/, '★ 回显 task 的意义要写清 ✓')
   assert.match(block, /照常\*\*跟主人聊天/, '★ 任务块外的闲聊不受影响（同一会话两用 ✓）')
@@ -472,7 +479,7 @@ await test('⑪ 投递会话选择：未指定=今天 / 指定 / 落盘 / 清除
 // 12：会话路径的"再给一次机会"（只此一次 ✓）
 // ---------------------------------------------------------------------------
 
-await test('⑫ 会话两次都没有动作行 → 只递两次（绝不重递第三次 ✗）→ 单发', async (log) => {
+await test('⑫ 会话两次都没有动作行 → 只递两次（绝不重递第三次 ✗）→ 兜底 None', async (log) => {
   const agent = makeAgent({ script: ['嗯……本鱼在想想。'] })
   const single = makeSingleShot('action=Mine\nx=5\ny=5\ntask=t-0001')
   const out = await dispatchDecision({
@@ -483,8 +490,9 @@ await test('⑫ 会话两次都没有动作行 → 只递两次（绝不重递�
   console.log('  result:', JSON.stringify(out))
   assert.equal(out.session.code, 'NO_ACTION_LINE')
   assert.equal(agent.inbox.length, 2, '★ 只能递两次（第一次 + 一次重试）✗ 绝不许无限重递 ✓')
-  assert.equal(out.source, 'single-shot')
-  return '重试严格只有一次，且仍然落在单发上'
+  assert.equal(out.source, 'fallbackNone')
+  assert.equal(single.calls, 0, '★ 会话没答成 → 不落单发（兜底不许下单 ✗）')
+  return '重试严格只有一次，且落在兜底 None 上'
 })
 
 await test('⑬ 默认预算就是设计书定的那几个数（防止有人悄悄改小 ✗）', async () => {
