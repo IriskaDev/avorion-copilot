@@ -336,7 +336,8 @@ local okB3, rB3 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y 
 check("S7b 只给 size=17 → 回执 area 是 17x17 正方形 ✓",
     okB3 == true and rB3.area and (rB3.area.upper.x - rB3.area.lower.x + 1) == 17
     and (rB3.area.upper.y - rB3.area.lower.y + 1) == 17, "")
-check("S7b onOrder 不再同步预分析（nRun 仍 0 ✓ —— 原子化拆掉了顺手扫框 ✗）", nRun == 0, nRun)
+check("S7b onOrder 只为回执算**一次**预测（nRun 恰好 1 次 ✓ —— 不是扫框 ✗）", nRun == 1, nRun)
+check("S7b 回执带 risk 字段 ✓（口径 = predict ✓）", rB3 and type(rB3.risk) == "table", rB3 and type(rB3.risk))
 
 -- ---------------------------------------------------------------------------
 -- ⑧ JSON 往返 + 源码里的 UUID 一致 ✓

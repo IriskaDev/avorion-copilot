@@ -306,11 +306,14 @@ check("⑧ Trade 没给 goodName → BAD_REQUEST（不自动挑路线 ✗）", o
 -- ⑧-4 Trade 没给 deposit → 明确报错（不自动兜底预付金 ✗）
 local okO4, codeO4 = LinkIn.onOrder({ ship = SHIP, action = "Trade", x = SHIP_X, y = SHIP_Y, size = 17, goodName = "Drill" })
 check("⑧ Trade 没给 deposit → BAD_REQUEST（不自动兜底预付金 ✗）", okO4 == false and codeO4 == "BAD_REQUEST", tostring(codeO4))
--- ⑧-5 参数齐全 → 成功，且**不**同步跑 area analysis（run 0 次 ✓）
+-- ⑧-5 参数齐全 → 成功；★ 2026-10-17 改为：**只为回执算一次预测**（run 恰好 1 次 ✓），
+--      但**绝不改单**（框/参数与调用方给的一模一样 ✓，回执里没有推荐/兜底 ✗）。
 nRun, nPred = 0, 0
 local okO5, rO5 = LinkIn.onOrder({ ship = SHIP, action = "Mine", x = SHIP_X, y = SHIP_Y, size = 15, duration = 1 })
 check("⑧ 参数齐全 → accepted=true", okO5 == true and rO5.accepted == true, rO5)
-check("⑧ order 不含同步 area analysis（run 0 次 ✓ —— 不再顺手扫框 ✗）", nRun == 0, nRun)
+check("⑧ order 只为回执算**一次**预测（run 恰好 1 次 ✓ —— 不是扫框 ✗）", nRun == 1, nRun)
+check("⑧ order 回执带 risk 字段 ✓（口径 = predict，见 _order_risk_selftest ✓）",
+    rO5 and type(rO5.risk) == "table", rO5 and type(rO5.risk))
 check("⑧ order 回执只带最小参数（area/config，不含 routeNames/推荐 ✗）",
     rO5 and rO5.recommendation == nil and rO5.routeNames == nil, "")
 
