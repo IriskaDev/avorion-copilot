@@ -37,6 +37,9 @@ function Copilot.getUpdateInterval()
 end
 
 function Copilot.initialize()
+    -- ★ 故意留空 ✗✓：挂载（initialize）不得重新开启自动驾驶。开关状态只由
+    -- player value `copilot_enabled` 决定，updateServer 第一行就按它早退。
+    -- 「被挂上但已停用」的脚本必须保持惰性，绝不能在这里设 autoPilotEnabled=true。
 end
 
 function Copilot.updateServer()
@@ -45,10 +48,22 @@ function Copilot.updateServer()
     local player = Player()
     if not player then return end
 
-    local craft = player.craft
-    if not player:getValue("copilot_enabled") or not craft or not valid(craft) then
-        Copilot.release(craft)
-        Copilot.tookControl = false
+    -- ★★★ 停用 = 第一时间早退，对玩家船完全惰性（2026-10-17 修）✗→✓
+    --
+    -- 原 bug：这里每 tick 都调 Copilot.release(craft)，而 release 每次都写
+    -- control.autoPilotEnabled = false。这跟游戏自己的自动驾驶状态机抢起来了 ——
+    -- 玩家手动跃迁时，游戏会经 OrderChain.updateAutoPilotStatus 把 autoPilotEnabled
+    -- 设回 true（原版 orderchain.lua:1746-1751），我们下一个 tick（≤2 秒）又把它
+    -- 按回 false → 跃迁跃到一半被打断、玩家的航行指令被覆盖（「指令不执行」）✗。
+    --
+    -- 修法：只在「刚接管 → 刚关掉」这一次做清理（复位 autoPilotEnabled=false +
+    -- 摘 mine/salvage 脚本），之后每 tick 直接早退，绝不再碰 autoPilotEnabled ✗✓。
+    if not player:getValue("copilot_enabled") then
+        if Copilot.tookControl then
+            if Copilot.release(player.craft) then
+                Copilot.tookControl = false
+            end
+        end
         if Copilot.state ~= "idle" then
             Copilot.state = "idle"
             player:setValue("copilot_state", "idle")
@@ -57,24 +72,27 @@ function Copilot.updateServer()
         return
     end
 
+    local craft = player.craft
+    if not craft or not valid(craft) then
+        -- 开着但此刻没船可开（离船/换船瞬间）：清掉接管标记，等有船时重新接管。
+        Copilot.tookControl = false
+        return
+    end
+
     -- 接管玩家正在开的船。
     --
     -- 这是**玩家显式打开**的行为：copilot_enabled 只由「Copilot 面板的开关」或
-    -- /copilot on 写入，所以这里每 tick 设一次 autoPilotEnabled = true 并不会"和玩家抢"，
-    -- 而是"按玩家的意愿持续保持接管"。要收回控制权，玩家关掉那个开关即可
-    -- （/copilot off 或点面板上的按钮）。
+    -- /copilot on 写入，所以接管是"按玩家的意愿"。要收回控制权，玩家关掉那个
+    -- 开关即可（/copilot off 或点面板上的按钮）。
     --
-    -- 之前那种"玩家一按键就自动交还"的设计不做：需求是完全接管。
-    -- 但**必须让玩家知道怎么收回**，否则会出现"飞船怎么点都不动"的困惑 —— 所以
-    -- /copilot on 会发一条明确提示，HUD 上也有状态显示。
     -- Engage ONCE, not every tick.
---
--- The game's own HUD advertises "[Backspace] stop" for the autopilot. If we set
--- autoPilotEnabled = true on every tick, that stop is undone within 2 seconds and the
--- ship becomes uncontrollable ("nothing I press moves the ship").
--- Setting it once still means the AI fully takes over while the copilot is enabled -
--- the player simply keeps the game's own stop key as the way back.
-local control = ControlUnit(craft)
+    --
+    -- The game's own HUD advertises "[Backspace] stop" for the autopilot. If we set
+    -- autoPilotEnabled = true on every tick, that stop is undone within 2 seconds and the
+    -- ship becomes uncontrollable ("nothing I press moves the ship").
+    -- Setting it once still means the AI fully takes over while the copilot is enabled -
+    -- the player simply keeps the game's own stop key as the way back.
+    local control = ControlUnit(craft)
     if control and not Copilot.tookControl then
         control.autoPilotEnabled = true
         Copilot.tookControl = true
@@ -87,7 +105,7 @@ local control = ControlUnit(craft)
 end
 
 function Copilot.release(craft)
-    if not craft or not valid(craft) then return end
+    if not craft or not valid(craft) then return false end
 
     local control = ControlUnit(craft)
     if control then
@@ -96,6 +114,8 @@ function Copilot.release(craft)
 
     if craft:hasScript(MINE_FULL) then craft:removeScript(MINE_FULL) end
     if craft:hasScript(SALVAGE_FULL) then craft:removeScript(SALVAGE_FULL) end
+
+    return true
 end
 
 function Copilot.decide(player, craft, ai)
