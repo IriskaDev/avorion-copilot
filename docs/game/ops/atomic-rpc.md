@@ -107,6 +107,36 @@
 
 > ★ 组合关系：`tradeRoutes(box)` 先拿框内路线 → 决策者挑路线/定预付金 → `predict(box, Trade, goodName, deposit)` 拿风险与净收益。两步，各算各的。
 
+### B.5 ★ 贸易的组合搜索：`tradeEvaluate` —— 多框 × 多商品 × 多本金，**一次调用**（2026-10-18 加 ✓✓）
+
+**为什么要它**（主人原话：「Trader 选的线路的效率还是太差了，你应大胆一点，多做些计算，不要看见有得赚就上」✓）：
+- 旧做法 = `tradeRoutes` 拿清单 → 只 `predict` 一两条 → 看见"能赚"就下单 ✗ → 实跑 6.3 万/小时、
+  32~36 万/小时的线 ✗，而同一片**曾经有 154 万/小时** ✓。
+- 「全商品 × 多本金 × 多框」这套组合搜索**人肉做不到**（20+ 次 RPC ✗）→ 收成一颗原子 ✓。
+
+- **入参**：`{ what="tradeEvaluate", ship, boxes=[{x,y,sizeX,sizeY}, …]（1..6 个）, deposits=[…]（1..3 档）,
+  goodsFilter?（缺省全商品）, escorts?, maxAttackChance?（缺省 0.10） }`
+  —— 框形状必须是原版合法 Trade 形状 `17x17 / 29x11 / 11x29`（`tradecommand.lua:584-585` ✓）。
+- **出参**：`{ ship, shipSector, boxCount, depositTiers, combinationCount, combinationLimit, boxes[], results[], rejected[], sortKey, timingMs, note }`
+  - 每条 `results[]`：`{x,y,sizeX,sizeY,goodName,deposit,netProfitLow,netProfitHigh,flightsFrom,flightsTo,
+    profitPerFlightFrom,profitPerFlightHigh,maxAvailable,attackChance,baseAttackChance,riskKnown,
+    flightTime,transportedPerFlight,durationHours,profitPerHour,profitBasis}`
+  - ★ **排序键**：`profitPerHour = netProfitLow / durationHours` 降序 —— **主人定的口径**（单位时间利润最高才是最好 ✓，
+    见 `../lessons/orders.md` L17 §③ ✓），同分短任务优先 ✓。**这不是"推荐"** ✗：没有 `recommendation` / `orderHint` / `bestRouteName`。
+  - ★ `durationHours = flights.to × flightTime / 3600` —— 原版 Trade 只跑 `flights.to` 班
+    （`tradecommand.lua:131`）+ 每班 `flightTime` 秒（`:826/:844`）✓。
+  - ★ **丢掉的必须说明**：`rejected[]` 每条带 `reasonKind` + `reason` ——
+    `EMPTY_RUN`（`flights.from == 0` 空跑 ✗）/ `RISK_OVER_GATE`（概率 > 闸门 ✗）/
+    `RISK_UNKNOWN`（游戏没给出概率 → `attackChance` 留 **nil**，**不填 0** ✗✓）/ `PREDICTION_FAILED` / `ERROR`。
+- **口径**：与 `predict` 的 Trade 分支**同一份代码**（`link_in.lua:6070 tradePredictFromAnalysis` ✓）——
+  harness 对拍 + 真机对拍都是**逐字一致** ✓。每个框只付**一次** `run()`（Trade 最贵那步 ✓），
+  然后逐 (商品 × 本金) 调原版 `calculatePrediction` ✓（真机实测 6 框：分析 5268 ms / 24 次预测 10 ms ✓）。
+- **硬上限**（防"一次调用卡主线程"✗）：框 ≤6、本金档 ≤3、**组合总数 ≤60**；
+  超了回 `TOO_MANY_COMBINATIONS` + 缩参建议（框 / 本金档 / `goodsFilter` ✓），且**一次预测都不跑** ✓。
+- **错误串**：`BAD_REQUEST`（缺参 / 形状非法 / 框太多 / 本金档太多）、`TOO_MANY_COMBINATIONS`、
+  `NO_POSITION`、`NO_ANALYSIS_SCRIPT`、`NO_ANALYSIS_RUN`、`NO_COMMAND_FACTORY`、`NO_COMMAND`。
+- **它不做策略** ✗：不生成候选框、不替决策者挑框/挑商品/挑本金、不谈护航该不该带（`escorts` 只是原样传给预测 ✓）。
+
 ### B.4 执行类（已达标，保持原子）
 
 | 原子 | 入参 | 出参 | 错误 |
