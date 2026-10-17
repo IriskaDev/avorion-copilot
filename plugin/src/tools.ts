@@ -135,7 +135,12 @@ export function registerFleetTools(
         '(NO per-ship full state, NO cargo detail, NO prediction) -- use it FIRST to pick which ship ' +
         'to look at, then query that one. what=ship returns ONE ship capability card (brief=true for ' +
         'the SHORT view). what=goal returns that ship operating goal. what=sectorFacts returns FACTS ' +
-        'about any sector (pass x,y). ★ what=predict is the CORE computation atom: ONE box (x,y,sizeX,' +
+        'about any sector (pass x,y): richness/material probabilities/ring side/distance, PLUS ' +
+        'faction ownership + friendliness -- factionIndex (0 = no faction), factionName, hasFaction, ' +
+        'relation (unowned/self/friendly/neutral/ceasefire/hostile, vanilla RelationStatus), isFriendly ' +
+        '(boolean from vanilla relation), hasStations (SectorView.numStations>0). Use isFriendly to ' +
+        'enforce the owner rule "trader travels only through friendly sectors". ★ what=predict is ' +
+        'the CORE computation atom: ONE box (x,y,sizeX,' +
         'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout) + that action minimal params -> the ' +
         'prediction numbers (risk + value) for THAT box only; batch via boxes=[...] (N<=24, each box ' +
         'independent). ★ Scout predict returns value.unknownCount/knownCount/totalSectors (unexplored/' +
