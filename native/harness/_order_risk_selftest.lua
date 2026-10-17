@@ -271,19 +271,40 @@ if ok5 == true then
 end
 
 -- ===========================================================================
--- R6：区域分析自己失败（run 抛错）→ 也走 known=false ✓
+-- R6：区域分析自己失败（run 抛错）→ ★ 预检直接拒（2026-10-17 新行为 ✓✓）
+--
+-- 旧断言是「分析失败也不影响下单」✗ —— 那正是主人今晚点破的病 ✓：
+--   Travel 的分析算不出 route 时，原版 `startCommand` 会走
+--   "No area analyzed for X."（simulation.lua:472-476）**静默 return** ✗，
+--   于是回执 accepted:true、船却不动 ✓✓。
+-- → 预检（link_in.lua preflightOf）在**下单前**就用同一份 predict 验 route：
+--   算不出来 = `ANALYSIS_FAILED`、accepted=false、**什么都没发** ✓。
+--   而"预测**数字**算不出来"（R5：predict 回 error，但 route 在 ✓）**仍然是照下单** ✓
+--   —— 两件事别混 ✗✓。
 -- ===========================================================================
-print("== R6: run() 抛错 → known=false + 原因 ✓ ==")
+print("== R6: run() 抛错 → 预检拒绝（ANALYSIS_FAILED，不下单 ✓）==")
 reset()
 MODE = "RUN_ERROR"
+local invokedBefore = #INVOKED
+local queuedBefore = #LinkIn.pendingOrders
 local ok6, r6 = LinkIn.onOrder({ ship = SHIP, action = "Travel", x = DEST_X, y = DEST_Y })
-check("R6 分析失败也不影响下单 ✓", ok6 == true and r6.accepted == true, r6)
+check("R6 预检不过 → accepted=false ✓", ok6 == true and r6.accepted == false, r6)
 if ok6 == true then
-    check("R6 known=false ✓", r6.risk.known == false, r6.risk.known)
-    check("R6 attackChance=nil ✓", r6.risk.attackChance == nil, tostring(r6.risk.attackChance))
-    check("R6 原因里提到 area analysis ✓",
-        type(r6.risk.unknownReason) == "string" and r6.risk.unknownReason:find("analysis", 1, true) ~= nil,
-        r6.risk.unknownReason)
+    check("R6 preflight.ok=false ✓", type(r6.preflight) == "table" and r6.preflight.ok == false,
+        type(r6.preflight))
+    check("R6 preflight.code = ANALYSIS_FAILED ✓",
+        r6.preflight.code == "ANALYSIS_FAILED", tostring(r6.preflight.code))
+    check("R6 preflight.reason 提到 jump route / area analysis ✓",
+        type(r6.preflight.reason) == "string"
+        and (r6.preflight.reason:find("jump route", 1, true) ~= nil
+            or r6.preflight.reason:find("analysis", 1, true) ~= nil),
+        r6.preflight.reason)
+    check("R6 executed=false（没进 startCommand ✓）", r6.executed == false, r6.executed)
+    check("R6 ★ 这一单没发起区域分析（INVOKED 没有新增 ✓）", #INVOKED == invokedBefore,
+        table.concat(INVOKED, ","))
+    check("R6 ★ 这一单没排进 startCommand 队列 ✓", #LinkIn.pendingOrders == queuedBefore,
+        #LinkIn.pendingOrders)
+    check("R6 没有 risk 字段（预检不过就不算风险 ✓）", r6.risk == nil, type(r6.risk))
 end
 
 -- ===========================================================================
