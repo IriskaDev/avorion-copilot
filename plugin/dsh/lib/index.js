@@ -260,9 +260,13 @@ function receiptOf(ord, at) {
     const accepted = d.accepted !== false;
     const executed = d.executed !== false;
     const note = typeof d.note === 'string' ? d.note : undefined;
+    // ★ 游戏侧回的风险（老版本游戏侧没有这个字段 → undefined ✓，不编 0 ✗）
+    const risk = (d.risk !== null && typeof d.risk === 'object' && !Array.isArray(d.risk))
+        ? d.risk
+        : undefined;
     if (accepted && executed)
-        return { at, accepted: true, executed: true, note };
-    return { at, accepted, executed, error: note ?? 'order not executed', note };
+        return { at, accepted: true, executed: true, note, risk };
+    return { at, accepted, executed, error: note ?? 'order not executed', note, risk };
 }
 /** 这单算不算失败（被拒 / 未执行都算 ✗；**未确认不算** ✓ —— 见 OrderReceipt.unconfirmed ✓） */
 function receiptFailed(r) {
@@ -275,6 +279,26 @@ function receiptFailText(r) {
     const err = String(r.error ?? 'unknown');
     const short = err.length > 120 ? err.slice(0, 120) + '…' : err;
     return r.accepted ? `未执行（${short}）` : `被拒（${short}）`;
+}
+/**
+ * ★★ 游戏侧风险 → 一行短文案（2026-10-17 ✓✓）：`伏击 3%（基准 3%）`。
+ *   · `known=false` → 明说「伏击未知 + 原因」✓ —— **绝不写 0%** ✗✓（0% 是"游戏说不会遇伏击"，两回事 ✓）；
+ *   · Travel 的数是**整段航程**的（`riskKind` 里写着 ✓），这里不重复解释 ✓。
+ */
+export function riskText(r) {
+    if (r === undefined || r === null)
+        return undefined;
+    if (r.known !== true || typeof r.attackChance !== 'number') {
+        const why = typeof r.unknownReason === 'string' && r.unknownReason !== ''
+            ? `（${r.unknownReason.slice(0, 80)}）`
+            : '';
+        return `伏击未知${why}`;
+    }
+    const pct = (v) => `${Math.round(v * 1000) / 10}%`;
+    if (typeof r.baseAttackChance === 'number' && r.baseAttackChance !== r.attackChance) {
+        return `伏击 ${pct(r.attackChance)}（基准 ${pct(r.baseAttackChance)}）`;
+    }
+    return `伏击 ${pct(r.attackChance)}`;
 }
 // ---------------------------------------------------------------------------
 // ★ 失败回投的**上限与退避**（2026-10-17 主人要求 ✓✓）
@@ -306,8 +330,10 @@ export function renderPrevResult(rec) {
     const decider = rec.decider ?? deciderOf(rec.source);
     const tag = decider !== undefined ? `[${decider}] ` : '';
     if (rec.receipt !== undefined) {
-        if (rec.receipt.accepted && rec.receipt.executed)
-            return `${tag}${action}${loc}：成功 ✓`;
+        if (rec.receipt.accepted && rec.receipt.executed) {
+            const rt = riskText(rec.receipt.risk);
+            return `${tag}${action}${loc}：成功 ✓${rt !== undefined ? `｜${rt}` : ''}`;
+        }
         if (rec.receipt.unconfirmed === true)
             return `${tag}${action}${loc}：已发送，未确认（${rec.receipt.note ?? ''}）`;
         return `${tag}${action}${loc}：${receiptFailText(rec.receipt)}`;
@@ -1469,7 +1495,9 @@ export function apply(ctx, config = {}) {
                         const pkSec = (pick.sector ?? {});
                         live(`  ├ 选中护航 ${pick.name}（在 ${toNum(pkSec.x) ?? '?'},${toNum(pkSec.y) ?? '?'}；${pick.basis}）`);
                         live(`  ├ 下单 Travel：${pick.name} → (${target.x},${target.y})（目的地必须 ≥2 跳，太近游戏会拒 ✓）`);
-                        const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 30);
+                        // ★ 60s（不是 30s）：order 现在**同时**为回执算一次风险预测（= predict 同口径 ✓），
+                        //   Travel 还要先算整条 jump path 的分析 ✓ —— 30s 对远航太紧 ✓（2026-10-17 ✓）
+                        const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 60);
                         const why = ord.ok ? '' : (ord.why ?? 'unknown');
                         rendezvousMemo.set(ship, {
                             escort: pick.name, at: Date.now(), ok: ord.ok, why, x: target.x, y: target.y,
@@ -1886,7 +1914,8 @@ export function apply(ctx, config = {}) {
             ordersInFlight.add(ship);
             let ord;
             try {
-                ord = await ask(peer, 'order', { ship, action: a.action, ...a.params }, 30);
+                // ★ 60s：order 现在附带一次「回执风险」预测（与 predict 同一份代码 ✓），给足余量 ✓
+                ord = await ask(peer, 'order', { ship, action: a.action, ...a.params }, 60);
             }
             finally {
                 ordersInFlight.delete(ship);
@@ -1904,6 +1933,10 @@ export function apply(ctx, config = {}) {
                     hours, sector: sectorKey,
                 });
                 logger.info(`avorion-copilot: 已下单 ${ship} -> ${a.action} → ${JSON.stringify(ord.data)}`);
+                // ★ 游戏侧对**这一单**的伏击评估（2026-10-17 ✓）：进 decisions.live.log，主人现场看得见 ✓
+                const rt = riskText(receipt.risk);
+                if (rt !== undefined)
+                    live(`  ├ ${rt}（游戏侧评估 ✓）`);
             }
             else if (receipt.unconfirmed === true) {
                 // ★★ 假阴性（超时/断连）：order 已送出、游戏可能已经在跑 ✗✓ ——

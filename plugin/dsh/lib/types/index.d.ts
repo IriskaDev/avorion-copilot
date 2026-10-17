@@ -193,6 +193,25 @@ export interface DecisionRecord {
     needsIntervention?: string;
 }
 /** ★ 下单回执（2026-10-17 补 ✓）：`accepted` + `executed` + `error`，跨重启可审计 ✓ */
+/**
+ * ★★ 游戏侧给的「这次下单的伏击风险评估」（2026-10-17 加 ✓✓）。
+ *   口径 = 游戏 `predict` 的**同一份代码**（`link_in.lua` 的 `orderRiskOf` 直接调 predict ✓），
+ *   所以数值与决策前用 `fleet_query what=predict` 查到的一模一样 ✓✓。
+ *   · `known=false` → `attackChance` 是 **null/undefined**（**绝不是 0** ✗✓：0 = 游戏说不会遇伏击）；
+ *   · Travel 的数是**整段航程**被伏击的概率 ✓（原版 Travel 命令自带评估 ✓）；
+ *   · `baseAttackChance` 是基准（判断「<10% 吗」只看它 ✓）；Travel 没有 base →
+ *     `baseAttackChanceKnown=false` + `baseAttackChanceUnknownReason` ✓。
+ */
+export interface OrderRisk {
+    known: boolean;
+    attackChance?: number | null;
+    baseAttackChance?: number | null;
+    baseAttackChanceKnown?: boolean;
+    baseAttackChanceUnknownReason?: string;
+    riskKind?: string | null;
+    unknownReason?: string;
+    attackChanceWithEscorts?: number | null;
+}
 export interface OrderReceipt {
     at: string;
     accepted: boolean;
@@ -205,6 +224,8 @@ export interface OrderReceipt {
      *   下一轮用 list/ship 的 busy/舱量来核实真实结果 ✓。
      */
     unconfirmed?: boolean;
+    /** ★ 游戏侧对**这一单**的伏击风险评估（2026-10-17 ✓）；缺省 = 老游戏侧没这个字段 ✓ */
+    risk?: OrderRisk;
     error?: string;
     note?: string;
 }
@@ -219,6 +240,12 @@ export declare function live(msg: string): void;
 export declare function liveRaw(kind: 'reasoning' | 'text', delta: string): void;
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export declare function readDecisionFile(limit: number): DecisionRecord[];
+/**
+ * ★★ 游戏侧风险 → 一行短文案（2026-10-17 ✓✓）：`伏击 3%（基准 3%）`。
+ *   · `known=false` → 明说「伏击未知 + 原因」✓ —— **绝不写 0%** ✗✓（0% 是"游戏说不会遇伏击"，两回事 ✓）；
+ *   · Travel 的数是**整段航程**的（`riskKind` 里写着 ✓），这里不重复解释 ✓。
+ */
+export declare function riskText(r: OrderRisk | undefined | null): string | undefined;
 /**
  * ★ 上一次决策的"你上一单的结果"（2026-10-17 补 ✓）：给下一轮任务块用 ✓。
  *   先查内存（最近的 ✓），没有再回落盘 ✓ —— 这样 DSH 重启后下一轮也能看到历史 ✓。

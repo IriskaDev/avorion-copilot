@@ -148,9 +148,14 @@ export function registerFleetTools(
         '(boolean from vanilla relation), hasStations (SectorView.numStations>0). Use isFriendly to ' +
         'enforce the owner rule "trader travels only through friendly sectors". ★ what=predict is ' +
         'the CORE computation atom: ONE box (x,y,sizeX,' +
-        'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout) + that action minimal params -> the ' +
+        'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout|Travel) + that action minimal params -> the ' +
         'prediction numbers (risk + value) for THAT box only; batch via boxes=[...] (N<=24, each box ' +
-        'independent). ★ Scout predict returns value.unknownCount/knownCount/totalSectors (unexplored/' +
+        'independent). ★ Travel is the ONE exception to "the box must contain the ship": a Travel box is ' +
+        'the 1x1 DESTINATION (vanilla travelcommand.lua isShipRequiredInArea=false), and its risk is the ' +
+        'WHOLE-TRIP ambush chance (the same number the vanilla Travel UI shows) with value.distance / ' +
+        'value.travelTime / value.routeSectors. Travel exposes NO separate base value -> ' +
+        'risk.baseAttackChance is null and risk.baseAttackChanceKnown=false (+ reason); never read that as 0. ' +
+        '★ Scout predict returns value.unknownCount/knownCount/totalSectors (unexplored/' +
         'explored/total sectors in that box) + value.revealsNothingNew (true => the box has no ' +
         'unexplored sectors, reveals no new map) + box.containsShip; the Scout box is 21x21 (vanilla ' +
         'scoutcommand getAreaSize). ★ what=tradeRoutes returns the trade routes inside ONE box + ' +
@@ -169,10 +174,10 @@ export function registerFleetTools(
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
         ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/any plan' },
-        x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre)' },
-        y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre)' },
-        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY)' },
-        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX)' },
+        x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
+        y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
+        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1' },
+        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX); Travel: use 1' },
         goodName: { type: 'string', description: 'predict Trade only: WHICH route to evaluate (from tradeRoutes)' },
         deposit: { type: 'number', description: 'predict Trade only: upfront budget (must be > 0)' },
         duration: { type: 'number', description: 'predict Mine/Salvage only: task hours (optional)' },
@@ -201,7 +206,7 @@ export function registerFleetTools(
             '+ current-sector numbers; no depth sampling, no long per-action prose). Answers "what can ' +
             'it do now". The identity fields are copied verbatim from the full card (same source).',
         },
-        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout' },
+        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel (Travel predict: box = 1x1 destination, ship need NOT be inside)' },
       },
       output: {
         schema: { type: 'string' },
@@ -265,14 +270,19 @@ export function registerFleetTools(
         'minimal params -- NO auto box, NO auto params, NO auto retreat). action is one of Mine, ' +
         'Salvage, Trade, Travel, Sell, Scout. You MUST provide the explicit box (x, y + size, or ' +
         'sizeX+sizeY for Trade) and, for Trade, an explicit goodName (a route name from ' +
-        'fleet_query what=tradeRoutes) and deposit > 0. The command is ASYNCHRONOUS: the captain ' +
+        'fleet_query what=tradeRoutes) and deposit > 0. Travel needs NO size: x/y is the destination ' +
+        'sector (the box is 1x1 and the ship does NOT have to be inside it). ★ The receipt carries ' +
+        'risk:{known, attackChance, baseAttackChance, riskKind, ...} = the ambush assessment of THIS ' +
+        'order, computed by the SAME code as fleet_query what=predict (so it matches what you predicted; ' +
+        'for Travel it is the whole-trip ambush chance). known=false means the game could NOT compute it: ' +
+        'attackChance is then null -- never read that as 0%. The command is ASYNCHRONOUS: the captain ' +
         'takes the ship out of the player sector and is unreachable while working.',
       parameters: {
         ship: { type: 'string', required: true, description: 'ship name (must be on the Copilot roster)' },
         action: { type: 'string', required: true, description: 'Mine | Salvage | Trade | Travel | Sell | Scout' },
-        x: { type: 'number', description: 'target sector x (required; box centre for work actions)' },
-        y: { type: 'number', description: 'target sector y (required)' },
-        size: { type: 'number', description: 'area edge length (required for work actions unless sizeX+sizeY given)' },
+        x: { type: 'number', description: 'target sector x (required; box centre for work actions; for Travel = destination)' },
+        y: { type: 'number', description: 'target sector y (required; for Travel = destination)' },
+        size: { type: 'number', description: 'area edge length (required for work actions; NOT needed for Travel -- its box is the 1x1 destination)' },
         sizeX: {
           type: 'number',
           description:
@@ -300,7 +310,7 @@ export function registerFleetTools(
           type: 'array',
           items: { type: 'string' },
           description:
-            'Trade only: escort ship names. HARD RULE: an escort must be in the SAME SECTOR as ' +
+            'Trade/Travel: escort ship names. HARD RULE: an escort must be in the SAME SECTOR as ' +
             'the action ship, otherwise it cannot take part.',
         },
       },
@@ -318,7 +328,8 @@ export function registerFleetTools(
         sizeY?: number
         duration?: number
       }) {
-        const r = await ask(peer, 'order', args, opts.orderTimeoutSec ?? 30)
+        // ★ 60s：order 现在**同时**为回执算一次风险预测（= predict 同口径 ✓）—— Travel 还要先算航线分析 ✓
+        const r = await ask(peer, 'order', args, opts.orderTimeoutSec ?? 60)
         if (!r.ok) return `order failed: ${r.why ?? 'unknown'}`
         return `ordered: ${args.ship} -> ${args.action}\n${text(r.data)}`
       },
