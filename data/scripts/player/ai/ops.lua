@@ -16,7 +16,9 @@ package.path = package.path .. ";data/scripts/?.lua"
 --       拿数字去 find("InBackground") 必然判错
 --   * 船长：`ShipDatabaseEntry:getCaptain()` —— ★ 实测在 **entry** 上可用（captain=yes）
 --     ✗ 不可用：`entry:getNumMiningTurrets()`（这个名字不存在，实测 mine=nil）
---   * 炮塔：`{entity:getTurrets()}` —— ★ 原版 `entity.lua:100`，要拿**实体**而不是 entry
+--   * 炮塔/舰载机/鱼雷：★ 走 `lib/copilot/card.lua` 的 `equipmentFacts`（单一口径 ✓）
+--     ✗ 旧的 `{entity:getTurrets()}` / `select("#", entry:getTurrets())` 都是**错的** ✗→✓
+--       后者恒等于 1（getTurrets 返回一张表，不是一个多返回值 ✗），见 card.lua 的实测注释 ✓
 --   * 采矿能力：原版靠命令的 `getMiningProperties()` 的 `rawMining/refinedMining` 判
 --     （`minecommand.lua:466`）→ 本层不重复实现，交给游戏自己的 isShipUsable 校验
 --
@@ -124,11 +126,35 @@ function CopilotOps.capabilityCard(player, name)
     card.hasCaptain = (okC and captain ~= nil)
     card.captainProbe = okC and "ok" or tostring(captain)
 
-    -- 炮塔：原版在**实体**上取（entity.lua:100）。entry 上没有就只报探测结果，
-    -- 不当硬判据用。
-    local okT, turrets = probe(entry, "getTurrets")
-    card.turretProbe = okT and "ok" or tostring(turrets)
-    card.turretCount = okT and select("#", turrets) or nil
+    -- 炮塔 / 舰载机 / 鱼雷：★ 2026-10-17 起**不再自己算** ✗→✓
+    --   旧写法 `card.turretCount = select("#", probe(entry, "getTurrets"))` 是错的 ✗：
+    --   `ShipDatabaseEntry:getTurrets()` 返回**一张表**（文档 ShipDatabaseEntry [Server].html:877-890
+    --   原话 "the turrets are the keys" ✓），所以 `select("#", …)` **恒等于 1** ✗✓。
+    --   现在统一调共享卡片里的 `M.equipmentFacts`（同一份口径 ✓，见 lib/copilot/card.lua ✓）。
+    local eqCard, eqNotes = {}, {}
+    local okEq, eqErr = pcall(function()
+        local Card = include("copilot/card")
+        Card.equipmentFacts(player, entry, eqCard, eqNotes)
+    end)
+    if okEq then
+        card.turretCount = eqCard.turretCount
+        card.turretCountKnown = eqCard.turretCountKnown
+        card.turretCategories = eqCard.turretCategories
+        card.armedTurrets = eqCard.armedTurrets
+        card.armedTurretsKnown = eqCard.armedTurretsKnown
+        card.fighters = eqCard.fighters
+        card.armedFighters = eqCard.armedFighters
+        card.fightersKnown = eqCard.fightersKnown
+        card.armedFightersKnown = eqCard.armedFightersKnown
+        card.canFight = eqCard.canFight
+        card.canFightKnown = eqCard.canFightKnown
+        card.liveArmedTurrets = eqCard.liveArmedTurrets
+        card.equipmentProbe = next(eqNotes) ~= nil and eqNotes or nil
+    else
+        card.turretCountKnown = false
+        card.armedTurretsKnown = false
+        card.equipmentProbe = "include('copilot/card').equipmentFacts failed: " .. tostring(eqErr)
+    end
 
     return card
 end
@@ -138,8 +164,22 @@ function CopilotOps.cardSummary(card)
     t[#t + 1] = card.name
     t[#t + 1] = "busy=" .. tostring(card.isBusy) .. "(avail=" .. tostring(card.availability) .. ")"
     t[#t + 1] = "captain=" .. (card.hasCaptain and "yes" or ("no:" .. tostring(card.captainProbe)))
-    t[#t + 1] = "turrets=" .. tostring(card.turretCount)
-        .. ((card.turretProbe ~= "ok") and ("(" .. card.turretProbe .. ")") or "")
+    -- ★ 炮塔：数字只在"确实知道"时才打出来 ✓（不知道就写 ? ✗ 不填 0 ✗）
+    local nT = card.turretCountKnown and tostring(card.turretCount) or "?"
+    local nA = card.armedTurretsKnown and tostring(card.armedTurrets) or "?"
+    local nF = card.fightersKnown and tostring(card.fighters) or "?"
+    local nAF = card.armedFightersKnown and tostring(card.armedFighters) or "?"
+    t[#t + 1] = "turrets=" .. nT .. "(armed=" .. nA .. ")"
+    t[#t + 1] = "fighters=" .. nF .. "(armed=" .. nAF .. ")"
+    t[#t + 1] = "canFight=" .. tostring(card.canFight)
+    if type(card.equipmentProbe) == "table" then
+        local parts = {}
+        for k, v in pairs(card.equipmentProbe) do parts[#parts + 1] = k .. ":" .. tostring(v) end
+        table.sort(parts)
+        t[#t + 1] = "equipProbe={" .. table.concat(parts, "; ") .. "}"
+    elseif card.equipmentProbe ~= nil then
+        t[#t + 1] = "equipProbe=" .. tostring(card.equipmentProbe)
+    end
     return table.concat(t, "  ")
 end
 

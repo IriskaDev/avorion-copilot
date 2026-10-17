@@ -333,7 +333,19 @@ function CopilotLinkIn.onQuery(data)
                     sector = card.sector,
                     hyperspace = card.hyperspace,          -- ★ 护航判据要它 ✓
                     captainClass = card.captainClass,
+                    -- ★★ 装备/武器事实（2026-10-17 加 ✓✓）：**与能力卡同源** ✓
+                    --   口径见 lib/copilot/card.lua 的「装备 / 武器事实」一节 ✓
+                    --   `turretCount` = 已装炮塔总数（旧版恒 1 ✗ 已修 ✓）
                     turretCount = card.turretCount,
+                    turretCountKnown = card.turretCountKnown,
+                    turretCategories = card.turretCategories,
+                    armedTurrets = card.armedTurrets,
+                    armedTurretsKnown = card.armedTurretsKnown,
+                    liveArmedTurrets = card.liveArmedTurrets,
+                    fighters = card.fighters,
+                    armedFighters = card.armedFighters,
+                    canFight = card.canFight,
+                    canFightKnown = card.canFightKnown,
                     freeCargoSpace = card.freeCargoSpace,
                     holdHasGoods = card.holdHasGoods,
                     actions = card.actions,
