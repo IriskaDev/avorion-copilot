@@ -266,6 +266,11 @@ local function targetsTable()
         { key = "salvage", label = "Salvage"%_t },
         { key = "trade",   label = "Trade"%_t },
         { key = "travel",  label = "Travel"%_t },
+        -- ★ 2026-10-17 补全 ✗→✓：面板与 `copilot/goal` 的已知动作必须一致 ✓
+        --   （旧表只有 Mine/Salvage/Trade/Travel 4 条 → Sell/Scout/Refine 在这个循环里根本选不到 ✗）
+        { key = "sell",    label = "Sell"%_t },
+        { key = "scout",   label = "Scout"%_t },
+        { key = "refine",  label = "Refine"%_t },
     }
 end
 
@@ -368,7 +373,9 @@ function CopilotUI.onShipSelected()
 
     local shown = self.shipList:getEntry(3, row)
     local current = ""
-    for _, t in ipairs(TARGETS) do
+    -- ★ 修（2026-10-17）：这里原来读的是**未定义**的全局 `TARGETS` ✗（本文件已改成 `targetsTable()` 工厂 ✓），
+    --   真机点一下船行就会 "bad argument #1 to 'ipairs' (table expected, got nil)" ✗✓。
+    for _, t in ipairs(targetsTable()) do
         if t.label == shown then
             current = t.key
             break
@@ -389,6 +396,7 @@ function CopilotUI.saveShipList()
     local set = {}
     local cfg = {}
     local order = {}
+    local targets = targetsTable()      -- ★ 同上：别再读未定义的全局 TARGETS ✗✓
 
     for i = 0, self.shipList.rows - 1 do
         local name = self.shipList:getEntry(1, i)
@@ -401,7 +409,7 @@ function CopilotUI.saveShipList()
 
             local shown = self.shipList:getEntry(3, i)
             local target = ""
-            for _, t in ipairs(TARGETS) do
+            for _, t in ipairs(targets) do
                 if t.label == shown then
                     target = t.key
                     break

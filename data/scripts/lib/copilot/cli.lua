@@ -1340,6 +1340,7 @@ function self.execute(player, arg, rest)
         --   /copilot goal <船名> <文字...>              设文字目标（最常用 ✓）
         --   /copilot goal <船名> text <文字...>         同上，显式写法
         --   /copilot goal <船名> options Mine,Salvage  设选项目标
+        --   （可选动作 = Goal.KNOWN_ACTIONS：Mine / Salvage / Trade / Travel / Sell / Scout / Refine ✓）
         --   /copilot goal <船名> clear                 清掉
         local player2 = player
         local Goal = include("copilot/goal")
@@ -1388,7 +1389,7 @@ function self.execute(player, arg, rest)
             local good, bad = Goal.sanitizeOptions(opts)
             if #good == 0 then
                 player2:sendChatMessage("Server", ChatMessageType.Warning,
-                    "No known action in that list. Known: Mine, Salvage, Trade, Travel"%_t)
+                    "No known action in that list. Known: Mine, Salvage, Trade, Travel, Sell, Scout, Refine"%_t)
             else
                 Goal.setOptions(player2, ship, good)
                 player2:sendChatMessage("Server", ChatMessageType.Information,

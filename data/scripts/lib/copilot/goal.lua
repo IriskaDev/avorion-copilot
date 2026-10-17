@@ -96,8 +96,10 @@ end
 -- 选项目标的语义（游戏侧只做**合法性**校验 ✓，不做决策 ✓）
 -- ---------------------------------------------------------------------------
 
--- 四条后台命令，见 LLM-OPS.md / TODO.md ✓
-M.KNOWN_ACTIONS = { "Mine", "Salvage", "Trade", "Travel", "None" }
+-- 六条后台命令（+ None），与 `link_in.lua` 的 COMMAND_TYPES **必须一致** ✓
+-- （2026-10-17 补全 ✗→✓：旧表漏了 Sell / Scout / Refine ✗ → 玩家写 `options Sell` 会被判 unknown ✗✓，
+--   于是"满舱先卖"这种正当约束反而把自己卡死 ✓。新增动作时**这张表与 cli 提示一起改** ✓。）
+M.KNOWN_ACTIONS = { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine", "None" }
 
 -- 把选项名规范化（大小写容错：`mine` / `MINE` / `Mine` 都认 ✓）
 function M.normalizeAction(name)
