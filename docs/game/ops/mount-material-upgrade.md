@@ -517,3 +517,22 @@ plan:setBlockType(i, t)          → call=true delta=0（对照组：索引式 s
 但**没有在真船上执行过一次 `confirm`** —— 按“先别动主人的船”的规矩，这一步留给
 玩家自己在一艘**空闲测试船**上点一次确认（面板里两次点击）来收尾。
 
+### C.5 要不要重启游戏？—— 命令不用，**面板 UI 要一次**
+
+| 改什么 | 生效方式 |
+|---|---|
+| `lib/copilot/mounts.lua`、`lib/copilot/cli.lua`（命令层逻辑） | **`/copilot reload` 即可** ✓（实测 `Copilot reload: 9 ok, 0 failed`，随后命令立刻给出新报价） |
+| `player/ui/panel.lua` 的**客户端界面** | ✗ 要**重启一次游戏** |
+
+实测依据：`/copilot reload` 之后主面板照常打开，但**没有**新增的
+「Turret base materials...」按钮 —— 命令脚本的 VM 与服务端玩家脚本的 VM 在服务端进程里，
+**客户端进程的 UI 代码不在它的覆盖范围**；而且面板是 `builtOnce` 只建一次的
+（`UIElement` 没有销毁 API，不能重建 ✗）。
+
+顺带修掉的**既有问题**：`panel.lua` 顶层原来有 `"Idle"%_t` 这样的写法，`load()` 重执行时
+`%_t` 是**取模运算** → 每次 reload 都报
+`attempt to perform arithmetic on a string value` ✗（之前一直 8 ok 1 failed）。
+把这两个顶层表（`STATE_TEXT`、`TARGETS`）移进函数体后，`panel.lua` 本身可以重执行了
+（`9 ok, 0 failed` ✓），只是**客户端那份副本**仍要等重启才会换成新代码。
+
+

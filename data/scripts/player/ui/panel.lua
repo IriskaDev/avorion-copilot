@@ -42,16 +42,21 @@ local PANEL_HEIGHT = 500
 -- Human readable version of Copilot.state (published by the server side brain).
 -- Translated through the game's own language setting: %_t looks the string up in
 -- data/localization/<language>.po, and this mod ships its own zh.po for that.
-local STATE_TEXT =
-{
-    idle    = "Idle"%_t,
-    combat  = "Engaging hostiles"%_t,
-    mine    = "Mining asteroids"%_t,
-    salvage = "Salvaging wreckage"%_t,
-    full    = "Cargo full, parked"%_t,
-    explore = "Jumping to a new sector"%_t,
-    empty   = "Sector cleared, waiting"%_t,
-}
+-- ★ 为什么是函数而不是顶层表：顶层写 `"Idle"%_t` 时，`/copilot reload` 用 load() 重执行
+--   文件体会把它当**取模运算** → "attempt to perform arithmetic on a string value" ✗
+--   （2026-10-17 实测：panel.lua 每次 reload 都挂在这一行）。
+--   移进函数体后，文件体可以安全重执行；真脚本 VM 里由引擎把 %_t 变成本地化字面量 ✓。
+local function stateTextTable()
+    return {
+        idle    = "Idle"%_t,
+        combat  = "Engaging hostiles"%_t,
+        mine    = "Mining asteroids"%_t,
+        salvage = "Salvaging wreckage"%_t,
+        full    = "Cargo full, parked"%_t,
+        explore = "Jumping to a new sector"%_t,
+        empty   = "Sector cleared, waiting"%_t,
+    }
+end
 
 self.window = nil
 self.statusLabel = nil
@@ -253,28 +258,33 @@ end
 
 -- 每艘船的目标选项（第一期）。键是稳定标识，显示名走翻译。
 -- ListBoxEx 放不下下拉框，所以「点击该行」就往后循环一个。
-local TARGETS = {
-    { key = "",        label = "No task assigned"%_t },
-    { key = "mine",    label = "Mine"%_t },
-    { key = "salvage", label = "Salvage"%_t },
-    { key = "trade",   label = "Trade"%_t },
-    { key = "travel",  label = "Travel"%_t },
-}
+-- 同上：顶层带 %_t 的表会让 /copilot reload 失败 → 放进函数体，用到时再建 ✓
+local function targetsTable()
+    return {
+        { key = "",        label = "No task assigned"%_t },
+        { key = "mine",    label = "Mine"%_t },
+        { key = "salvage", label = "Salvage"%_t },
+        { key = "trade",   label = "Trade"%_t },
+        { key = "travel",  label = "Travel"%_t },
+    }
+end
 
 local function targetLabel(key)
-    for _, t in ipairs(TARGETS) do
+    local targets = targetsTable()
+    for _, t in ipairs(targets) do
         if t.key == key then return t.label end
     end
-    return TARGETS[1].label
+    return targets[1].label
 end
 
 local function nextTargetKey(key)
-    for i, t in ipairs(TARGETS) do
+    local targets = targetsTable()
+    for i, t in ipairs(targets) do
         if t.key == key then
-            return TARGETS[(i % #TARGETS) + 1].key
+            return targets[(i % #targets) + 1].key
         end
     end
-    return TARGETS[1].key
+    return targets[1].key
 end
 
 -- 每船配置存成 "船名|autopilot|目标" 每行一条，和名单一样是纯字符串
@@ -530,7 +540,7 @@ function CopilotUI.refresh()
     if self.stateLabel then
         local text = "-"
         if self.enabled and self.state then
-            text = STATE_TEXT[self.state] or tostring(self.state)
+            text = stateTextTable()[self.state] or tostring(self.state)
         end
         self.stateLabel.caption = text
     end
