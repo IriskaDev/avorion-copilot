@@ -243,8 +243,19 @@ export function readDecisionFile(limit) {
 // ---------------------------------------------------------------------------
 /** 从一次 `ask(peer,'order',…)` 的结果里取出结构化回执 ✓ */
 function receiptOf(ord, at) {
-    if (!ord.ok)
-        return { at, accepted: false, executed: false, error: ord.why ?? 'unknown' };
+    if (!ord.ok) {
+        // ★★ 超时/断连 = **没拿到确认**，不是"被拒" ✗（order 是 fire-and-forget，游戏可能已经在跑 ✓）。
+        //   `no response` = sweepTimeouts 超时 ✓；`connection lost` = 连接断开 ✓。
+        //   两者都**不算失败** → 标 unconfirmed，绝不回投 ✓（见 OrderReceipt.unconfirmed ✓）。
+        const why = ord.why ?? 'unknown';
+        if (why === 'no response' || why === 'connection lost') {
+            return {
+                at, accepted: false, executed: false, unconfirmed: true,
+                note: `order sent, no ack (${why}) — verify next round via list/ship busy+cargo`,
+            };
+        }
+        return { at, accepted: false, executed: false, error: why };
+    }
     const d = (ord.data ?? {});
     const accepted = d.accepted !== false;
     const executed = d.executed !== false;
@@ -253,8 +264,10 @@ function receiptOf(ord, at) {
         return { at, accepted: true, executed: true, note };
     return { at, accepted, executed, error: note ?? 'order not executed', note };
 }
-/** 这单算不算失败（被拒 / 未执行都算 ✗） */
+/** 这单算不算失败（被拒 / 未执行都算 ✗；**未确认不算** ✓ —— 见 OrderReceipt.unconfirmed ✓） */
 function receiptFailed(r) {
+    if (r.unconfirmed === true)
+        return false;
     return !(r.accepted === true && r.executed === true);
 }
 /** 失败回执的**短标签**（进块里给决策者看的那句「被拒（…）/未执行（…）」✓） */
@@ -295,6 +308,8 @@ export function renderPrevResult(rec) {
     if (rec.receipt !== undefined) {
         if (rec.receipt.accepted && rec.receipt.executed)
             return `${tag}${action}${loc}：成功 ✓`;
+        if (rec.receipt.unconfirmed === true)
+            return `${tag}${action}${loc}：已发送，未确认（${rec.receipt.note ?? ''}）`;
         return `${tag}${action}${loc}：${receiptFailText(rec.receipt)}`;
     }
     // ★ 旧记录没有 receipt → 从 orderResult 反推（向后兼容 ✓）
@@ -420,6 +435,13 @@ function parseDecision(text) {
         const v = parseNumberField(sizeY);
         if (v !== undefined && v > 0)
             decision.sizeY = v;
+    }
+    // ★ 正方形边长（与 task.ts 的 validateAnswer 对齐 ✓）：回单/正文只给 `size=15` 时也正确建框 ✓
+    const size = field(text, 'size');
+    if (size !== undefined) {
+        const v = parseNumberField(size);
+        if (v !== undefined && v > 0)
+            decision.size = v;
     }
     // ★ Trade 的预付金（2026-10-17 补 ✗→✓）：tradePlan 已经算好了最优预付金 ✓，
     //   但此前**根本没人把它读出来转发** ✗，于是游戏只能自己猜 ✓。
@@ -610,6 +632,9 @@ function toAnswer(decision, f, raw) {
         params.sizeX = decision.sizeX;
     if (decision.sizeY !== undefined && decision.sizeY > 0)
         params.sizeY = decision.sizeY;
+    // ★ 正方形边长（与 task.ts 的 validateAnswer 对齐 ✓）：游戏侧 onOrder 优先 sizeX+sizeY、其次 size ✓
+    if (decision.size !== undefined && decision.size > 0)
+        params.size = decision.size;
     if (decision.duration !== undefined)
         params.duration = decision.duration;
     if (decision.safeMode !== undefined)
@@ -1879,6 +1904,13 @@ export function apply(ctx, config = {}) {
                     hours, sector: sectorKey,
                 });
                 logger.info(`avorion-copilot: 已下单 ${ship} -> ${a.action} → ${JSON.stringify(ord.data)}`);
+            }
+            else if (receipt.unconfirmed === true) {
+                // ★★ 假阴性（超时/断连）：order 已送出、游戏可能已经在跑 ✗✓ ——
+                //   **绝不判失败、绝不回投** ✗（否则同一艘船两条矛盾命令 ✓）。
+                //   落一条 WARN（可见 ✓）并写清"已发送未确认"，下一轮用 list/ship 的 busy/舱量核实 ✓。
+                rec.orderResult = { sent: true, unconfirmed: true, why: ord.why };
+                logger.warn(`avorion-copilot: ${ship} -> ${a.action} **已发送，未确认**（${receipt.note ?? ord.why ?? ''}）→ 不回投 ✓，下一轮用 list/ship 核实 busy/舱量 ✓`);
             }
             else {
                 logger.warn(`avorion-copilot: 下单失败 ${receipt.error ?? ord.why ?? ''}`);

@@ -197,6 +197,14 @@ export interface OrderReceipt {
     at: string;
     accepted: boolean;
     executed: boolean;
+    /**
+     * ★★ 已发送但没收到确认（order RPC 超时回 `no response` / 断连回 `connection lost`）✓✓。
+     *   这是**假阴性** ✗：order 是 fire-and-forget，游戏可能已经在跑了 ✓（实机铁证：
+     *   下单 RPC 超时回 no response，船其实已经从 (-381,57) 挪到 (-373,60) ✓✓）。
+     *   → **绝不据此判失败、绝不回投** ✗（回投 = 同一艘船两条矛盾命令 ✗）；
+     *   下一轮用 list/ship 的 busy/舱量来核实真实结果 ✓。
+     */
+    unconfirmed?: boolean;
     error?: string;
     note?: string;
 }

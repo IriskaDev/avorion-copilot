@@ -263,6 +263,14 @@ export interface OrderReceipt {
   at: string
   accepted: boolean
   executed: boolean
+  /**
+   * ★★ 已发送但没收到确认（order RPC 超时回 `no response` / 断连回 `connection lost`）✓✓。
+   *   这是**假阴性** ✗：order 是 fire-and-forget，游戏可能已经在跑了 ✓（实机铁证：
+   *   下单 RPC 超时回 no response，船其实已经从 (-381,57) 挪到 (-373,60) ✓✓）。
+   *   → **绝不据此判失败、绝不回投** ✗（回投 = 同一艘船两条矛盾命令 ✗）；
+   *   下一轮用 list/ship 的 busy/舱量来核实真实结果 ✓。
+   */
+  unconfirmed?: boolean
   error?: string
   note?: string
 }
@@ -443,7 +451,19 @@ export function readDecisionFile(limit: number): DecisionRecord[] {
 
 /** 从一次 `ask(peer,'order',…)` 的结果里取出结构化回执 ✓ */
 function receiptOf(ord: { ok: boolean; data?: any; why?: string }, at: string): OrderReceipt {
-  if (!ord.ok) return { at, accepted: false, executed: false, error: ord.why ?? 'unknown' }
+  if (!ord.ok) {
+    // ★★ 超时/断连 = **没拿到确认**，不是"被拒" ✗（order 是 fire-and-forget，游戏可能已经在跑 ✓）。
+    //   `no response` = sweepTimeouts 超时 ✓；`connection lost` = 连接断开 ✓。
+    //   两者都**不算失败** → 标 unconfirmed，绝不回投 ✓（见 OrderReceipt.unconfirmed ✓）。
+    const why = ord.why ?? 'unknown'
+    if (why === 'no response' || why === 'connection lost') {
+      return {
+        at, accepted: false, executed: false, unconfirmed: true,
+        note: `order sent, no ack (${why}) — verify next round via list/ship busy+cargo`,
+      }
+    }
+    return { at, accepted: false, executed: false, error: why }
+  }
   const d = (ord.data ?? {}) as Record<string, unknown>
   const accepted = d.accepted !== false
   const executed = d.executed !== false
@@ -452,8 +472,9 @@ function receiptOf(ord: { ok: boolean; data?: any; why?: string }, at: string): 
   return { at, accepted, executed, error: note ?? 'order not executed', note }
 }
 
-/** 这单算不算失败（被拒 / 未执行都算 ✗） */
+/** 这单算不算失败（被拒 / 未执行都算 ✗；**未确认不算** ✓ —— 见 OrderReceipt.unconfirmed ✓） */
 function receiptFailed(r: OrderReceipt): boolean {
+  if (r.unconfirmed === true) return false
   return !(r.accepted === true && r.executed === true)
 }
 
@@ -496,6 +517,7 @@ export function renderPrevResult(rec: DecisionRecord): string | undefined {
   const tag = decider !== undefined ? `[${decider}] ` : ''
   if (rec.receipt !== undefined) {
     if (rec.receipt.accepted && rec.receipt.executed) return `${tag}${action}${loc}：成功 ✓`
+    if (rec.receipt.unconfirmed === true) return `${tag}${action}${loc}：已发送，未确认（${rec.receipt.note ?? ''}）`
     return `${tag}${action}${loc}：${receiptFailText(rec.receipt)}`
   }
   // ★ 旧记录没有 receipt → 从 orderResult 反推（向后兼容 ✓）
@@ -557,6 +579,11 @@ interface Decision {
    *  tradePlan 的每个候选框都带 shape / sizeX / sizeY ✓（缺省则游戏侧按 size 取正方形 ✓）。 */
   sizeX?: number
   sizeY?: number
+  /** ★ 正方形边长（2026-10-17 补 ✓）：回单只给 `size=15` 时也能正确建框 ✓。
+   *   与 task.ts 的 validateAnswer 同款：`size` 与 `sizeX/sizeY` **都**解析并透传 ✗✓
+   *   （游戏侧 onOrder 优先 sizeX+sizeY，其次 size —— 见 link_in.lua ✓）。
+   *   此前这里**漏了 size** ✗ → 单发模型答 `size=15` 会被静默丢掉 → order 缺框被拒 ✗✓。 */
+  size?: number
   duration?: number
   /** ★ Mine/Salvage 专用：安全模式（原版把伏击概率 ×0.1 ✓）—— 2026-10-17 补 ✓ */
   safeMode?: boolean
@@ -643,6 +670,9 @@ function parseDecision(text: string): Decision {
   if (sizeX !== undefined) { const v = parseNumberField(sizeX); if (v !== undefined && v > 0) decision.sizeX = v }
   const sizeY = field(text, 'sizeY')
   if (sizeY !== undefined) { const v = parseNumberField(sizeY); if (v !== undefined && v > 0) decision.sizeY = v }
+  // ★ 正方形边长（与 task.ts 的 validateAnswer 对齐 ✓）：回单/正文只给 `size=15` 时也正确建框 ✓
+  const size = field(text, 'size')
+  if (size !== undefined) { const v = parseNumberField(size); if (v !== undefined && v > 0) decision.size = v }
 
   // ★ Trade 的预付金（2026-10-17 补 ✗→✓）：tradePlan 已经算好了最优预付金 ✓，
   //   但此前**根本没人把它读出来转发** ✗，于是游戏只能自己猜 ✓。
@@ -894,6 +924,8 @@ function toAnswer(decision: Decision, f: DecideFacts, raw: string): DecideAnswer
   // ★ Trade 的框形状（两个边长分别传 ✓ —— 29x11 / 11x29 不是正方形 ✗）
   if (decision.sizeX !== undefined && decision.sizeX > 0) params.sizeX = decision.sizeX
   if (decision.sizeY !== undefined && decision.sizeY > 0) params.sizeY = decision.sizeY
+  // ★ 正方形边长（与 task.ts 的 validateAnswer 对齐 ✓）：游戏侧 onOrder 优先 sizeX+sizeY、其次 size ✓
+  if (decision.size !== undefined && decision.size > 0) params.size = decision.size
   if (decision.duration !== undefined) params.duration = decision.duration
   if (decision.safeMode !== undefined) params.safeMode = decision.safeMode    // ★ Mine/Salvage ✓
   // ★ Sell 的选货（2026-10-17 补 ✓）：游戏侧读 data.goodsToSell ✓（link_in.lua:483-516 ✓）。
@@ -2248,6 +2280,12 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           hours, sector: sectorKey,
         })
         logger.info(`avorion-copilot: 已下单 ${ship} -> ${a.action} → ${JSON.stringify(ord.data)}`)
+      } else if (receipt.unconfirmed === true) {
+        // ★★ 假阴性（超时/断连）：order 已送出、游戏可能已经在跑 ✗✓ ——
+        //   **绝不判失败、绝不回投** ✗（否则同一艘船两条矛盾命令 ✓）。
+        //   落一条 WARN（可见 ✓）并写清"已发送未确认"，下一轮用 list/ship 的 busy/舱量核实 ✓。
+        rec.orderResult = { sent: true, unconfirmed: true, why: ord.why }
+        logger.warn(`avorion-copilot: ${ship} -> ${a.action} **已发送，未确认**（${receipt.note ?? ord.why ?? ''}）→ 不回投 ✓，下一轮用 list/ship 核实 busy/舱量 ✓`)
       } else {
         logger.warn(`avorion-copilot: 下单失败 ${receipt.error ?? ord.why ?? ''}`)
       }
