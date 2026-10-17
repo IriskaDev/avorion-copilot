@@ -100,6 +100,7 @@ export function renderTaskBlock(req) {
     L.push('  · {what:"sectorFacts", x, y} → 星区事实');
     L.push('  · {what:"tradeRoutes", ship, x, y, sizeX, sizeY} → 框内贸易路线');
     L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测');
+    L.push('  · 侦察覆盖：{what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21} → 框内未探索/已探索/总数 + revealsNothingNew（unknownCount==0 → 揭不出新地图）');
     L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan');
     if (req.goalOptions.length > 0) {
         L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（★ 只有这些 + None ✓）`);

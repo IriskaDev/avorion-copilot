@@ -136,7 +136,11 @@ export function registerFleetTools(
         'about any sector (pass x,y). ★ what=predict is the CORE computation atom: ONE box (x,y,sizeX,' +
         'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout) + that action minimal params -> the ' +
         'prediction numbers (risk + value) for THAT box only; batch via boxes=[...] (N<=24, each box ' +
-        'independent). ★ what=tradeRoutes returns the trade routes inside ONE box + per-good numbers ' +
+        'independent). ★ Scout predict returns value.unknownCount/knownCount/totalSectors (unexplored/' +
+        'explored/total sectors in that box) + value.revealsNothingNew (true => the box has no ' +
+        'unexplored sectors, reveals no new map) + box.containsShip; the Scout box is 21x21 (vanilla ' +
+        'scoutcommand getAreaSize). ★ what=tradeRoutes returns the trade routes inside ONE box + ' +
+        'per-good numbers ' +
         '(no sorting, no recommendation). The old plan queries -- tradePlan | minePlan | salvagePlan | ' +
         'sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
