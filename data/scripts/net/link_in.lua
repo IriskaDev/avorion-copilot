@@ -519,6 +519,62 @@ local function buildAreaWH(cx, cy, width, height)
 end
 
 
+-- ★★★ 回执里的「**这一次下单**的伏击风险评估」（2026-10-17 主人钦点 ✓✓）
+--
+-- 为什么要有它：`order` 过去只回「分析已发起，6 秒后下令」✗ —— 决策者**看不到**这单到底多险，
+--   而游戏侧**一定算过**这个数 ✓（`startCommand` 之前必须先有区域分析 ✓）。主人点出：
+--   「你发布旅行命令时，是会有个遇伏击评估的」✓ —— 那个数必须露出来 ✓✓。
+--
+-- ★ 唯一真相来源 = `predict` ✓✓（**同一份代码**、同一批口径函数 ✓）：
+--   `order` 的 risk 与 `predict` 的 risk **逐字相同**（harness 里有对拍断言 ✓），
+--   所以决策者「下单前查到的数」与「回执里的数」不会各说各话 ✓✓。
+--   **绝不在这里自造阈值/自算概率** ✗（那就会出现两套口径 ✓✗）。
+--
+-- ★ 它**只读、不改单** ✗✓：订单参数在本函数被调用**之前**就已经定死并排进队列 ✓ ——
+--   算出来的数只进回执与 trace 流水，**绝不**用来改选/补参/退避 ✓（原子化要求 ✓）。
+--
+-- ★ 算不出来时：`known=false` + `unknownReason`，`attackChance=nil` ✓ ——
+--   **绝不填 0 装懂** ✗✓（0 = "游戏说不会遇到伏击"，和"游戏没算出来"是两回事 ✓）。
+local function orderRiskOf(player, ship, action, area, config)
+    local function unknown(reason)
+        return {
+            known = false,
+            attackChance = nil,
+            baseAttackChance = nil,
+            baseAttackChanceKnown = false,
+            riskKind = nil,
+            unknownReason = tostring(reason),
+        }
+    end
+
+    -- ★ 框心（predict 的 x/y 是**框心**，而 order 的 area 是 lower/upper ✗）——
+    --   反算必须与 buildAreaWH 的口径一致：center = lower + floor((w-1)/2) ✓
+    local w = area.upper.x - area.lower.x + 1
+    local h = area.upper.y - area.lower.y + 1
+    local cx = area.lower.x + math.floor((w - 1) / 2)
+    local cy = area.lower.y + math.floor((h - 1) / 2)
+
+    local okP, ok, r, why = pcall(function()
+        return self.predict(player, {
+            what = "predict", ship = ship, action = action,
+            x = cx, y = cy, sizeX = w, sizeY = h,
+            duration = config.duration,
+            safeMode = config.safeMode,
+            escorts = config.escorts,
+            goodName = config.goodName,
+            deposit = config.deposit,
+            goodsToSell = config.goodsToSell,
+        })
+    end)
+    if not okP then return unknown("predict pcall: " .. tostring(ok)) end
+    if ok ~= true then
+        return unknown(tostring(r) .. ((type(why) == "string") and (" — " .. why) or ""))
+    end
+    if type(r) ~= "table" then return unknown("predict returned no table: " .. tostring(r)) end
+    if type(r.risk) == "table" then return r.risk end
+    return unknown(r.error or r.predictionFailed or "predict returned no risk")
+end
+
 function CopilotLinkIn.onOrder(data)
     data = data or {}
     local ship = data.ship
@@ -685,6 +741,19 @@ function CopilotLinkIn.onOrder(data)
         "onOrder 真下单：%s action=%s area=[%d,%d]-[%d,%d] duration=%s（分析已发起，6 秒后下令 ✓）",
         ship, action, area.lower.x, area.lower.y, area.upper.x, area.upper.y, tostring(config.duration)))
 
+    -- ★★★ 回执风险（2026-10-17 主人要求 ✓✓）：订单**已经排进队列**才开始算 ✓ ——
+    --   所以这段再慢/再出错都**不会**影响下单 ✓（只影响回执里的那个数 ✓）。
+    local risk = orderRiskOf(player, ship, action, area, config)
+
+    -- ★ 同一个数写进 **Trace 流水** ✓（`rpc_trace.log`，主人可以在场看到 ✓✓）
+    CopilotRpc.trace(string.format(
+        "onOrder 风险：%s action=%s attackChance=%s baseAttackChance=%s riskKind=%s%s",
+        ship, action,
+        (risk.attackChance ~= nil) and string.format("%.2f", risk.attackChance) or "nil(未知)",
+        (risk.baseAttackChance ~= nil) and string.format("%.2f", risk.baseAttackChance) or "nil(未知)",
+        tostring(risk.riskKind or "nil"),
+        (risk.known == true) and "" or ("  未知原因=" .. tostring(risk.unknownReason))))
+
     return true, {
         accepted = true,
         executed = true,
@@ -692,6 +761,11 @@ function CopilotLinkIn.onOrder(data)
         action = action,
         area = area,
         config = config,
+        -- ★ 这次下单的伏击风险（与 `predict` **同一份代码** ✓，见 orderRiskOf 的注释 ✓）
+        risk = risk,
+        riskNote = "★ 与本单调用 predict 拿到的数**逐字相同** ✓（同一份代码 ✓）；" ..
+            "Travel 的数是**整段航程**被伏击的概率 ✓（原版 Travel 命令自带评估 ✓）；" ..
+            "known=false 表示游戏侧没算出来 → **没有数字**，别当 0 用 ✗✓",
         note = "area analysis started; startCommand is queued ~6s later",
         count = self.orders,
     }
@@ -4761,13 +4835,27 @@ end
 --   Mine/Salvage → `scanJobArea`（= jobPlan 的口径 ✓）
 --   Sell → `scanSellArea`（= sellPlan 的口径 ✓）
 --   Scout → `scanScoutArea`（= scoutPlan 的口径 ✓）
+--   Travel → `run` + `command:calculatePrediction`（= 原版 Travel 命令**自己的**评估 ✓，见下 ✓）
+--
+-- ★★ Travel 的**例外**（2026-10-17 主人点出 ✓✓）：
+--   Travel 的框**不是工作区、是 1×1 终点** ✓ —— 船当然不在框里 ✓，
+--   原版也明说不要求（`travelcommand.lua:472 isShipRequiredInArea → false` ✓）。
+--   所以 **只有 Travel** 跳过 `SHIP_NOT_IN_AREA` 这道闸 ✓；
+--   它的风险 = **整段航程**被伏击的概率 ✓（原版 Travel 命令自带评估 ✓），
+--   口径：`travelcommand.lua:552-577 calculateAttackProbability`（逐星区 → 船/船长强度 → swiftness ✓）。
+--   其余动作的框就是工作区，**必须含船**（原版硬约束 `simulation.lua:546` ✓）—— 这条**没变** ✗✓。
 --
 -- 入参：
 --   单框  {what="predict", ship, action, x, y, sizeX, sizeY, duration?, safeMode?,
---          escorts[]?, goodName?, deposit?(Trade), goodsToSell?(Sell)}
+--          escorts[]?, goodName?, deposit?(Trade), goodsToSell?(Sell), swiftness?(Travel ✓ 0..3 默认 2)}
 --   批量  {what="predict", ship, action, boxes=[{x,y,sizeX,sizeY, …同上…}]}（N≤24 ✓）
 -- 出参（每框）：{ box:{x,y,sizeX,sizeY,lower,upper,containsShip},
---                 risk:{attackChance,baseAttackChance,riskKind}, value:{…按动作口径…} }
+--                 risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown,
+--                       baseAttackChanceUnknownReason?, unknownReason?, riskKind},
+--                 value:{…按动作口径…} }
+--   · known=true 表示 `attackChance` **是游戏算出来的数** ✓；false 时它是 **nil**（**绝不是 0** ✗✓）。
+--   · `baseAttackChance` = **基准**概率（判断「<10% 吗」只看它 ✓）；Travel 只有一个数 →
+--     `baseAttackChanceKnown=false` + 原因 ✓（原版没把 base 单独露出来 ✓）。
 -- 错误串：BAD_REQUEST / NO_POSITION / NO_ANALYSIS_RUN / NO_COMMAND / SHIP_NOT_IN_AREA /
 --          NO_ROUTE / HOLD_EMPTY / BAD_ACTION；预测失败 → 该框 predictionFailed（不中断整批 ✓）
 
@@ -4787,7 +4875,9 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         upper = { x = area.upper.x, y = area.upper.y },
         containsShip = containsShip,
     }
-    if not containsShip then
+    -- ★ Travel 例外：它的框是 **1×1 终点** ✓（原版 travelcommand.lua:472 isShipRequiredInArea=false ✓）；
+    --   其余动作的框是工作区，**必须含船**（simulation.lua:546 ✓）。
+    if not containsShip and action ~= "Travel" then
         return { box = boxInfo, error = "SHIP_NOT_IN_AREA", value = nil, risk = nil }
     end
 
@@ -4861,8 +4951,10 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         return {
             box = boxInfo,
             risk = {
+                known = true,
                 attackChance = cand.attackChanceEffective,
                 baseAttackChance = cand.attackChance,
+                baseAttackChanceKnown = true,
                 attackChanceWithEscorts = cand.attackChanceWithEscorts,
                 riskKind = "tradeAmbushChance(whole task, this box)",
             },
@@ -4960,8 +5052,10 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         return {
             box = boxInfo,
             risk = {
+                known = true,
                 attackChance = best.chance,
                 baseAttackChance = best.baseAttackChance,
+                baseAttackChanceKnown = true,
                 riskKind = "jobAmbushChance(whole task, this box, this parameter set)",
             },
             value = value,
@@ -5006,8 +5100,10 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         return {
             box = boxInfo,
             risk = {
+                known = true,
                 attackChance = cand.attackChance,
                 baseAttackChance = cand.attackChance,
+                baseAttackChanceKnown = true,
                 riskKind = "sellAmbushChance(whole task, this box)",
             },
             value = {
@@ -5049,8 +5145,10 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         return {
             box = boxInfo,
             risk = {
+                known = true,
                 attackChance = entry.attackChance,
                 baseAttackChance = entry.attackChance,
+                baseAttackChanceKnown = true,
                 riskKind = "scoutAmbushChance(whole task, this box)",
             },
             value = {
@@ -5076,8 +5174,96 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
             },
         }
 
+    elseif action == "Travel" then
+        -- ★★★ Travel 的风险 = **整段航程**被伏击的概率（2026-10-17 主人钦点 ✓✓）
+        --   原版口径（实读 ✓）：
+        --     ① `travelcommand.lua:109-137 getAreaAnalysisSectors` —— 分析**不是**扫框，
+        --        而是从**船当前位置**算一条 jump path 到 `area.lower`（目的地 ✓），
+        --        所以传 1×1 终点框照样得到整条航线 ✓✓；
+        --     ② `:152-184 onAreaAnalysisSector / calculateFactionAreaAttackProbability`
+        --        —— 逐星区的「会不会在这儿被伏击」：无人区 0.5 / 交战中 0.4（外围）~1.0（中央）/
+        --        非交战 0.0（中央）~0.3（外围）✓；
+        --     ③ `:552-577 calculateAttackProbability` —— 逐星区相乘（1-∏(1-p)），
+        --        再乘船+船长强度系数（`calculateShipAndCaptainStrengthValues :251-354`）
+        --        与 swiftness（`:570-572`），最后 `min(1, max(0, ·))` ✓✓。
+        --   → 这里**原样调它**，返回的就是**游戏自己的那个数** ✓（不重算、不改写 ✗）。
+        local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+            return run(player.index, ship, ctype, area, player.index)
+        end)
+        if not okRun then
+            return { box = boxInfo, error = "area analysis failed: " .. tostring(rShipName) }
+        end
+        local results = rResults or rArea
+        if type(rArea) == "table" then area = rArea end
+        if type(results) ~= "table" then
+            return { box = boxInfo, error = "area analysis returned nothing" }
+        end
+        area.analysis = results
+
+        local route = (type(results.route) == "table") and results.route or {}
+        if #route == 0 then
+            return { box = boxInfo,
+                     predictionFailed = "no jump route found (TravelCommand:getAreaAnalysisSectors returned an empty route)",
+                     value = nil, risk = nil }
+        end
+
+        local escorts = {}
+        if type(b.escorts) == "table" then
+            for _, n in ipairs(b.escorts) do
+                if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
+            end
+        end
+        local swiftness = tonumber(b.swiftness)
+        if swiftness == nil then swiftness = 2 end      -- 原版默认值（travelcommand.lua:533 default = 2 ✓）
+
+        local okP, pred = pcall(function()
+            return command:calculatePrediction(player.index, ship, area,
+                { swiftness = swiftness, escorts = escorts })
+        end)
+        if not (okP and type(pred) == "table") then
+            return { box = boxInfo, predictionFailed = "prediction failed: " .. tostring(pred),
+                     value = nil, risk = nil }
+        end
+        if pred.error ~= nil then
+            return { box = boxInfo, predictionFailed = tostring(pred.error), value = nil, risk = nil }
+        end
+        local chance = (type(pred.attackChance) == "table") and tonumber(pred.attackChance.value) or nil
+        if chance == nil then
+            return { box = boxInfo,
+                     predictionFailed = "TravelCommand:calculatePrediction returned no attackChance",
+                     value = nil, risk = nil }
+        end
+        return {
+            box = boxInfo,
+            risk = {
+                known = true,
+                attackChance = chance,
+                -- ★ 这里**没有** base（原版 `calculateAttackProbability` 只 return 一个 result ✗）——
+                --   拿不到就明说 ✗✓，**绝不**把 attackChance 抄成 base 装懂 ✗✓。
+                baseAttackChance = nil,
+                baseAttackChanceKnown = false,
+                baseAttackChanceUnknownReason =
+                    "TravelCommand:calculateAttackProbability folds captain/escort strength and swiftness " ..
+                    "into ONE number (travelcommand.lua:552-577); vanilla exposes no separate base value",
+                riskKind = "travelRouteAmbushChance(whole trip ship->destination; 原版 Travel 命令自带评估)",
+                escortCount = #escorts,
+            },
+            value = {
+                distance = pred.distance,
+                travelTime = pred.travelTime,           -- 秒 ✓（原版 calculateTravelStats ✓）
+                travelTimeHours = (tonumber(pred.travelTime) ~= nil) and (pred.travelTime / 3600) or nil,
+                swiftness = swiftness,
+                routeSectors = #route,
+                origin = (type(results.origin) == "table")
+                    and { x = results.origin.x, y = results.origin.y } or nil,
+                destination = (type(results.destination) == "table")
+                    and { x = results.destination.x, y = results.destination.y } or nil,
+                boxIsShipWorkspace = false,
+                note = "Travel 的框 = **目的地**（原版只用 area.lower ✓）；船**不需要**在框里 ✓",
+            },
+        }
+
     else
-        return { box = boxInfo, error = "BAD_ACTION: unsupported action " .. tostring(action) }
     end
 end
 
@@ -5090,11 +5276,12 @@ function CopilotLinkIn.predict(player, data)
     end
     local action = data.action
     if type(action) ~= "string" or action == "" then
-        return false, "BAD_REQUEST", "predict needs data.action (Mine | Salvage | Trade | Sell | Scout)"
+        return false, "BAD_REQUEST", "predict needs data.action (Mine | Salvage | Trade | Sell | Scout | Travel)"
     end
     local ctype = COMMAND_TYPES[action]
     if ctype == nil then
-        return false, "BAD_ACTION", "known actions: Mine, Salvage, Trade, Sell, Scout (got " .. tostring(action) .. ")"
+        return false, "BAD_ACTION",
+            "known actions: Mine, Salvage, Trade, Sell, Scout, Travel (got " .. tostring(action) .. ")"
     end
 
     local okPos, px, py = pcall(function() return player:getShipPosition(ship) end)

@@ -1077,7 +1077,7 @@ M.WHATS = {
     "list",             -- ★★ 原子：有哪些船（索引级：name/busy/hasCaptain/sector ✓）—— 不含每船完整状态 ✗
     "fleet", "ship", "goal", "caps",
     "sectorFacts",      -- ★ 任意星区的事实（富饶度/材料概率/环侧/离中心距离 ✓ 2026-10-17 补 ✓）
-    "predict",          -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓）
+    "predict",          -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓；含 Travel ✓）
     "tradeRoutes",      -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序/推荐 ✗）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
@@ -1104,14 +1104,17 @@ M.PLAN_PARAMS = {
 }
 M.PREDICT_PARAMS = {
     ship = "string：必填 ✓（哪艘船 ✓）",
-    action = "string：必填 ✓ —— Mine | Salvage | Trade | Sell | Scout ✓",
-    x = "number：框心绝对星区 x（必填 ✓ —— 不自动选框 ✗）",
-    y = "number：框心绝对星区 y（必填 ✓）",
-    sizeX = "number：框宽（必填 ✓；与 sizeY 一起给就是矩形 ✓）",
-    sizeY = "number：框高（必填 ✓）",
+    action = "string：必填 ✓ —— Mine | Salvage | Trade | Sell | Scout | Travel ✓" ..
+        "（★ Travel 例外：框 = 1×1 目的地，**不要求框含船** ✓，风险 = 整段航程被伏击的概率 ✓；" ..
+        "它**没有** baseAttackChance → baseAttackChanceKnown=false + 原因 ✓）",
+    x = "number：框心绝对星区 x（必填 ✓ —— 不自动选框 ✗；Travel 时 = 目的地星区 x ✓）",
+    y = "number：框心绝对星区 y（必填 ✓；Travel 时 = 目的地星区 y ✓）",
+    sizeX = "number：框宽（必填 ✓；与 sizeY 一起给就是矩形 ✓；Travel 给 1 ✓）",
+    sizeY = "number：框高（必填 ✓；Travel 给 1 ✓）",
     duration = "number：可选 —— Mine/Salvage 时长（小时 ✓）；缺省用原版默认 1 ✓",
     safeMode = "boolean：可选 —— Mine/Salvage 安全模式 ✓",
-    escorts = "array<string>：可选 —— 护航船名 ✓",
+    escorts = "array<string>：可选 —— 护航船名 ✓（Trade/Travel 的风险会因此下降 ✓）",
+    swiftness = "number：可选 —— 仅 Travel（原版 0..3，缺省 2 ✓）；原版评估里它直接改伏击概率 ✓",
     goodName = "string：Trade 必填 ✓（哪条路线 ✓；从 tradeRoutes 拿 ✓）",
     deposit = "number：Trade 必填 ✓（预付金 > 0 ✓）",
     goodsToSell = "array：Sell 可选 ✓（缺省 = 整舱全卖 ✓）",
