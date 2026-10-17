@@ -70,6 +70,7 @@
 | 机制单一来源 / 提示词里已写了什么 | [`../../MECHANICS.md`](../../MECHANICS.md)（权威来源） |
 | 决策变量与陷阱（字段口径核对） | [`../../LLM-OPS.md`](../../LLM-OPS.md) |
 | 提示词插入提案（层①②③怎么分） | [`../../PROMPT-INSERT-PROPOSAL.md`](../../PROMPT-INSERT-PROPOSAL.md) |
+| 以前踩过什么坑 / 决策教训与成功模式（错题本） | [`lessons/README.md`](lessons/README.md) | append-only 案例库，下单前拿不准先翻 |
 
 ## 4. 引用与标记约定
 
