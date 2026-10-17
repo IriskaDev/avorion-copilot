@@ -1257,278 +1257,415 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     logger.info(`avorion-copilot: 为 ${ship} 决策中…`)
     live(`  ├ 开始决策  ${ship}`)
 
-    // ★★ 按主人的架构：DSH **自己**用 RPC 去拉数据 ✓✓（游戏侧只给船名 ✗）
+    // ── ① 轻量预取（毫秒级）：只取 goal ✓✓ ────────────────────────────────
+    //   ★ 会话路径到此为止 ✗✓：船卡 / 舰队 / 计划 / 记忆 / rendezvous 一个都不预取 ✓，
+    //     全留给「单发路径」的惰性预取（见下面 prefetchSingleShot ✓）——
+    //     这样投递任务前的游戏侧总耗时就是毫秒级 ✓（主人"决策中不能操作舰船"的根因 ✓）。
     const goalR = await ask(peer, 'query', { what: 'goal', ship }, 10)
     if (!goalR.ok) {
       logger.warn(`avorion-copilot: 拉目标失败 ${goalR.why ?? ''}`)
       return [false, 'GOAL_QUERY_FAILED', goalR.why ?? 'unknown']
     }
-    const cardR = await ask(peer, 'query', { what: 'ship', ship }, 10)
-    if (!cardR.ok) {
-      logger.warn(`avorion-copilot: 拉能力卡失败 ${cardR.why ?? ''}`)
-      return [false, 'CARD_QUERY_FAILED', cardR.why ?? 'unknown']
-    }
-
     const gd = (goalR.data ?? {}) as Record<string, unknown>
     const facts: DecideFacts = {
       ship,
       goalText: typeof gd.text === 'string' ? gd.text : '',
       goalOptions: Array.isArray(gd.options) ? (gd.options as string[]) : [],
-      card: cardR.data ?? {},
+      card: undefined,   // ★ 船卡延迟到单发路径再取 ✓（会话路径不需要 ✓）
     }
-    // ★★ 贸易船额外拉一份**真实路线表** ✓✓（这样模型才能选对货 ✓）
-    const nameList: string[] = Array.isArray((facts.card as Record<string, unknown>).actionNames)
-      ? ((facts.card as Record<string, unknown>).actionNames as string[])
-      : []
-    const wantsTrade = nameList.includes('Trade') &&
-      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Trade'))
-    // ★★ 2026-10-17：Mine / Salvage 也要拉**真实计划** ✓✓（原来它们是瞎猜的 ✗ —— 见 buildPrompt 的注释）
-    //   与 wantsTrade 同一套判断：卡片有这能力 ✓ 且（没限动作 或 动作被允许）✓
-    const wantsMine = nameList.includes('Mine') &&
-      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Mine'))
-    const wantsSalvage = nameList.includes('Salvage') &&
-      (facts.goalOptions.length === 0 || facts.goalOptions.includes('Salvage'))
-    const jobWants: Array<{ action: 'Mine' | 'Salvage'; what: string }> = []
-    if (wantsMine) jobWants.push({ action: 'Mine', what: 'minePlan' })
-    if (wantsSalvage) jobWants.push({ action: 'Salvage', what: 'salvagePlan' })
-    // ★ 两份都要算时，把候选区域收窄到**最近的 5 个** ✓ ——
-    //   游戏侧 jobPlan 是**同步**算的（会占住游戏主循环 ✓），每个 ≈ 一个 tradePlan 的开销 ✓。
-    //   两份各扫 9 区就是两倍开销；各扫 5 区仍然覆盖船周围的 3×3/十字范围 ✓，够用 ✓。
-    const jobAreaCap = jobWants.length > 1 ? 5 : undefined
-    // ★★ rendezvous 要用的**原始数据**（不改喂给模型的那份 ✓ —— 见下面的 rendezvous 段 ✓）
-    let planRaw: Record<string, unknown> | undefined
-    let fleetShips: Record<string, unknown>[] = []
-    let pilotedName = ''
-    if (wantsTrade || jobWants.length > 0) {
-      // ★★ 算**护航候选** ✓✓
-      //   ★★ 规则以**原版**为准（实读 simulationutility.lua:145-176，2026-10-17 更正 ✗→✓）：
-      //     护卫与行动船的距离 ≤ **护卫自己一跳的航程**（:161 `> reach*reach` → TooFarAway）✓
-      //     —— **不要求同星系** ✗✓（同星系只是它的一个子集 ✓）；
-      //     另外，**不能穿裂隙**（canPassRifts=false）的护卫还须与行动船**同处屏障环一侧**（:165-168）✓。
-      //   ⚠️ 环侧要用 `Balancing_InsideRing` 才判得准 —— 那在**游戏侧** ✗，
-      //      所以这里对两种情况**保守取"同星系"** ✓（同星系必然同环侧 ✓，只会少收、不会错收 ✓）：
-      //        · canPassRifts 明确为 false ✓
-      //        · 拿不到航程（卡片没给 hyperspace ✓）
-      //     并在流水里把"保守未收"的船列出来（人能看到为什么 ✗✓）。
-      try {
-        const fr = await ask(peer, 'query', { what: 'fleet' }, 10)
-        if (fr.ok) {
-          const fd = (fr.data ?? {}) as Record<string, unknown>
-          const shipSector = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
-          const ships = Array.isArray(fd.ships) ? (fd.ships as Record<string, unknown>[]) : []
-          fleetShips = ships                        // ★ rendezvous 的候选池（**别的**星系 ✓）
-          pilotedName = String(fd.piloted ?? '')    // ★ 玩家在开的那条永不碰 ✓
-          const cands: string[] = []
-          const conservative: string[] = []
-          for (const s of ships) {
-            const nm = typeof s.name === 'string' ? s.name : ''
-            const sec = (s.sector ?? {}) as { x?: number; y?: number }
-            if (nm === '' || nm === ship) continue
-            if (nm === String(fd.piloted ?? '')) continue
-            if (s.busy === true) continue
-
-            const sameSector = sec.x === shipSector.x && sec.y === shipSector.y
-            if (sameSector) { cands.push(nm); continue }   // 同星系 → 必然满足原版判据 ✓
-
-            const hs = (s.hyperspace ?? {}) as { reach?: unknown; canPassRifts?: unknown }
-            const reach = typeof hs.reach === 'number' ? hs.reach : undefined
-            if (reach === undefined) { conservative.push(nm + '(航程未知)'); continue }
-            if (hs.canPassRifts === false) {
-              // ★ 2026-10-17 主人实机反馈「她尝试护航但失败」✗ —— 查到根在这里：
-              //   此处**一律保守排除**✗，把**原版允许**的护航白白漏掉 ✓。
-              //   而环侧**游戏侧一直算着** ✓（card.lua:298 用原版 Balancing_InsideRing ✓
-              //   写在卡片的 depth.insideCentreRing ✓）。
-              //   → 两边都拿得到就**按原版判** ✓✓：同环侧=可用 ✓；不同环侧=真不可用 ✓；
-              //     只有**真拿不到**时才退回"保守同星系" ✓（只会多收合法的 ✓，不会错收 ✗）。
-              const ringHere = ((facts.card as Record<string, unknown> | undefined)?.depth as
-                { insideCentreRing?: unknown } | undefined)?.insideCentreRing
-              const ringThere = ((s.depth ?? {}) as { insideCentreRing?: unknown }).insideCentreRing
-              if (typeof ringHere === 'boolean' && typeof ringThere === 'boolean') {
-                if (ringHere !== ringThere) { conservative.push(nm + '(不同环侧)'); continue }
-              } else {
-                conservative.push(nm + '(环侧未知)'); continue
-              }
-            }
-            const dx = (sec.x ?? 0) - (shipSector.x ?? 0)
-            const dy = (sec.y ?? 0) - (shipSector.y ?? 0)
-            if (Math.sqrt(dx * dx + dy * dy) <= reach) cands.push(nm)   // ★ 原版判据 ✓
-          }
-          facts.escortCandidates = cands
-          live(`  ├ 护航候选 ${cands.length} 艘${cands.length > 0 ? ': ' + cands.join(',') : ''}`
-            + `（判据=原版: 距离 ≤ 护卫自己一跳航程 ✓）`
-            + (conservative.length > 0 ? `；保守未收 ${conservative.length} 艘: ${conservative.join(', ')}` : ''))
-        }
-      } catch { /* 拿不到护航候选不影响决策 ✓ */ }
-    }
-
-    // 下面这几段 legacy 计划预取**只服务单发路径**（dossierInputOf 组合成有界档案 ✓）与
-    // 护航 rendezvous（escortNeedOf 读 tradePlan ✓）✗✓ —— **不是**给会话路径用的 ✗：
-    // 会话路径在 task.ts 是"只告知、自己用工具查"（原子接口 list→ship→predict/tradeRoutes ✓），
-    // 一个计划的字节都不进投递块 ✓（delivery-size.mjs 钉住这条 ✓）。
-    // ★★ Mine / Salvage：拉游戏侧算好的真实计划 ✓✓（多区域 × 参数 × 层级加权 ✓）
-    if (jobWants.length > 0) {
-      const planned: Array<{ action: string; plan: Record<string, unknown> }> = []
-      const planFails: Array<{ what: string; why: string }> = []
-      for (const jw of jobWants) {
-        const q: Record<string, unknown> = { what: jw.what, ship, escorts: facts.escortCandidates ?? [] }
-        if (jobAreaCap !== undefined) q.maxAreas = jobAreaCap
-        let jr = await ask(peer, 'query', q, 120)
-        if (!jr.ok) {
-          // ★ 重试一次 ✓（实测: 游戏侧重连会打断在途请求 ✗ → "connection replaced by a newer one" ✓）
-          live(`  ├ ${jw.what} 拉取失败（${String(jr.why ?? '')}）→ 重试一次 ✓`)
-          await new Promise((r) => setTimeout(r, 1500))
-          jr = await ask(peer, 'query', q, 120)
-          if (jr.ok) live(`  ├ ${jw.what} 重试成功 ✓`)
-        }
-        // ★★ 空载荷也必须当"没取到" ✗✓（2026-10-17 实测: 六个计划分支少返回一个 true ✗
-        //    → RPC 的 payload=nil → 工具层看到 `{}` ✓ —— 而模型会把它读成"没有候选" ✗✓✓）
-        const emptyPayload = jr.ok && (jr.data === undefined || jr.data === null || (typeof jr.data === 'object' && Object.keys(jr.data as Record<string, unknown>).length === 0))
-          && (jr.data === undefined || jr.data === null
-            || (typeof jr.data === 'object' && !Array.isArray(jr.data)
-              && Object.keys(jr.data as Record<string, unknown>).length === 0))
-        if (!jr.ok || emptyPayload) {
-          const why = jr.ok ? '游戏回了空载荷（★ 这不代表"没有候选" ✗✓）' : String(jr.why ?? 'unknown')
-          logger.warn(`avorion-copilot: ${ship} 拉 ${jw.what} 失败 ${why}`)
-          live(`  ├ ${jw.what} **没取到** ✗（${why}）`)
-          planFails.push({ what: jw.what, why })
-          continue
-        }
-        const jd = (jr.data ?? {}) as Record<string, unknown>
-        const rec0 = jd.recommendation as Record<string, unknown> | null | undefined
-        if (rec0 !== undefined && rec0 !== null) {
-          // ★ 主人要看的核心数字：**采到最高阶什么**（Mine）/ **多少件装备**（Salvage）
-          const head = jw.action === 'Mine'
-            ? `最高矿 ${String(rec0.topMaterial ?? '?')}（层级 ${String(rec0.topTier ?? '?')}）价值 ${String(rec0.valueLow ?? '?')}~${String(rec0.valueHigh ?? '?')}`
-            : `${String((rec0.items as Record<string, unknown> | undefined)?.to ?? '?')} 件装备 × E[层级] ${String(rec0.rarityTier ?? '?')} = ${String(rec0.valueHigh ?? '?')}`
-          live(`  ├ ${jw.action} 推荐「${String(rec0.tag)}」${head}` +
-            ` 伏击 ${fmtPct(toNum(rec0.attackChance))}（扫 ${String(jd.areasScanned ?? '?')} 区 / ${String(jd.scanMs ?? '?')}ms）` +
-            `${rec0.safeMode === true ? ' [安全模式]' : ''}` +
-            `${Array.isArray(rec0.escorts) && (rec0.escorts as unknown[]).length > 0 ? ' [护航 ' + (rec0.escorts as string[]).join(',') + ']' : ''}`)
-        } else if (typeof jd.riskWarning === 'string' && jd.riskWarning !== '') {
-          live(`  ├ ${jw.action} 无推荐：${jd.riskWarning.slice(0, 160)}`)
-        }
-        planned.push({ action: jw.action, plan: compactJobPlan(jd) })
-        logger.info(
-          `avorion-copilot: ${ship} 已取到 ${jw.what}（扫 ${String(jd.areasScanned ?? 0)} 区 / ` +
-          `${String(jd.scanMs ?? 0)}ms，推荐=${rec0 ? String(rec0.tag) : 'none'}）`,
-        )
-      }
-      if (planned.length > 0) facts.jobPlans = planned
-      if (planFails.length > 0) {
-        facts.planFetchFailures = planFails
-        // ★ 统一成一个**显式事实** ✓（消费方不再各自判空 ✗ —— 那一晚就是这么连崩三次的 ✓）
-        facts.planMissing = planFails.map((pf) => pf.what)
-      }
-
-    // ★★ 船上有货 → 拉一份 Sell 计划 ✓✓（Issue B：被伏击召回后必须先变现才能再贸易 ✓）
-    const cardObj = (facts.card ?? {}) as Record<string, unknown>
-    const holdHasGoods = cardObj.holdHasGoods === true
-    const canSell = nameList.includes('Sell')
-    if (holdHasGoods && canSell) {
-      const sr = await ask(peer, 'query', { what: 'sellPlan', ship }, 120)
-      if (sr.ok) {
-        facts.sellPlan = sr.data as Record<string, unknown>
-        const sd = (sr.data ?? {}) as Record<string, unknown>
-        const rec = sd.recommendation as Record<string, unknown> | undefined
-        live(`  ├ 船上有货（${String(cardObj.cargoUsed ?? '?')} 单位）→ Sell 计划：` +
-          (rec !== undefined
-            ? `期望 C${String(rec.netProfitLow ?? '?')}~${String(rec.netProfitHigh ?? '?')}，伏击 ${String(rec.attackChance ?? '?')}`
-            : `无推荐（${String(sd.riskWarning ?? 'hold empty?')}）`))
-      } else {
-        logger.warn(`avorion-copilot: ${ship} 拉卖货计划失败 ${sr.why ?? ''}`)
-      }
-    }
-    }
-
-    // ★★ 勘察计划：能 Scout 的船**无论舱里有没有货**都拉一份 ✓✓（缺陷①修复）
-    //   之前被包在 `holdHasGoods && canSell` 里 → 侦察船通常空舱 → 永远拿不到 ✗
-    //   → 模型只能猜框 ✗；现在按 `nameList.includes('Scout')` 单独门控 ✓。
-    if (nameList.includes('Scout')) {
-      const cr = await ask(peer, 'query', { what: 'scoutPlan', ship }, 120)
-      if (cr.ok) {
-        facts.scoutPlan = cr.data as Record<string, unknown>
-        const sd = cr.data as Record<string, unknown>
-        const cov = (sd.coverage ?? {}) as Record<string, unknown>
-        const cen = (sd.centre ?? {}) as Record<string, unknown>
-        live('  ├ Scout 事实：未探索 ' + String(cov.unknown ?? '?') + '/' + String(cov.total ?? '?') + '，离中心 ' + String(cen.distance ?? '?') + '，扫 ' + String(sd.areasScanned ?? '?') + ' 区 / ' + String(sd.scanMs ?? '?') + 'ms（推荐 ' + (sd.recommendation ? '有' : '无') + '）')
-      }
-    }
-
-    if (wantsTrade) {
-      const planR = await ask(peer, 'query', { what: 'tradePlan', ship, escorts: facts.escortCandidates ?? [] }, 120)
-      if (planR.ok) {
-        const pd = (planR.data ?? {}) as Record<string, unknown>
-        planRaw = pd                               // ★ rendezvous 只看它 ✓（喂模型的仍是下面那份 ✓）
-        // ★★ 多区域 tradePlan 的结论也进实时流水 ✓（人要看"为什么不推荐" ✓）
-        const plan0 = pd.recommendation as Record<string, unknown> | null | undefined
-        if (plan0 !== undefined && plan0 !== null) {
-          live(`  ├ tradePlan 推荐「${String(plan0.goodName)}」伏击 ${fmtPct(toNum(plan0.attackChance))}` +
-            `（扫 ${String(pd.areasScanned ?? '?')} 区 / ${String(pd.scanMs ?? '?')}ms）`)
-        } else if (typeof pd.riskWarning === 'string' && pd.riskWarning !== '') {
-          live(`  ├ tradePlan 无推荐：${pd.riskWarning.slice(0, 140)}`)
-        }
-        // 只给模型有用的部分：候选表 + 最优计划 ✓（area 里那 289 个坐标太占 token ✗）
-        // ★★ 把**三维搜索**的结果都喂给模型 ✓✓（2026-10-16 修 e3 —— 子代理指出：
-        //   此前只喂了旧的 candidates/best/planReason ✗，于是新加的
-        //   recommendation / areaRanking / orderHint **模型完全看不到** ✗✓，
-        //   多区域搜索白做了 ✓。）
-        //   areaRanking 会裁剪到关键字段，免得把 RPC 响应原样灌进 prompt 撑爆上下文 ✓。
-        const rank = Array.isArray(pd.areaRanking) ? (pd.areaRanking as Record<string, unknown>[]) : []
-        facts.tradeRoutes = {
-          recommendation: pd.recommendation ?? null,
-          riskWarning: pd.riskWarning ?? null,
-          orderHint: pd.orderHint ?? null,
-          scanMs: pd.scanMs ?? null,
-          areasScanned: pd.areasScanned ?? null,
-          areas: rank.slice(0, 9).map((a) => ({
-            // ★★ 2026-10-17：并排比较表要用的字段**一个都不能少** ✓✓
-            //   （x/y = 绝对框心 ✓、shape/sizeX/sizeY = 形状 ✓、origin = 粗扫还是细扫 ✓、
-            //    bestCase* = 最好情况 ✓ —— 之前只挑了几个数字，模型看不到它们 ✗）
-            x: a.x ?? null,
-            y: a.y ?? null,
-            shape: a.shape ?? null,
-            sizeX: a.sizeX ?? null,
-            sizeY: a.sizeY ?? null,
-            origin: a.origin ?? null,
-            offset: (a.area as Record<string, unknown> | undefined)?.offset ?? a.offset ?? null,
-            bestRouteName: a.bestRouteName,
-            netProfitLow: a.netProfitLow,
-            netProfitHigh: a.netProfitHigh,
-            bestCaseLow: a.bestCaseLow ?? null,
-            bestCaseHigh: a.bestCaseHigh ?? null,
-            attackChance: a.attackChance,
-            attackChanceWithEscorts: a.attackChanceWithEscorts ?? null,
-            profitPerSize: a.profitPerSize,
-            flights: a.flights,
-            deposit: a.deposit,
-            escortsNeeded: a.escortsNeeded ?? null,
-            acceptable: a.acceptable,
-          })),
-          candidates: pd.candidates,
-        }
-        logger.info(`avorion-copilot: ${ship} 已取到 ${String(pd.routeCount ?? 0)} 条贸易候选 ✓`)
-      } else {
-        logger.warn(`avorion-copilot: ${ship} 拉贸易候选失败 ${planR.why ?? ''}`)
-      }
-    }
-
-    // ★ 记录②"输入"（主人要看的 ✓）
     rec.goalText = facts.goalText
     rec.goalOptions = facts.goalOptions
-    rec.card = facts.card
-    rec.routes = facts.tradeRoutes
-    live(`  ├ 事实  目标=[${facts.goalText}] 允许=[${facts.goalOptions.join(',') || '不限'}]`)
-    if (facts.tradeRoutes !== undefined) {
-      const cand = (facts.tradeRoutes as Record<string, unknown>).candidates
-      // ⚠️ 原写法会往流水里印一个光秃秃的 `?` ✗（字段名对不上 → undefined ✓ —— 主人截图里那个 ✓）
-      //   → 必须说人话 ✓：没取到就明说"没取到" ✓，并**明说这不代表没有候选** ✓✓
-      live(Array.isArray(cand)
-        ? `  ├ 贸易候选 ${cand.length} 条已喂给模型`
-        : '  ├ 贸易候选：本次没取到候选数组 ✗（**不代表没有路线** ✓ —— 见 facts.planMissing ✓）')
+
+    // ── ② 单发路径的重数据预取（惰性、幂等）──────────────────────────────
+    //   ★★ 这是「单发路径」**专属**的预取 ✗✓ —— 会话路径**绝不**调用它（见分支 ③ ✓）。
+    //     它把船卡、舰队、minePlan/salvagePlan/sellPlan/scoutPlan/tradePlan、记忆结算与
+    //     护航 rendezvous 全收进一个函数，只在真正要跑单发时（无会话 / 会话没答成 /
+    //     影子模式的单发兜底）才执行 ✓。返回非 null = 预取期间就定了这一单（rendezvous ✓）。
+    let singleShotPrepared = false
+    let sectorKey = ''
+    let memoryBlock = ''
+    const prefetchSingleShot = async (): Promise<DecideAnswer | null> => {
+      if (singleShotPrepared) return null
+      singleShotPrepared = true
+
+      const cardR = await ask(peer, 'query', { what: 'ship', ship }, 10)
+      if (!cardR.ok) {
+        logger.warn(`avorion-copilot: 拉能力卡失败 ${cardR.why ?? ''}`)
+        facts.planMissing = ['ship']
+        facts.planFetchFailures = [{ what: 'ship', why: cardR.why ?? 'unknown' }]
+        return null
+      }
+      facts.card = cardR.data ?? {}
+      // ★★ 贸易船额外拉一份**真实路线表** ✓✓（这样模型才能选对货 ✓）
+      const nameList: string[] = Array.isArray((facts.card as Record<string, unknown>).actionNames)
+        ? ((facts.card as Record<string, unknown>).actionNames as string[])
+        : []
+      const wantsTrade = nameList.includes('Trade') &&
+        (facts.goalOptions.length === 0 || facts.goalOptions.includes('Trade'))
+      // ★★ 2026-10-17：Mine / Salvage 也要拉**真实计划** ✓✓（原来它们是瞎猜的 ✗）
+      //   与 wantsTrade 同一套判断：卡片有这能力 ✓ 且（没限动作 或 动作被允许）✓
+      const wantsMine = nameList.includes('Mine') &&
+        (facts.goalOptions.length === 0 || facts.goalOptions.includes('Mine'))
+      const wantsSalvage = nameList.includes('Salvage') &&
+        (facts.goalOptions.length === 0 || facts.goalOptions.includes('Salvage'))
+      const jobWants: Array<{ action: 'Mine' | 'Salvage'; what: string }> = []
+      if (wantsMine) jobWants.push({ action: 'Mine', what: 'minePlan' })
+      if (wantsSalvage) jobWants.push({ action: 'Salvage', what: 'salvagePlan' })
+      // ★ 两份都要算时，把候选区域收窄到**最近的 5 个** ✓ ——
+      //   游戏侧 jobPlan 是**同步**算的（会占住游戏主循环 ✓），每个 ≈ 一个 tradePlan 的开销 ✓。
+      //   两份各扫 9 区就是两倍开销；各扫 5 区仍然覆盖船周围的 3×3/十字范围 ✓，够用 ✓。
+      const jobAreaCap = jobWants.length > 1 ? 5 : undefined
+      // ★★ rendezvous 要用的**原始数据**（不改喂给模型的那份 ✓ —— 见下面的 rendezvous 段 ✓）
+      let planRaw: Record<string, unknown> | undefined
+      let fleetShips: Record<string, unknown>[] = []
+      let pilotedName = ''
+      if (wantsTrade || jobWants.length > 0) {
+        // ★★ 算**护航候选** ✓✓
+        //   ★★ 规则以**原版**为准（实读 simulationutility.lua:145-176，2026-10-17 更正 ✗→✓）：
+        //     护卫与行动船的距离 ≤ **护卫自己一跳的航程**（:161 `> reach*reach` → TooFarAway）✓
+        //     —— **不要求同星系** ✗✓（同星系只是它的一个子集 ✓）；
+        //     另外，**不能穿裂隙**（canPassRifts=false）的护卫还须与行动船**同处屏障环一侧**（:165-168）✓。
+        //   ⚠️ 环侧要用 `Balancing_InsideRing` 才判得准 —— 那在**游戏侧** ✗，
+        //      所以这里对两种情况**保守取"同星系"** ✓（同星系必然同环侧 ✓，只会少收、不会错收 ✓）：
+        //        · canPassRifts 明确为 false ✓
+        //        · 拿不到航程（卡片没给 hyperspace ✓）
+        //     并在流水里把"保守未收"的船列出来（人能看到为什么 ✗✓）。
+        try {
+          const fr = await ask(peer, 'query', { what: 'fleet' }, 10)
+          if (fr.ok) {
+            const fd = (fr.data ?? {}) as Record<string, unknown>
+            const shipSector = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
+            const ships = Array.isArray(fd.ships) ? (fd.ships as Record<string, unknown>[]) : []
+            fleetShips = ships                        // ★ rendezvous 的候选池（**别的**星系 ✓）
+            pilotedName = String(fd.piloted ?? '')    // ★ 玩家在开的那条永不碰 ✓
+            const cands: string[] = []
+            const conservative: string[] = []
+            for (const s of ships) {
+              const nm = typeof s.name === 'string' ? s.name : ''
+              const sec = (s.sector ?? {}) as { x?: number; y?: number }
+              if (nm === '' || nm === ship) continue
+              if (nm === String(fd.piloted ?? '')) continue
+              if (s.busy === true) continue
+
+              const sameSector = sec.x === shipSector.x && sec.y === shipSector.y
+              if (sameSector) { cands.push(nm); continue }   // 同星系 → 必然满足原版判据 ✓
+
+              const hs = (s.hyperspace ?? {}) as { reach?: unknown; canPassRifts?: unknown }
+              const reach = typeof hs.reach === 'number' ? hs.reach : undefined
+              if (reach === undefined) { conservative.push(nm + '(航程未知)'); continue }
+              if (hs.canPassRifts === false) {
+                // ★ 2026-10-17 主人实机反馈「她尝试护航但失败」✗ —— 查到根在这里：
+                //   此处**一律保守排除**✗，把**原版允许**的护航白白漏掉 ✓。
+                //   而环侧**游戏侧一直算着** ✓（card.lua:298 用原版 Balancing_InsideRing ✓
+                //   写在卡片的 depth.insideCentreRing ✓）。
+                //   → 两边都拿得到就**按原版判** ✓✓：同环侧=可用 ✓；不同环侧=真不可用 ✓；
+                //     只有**真拿不到**时才退回"保守同星系" ✓（只会多收合法的 ✓，不会错收 ✗）。
+                const ringHere = ((facts.card as Record<string, unknown> | undefined)?.depth as
+                  { insideCentreRing?: unknown } | undefined)?.insideCentreRing
+                const ringThere = ((s.depth ?? {}) as { insideCentreRing?: unknown }).insideCentreRing
+                if (typeof ringHere === 'boolean' && typeof ringThere === 'boolean') {
+                  if (ringHere !== ringThere) { conservative.push(nm + '(不同环侧)'); continue }
+                } else {
+                  conservative.push(nm + '(环侧未知)'); continue
+                }
+              }
+              const dx = (sec.x ?? 0) - (shipSector.x ?? 0)
+              const dy = (sec.y ?? 0) - (shipSector.y ?? 0)
+              if (Math.sqrt(dx * dx + dy * dy) <= reach) cands.push(nm)   // ★ 原版判据 ✓
+            }
+            facts.escortCandidates = cands
+            live(`  ├ 护航候选 ${cands.length} 艘${cands.length > 0 ? ': ' + cands.join(',') : ''}`
+              + `（判据=原版: 距离 ≤ 护卫自己一跳航程 ✓）`
+              + (conservative.length > 0 ? `；保守未收 ${conservative.length} 艘: ${conservative.join(', ')}` : ''))
+          }
+        } catch { /* 拿不到护航候选不影响决策 ✓ */ }
+      }
+
+      // 下面这几段 legacy 计划预取**只服务单发路径**（dossierInputOf 组合成有界档案 ✓）与
+      // 护航 rendezvous（escortNeedOf 读 tradePlan ✓）✗✓ —— **不是**给会话路径用的 ✗：
+      // 会话路径在 task.ts 是"只告知、自己用工具查"（原子接口 list→ship→predict/tradeRoutes ✓），
+      // 一个计划的字节都不进投递块 ✓（delivery-size.mjs 钉住这条 ✓）。
+      // ★★ Mine / Salvage：拉游戏侧算好的真实计划 ✓✓（多区域 × 参数 × 层级加权 ✓）
+      if (jobWants.length > 0) {
+        const planned: Array<{ action: string; plan: Record<string, unknown> }> = []
+        const planFails: Array<{ what: string; why: string }> = []
+        for (const jw of jobWants) {
+          const q: Record<string, unknown> = { what: jw.what, ship, escorts: facts.escortCandidates ?? [] }
+          if (jobAreaCap !== undefined) q.maxAreas = jobAreaCap
+          let jr = await ask(peer, 'query', q, 120)
+          if (!jr.ok) {
+            // ★ 重试一次 ✓（实测: 游戏侧重连会打断在途请求 ✗ → "connection replaced by a newer one" ✓）
+            live(`  ├ ${jw.what} 拉取失败（${String(jr.why ?? '')}）→ 重试一次 ✓`)
+            await new Promise((r) => setTimeout(r, 1500))
+            jr = await ask(peer, 'query', q, 120)
+            if (jr.ok) live(`  ├ ${jw.what} 重试成功 ✓`)
+          }
+          // ★★ 空载荷也必须当"没取到" ✗✓（2026-10-17 实测: 六个计划分支少返回一个 true ✗
+          //    → RPC 的 payload=nil → 工具层看到 `{}` ✓ —— 而模型会把它读成"没有候选" ✗✓✓）
+          const emptyPayload = jr.ok && (jr.data === undefined || jr.data === null || (typeof jr.data === 'object' && Object.keys(jr.data as Record<string, unknown>).length === 0))
+            && (jr.data === undefined || jr.data === null
+              || (typeof jr.data === 'object' && !Array.isArray(jr.data)
+                && Object.keys(jr.data as Record<string, unknown>).length === 0))
+          if (!jr.ok || emptyPayload) {
+            const why = jr.ok ? '游戏回了空载荷（★ 这不代表"没有候选" ✗✓）' : String(jr.why ?? 'unknown')
+            logger.warn(`avorion-copilot: ${ship} 拉 ${jw.what} 失败 ${why}`)
+            live(`  ├ ${jw.what} **没取到** ✗（${why}）`)
+            planFails.push({ what: jw.what, why })
+            continue
+          }
+          const jd = (jr.data ?? {}) as Record<string, unknown>
+          const rec0 = jd.recommendation as Record<string, unknown> | null | undefined
+          if (rec0 !== undefined && rec0 !== null) {
+            // ★ 主人要看的核心数字：**采到最高阶什么**（Mine）/ **多少件装备**（Salvage）
+            const head = jw.action === 'Mine'
+              ? `最高矿 ${String(rec0.topMaterial ?? '?')}（层级 ${String(rec0.topTier ?? '?')}）价值 ${String(rec0.valueLow ?? '?')}~${String(rec0.valueHigh ?? '?')}`
+              : `${String((rec0.items as Record<string, unknown> | undefined)?.to ?? '?')} 件装备 × E[层级] ${String(rec0.rarityTier ?? '?')} = ${String(rec0.valueHigh ?? '?')}`
+            live(`  ├ ${jw.action} 推荐「${String(rec0.tag)}」${head}` +
+              ` 伏击 ${fmtPct(toNum(rec0.attackChance))}（扫 ${String(jd.areasScanned ?? '?')} 区 / ${String(jd.scanMs ?? '?')}ms）` +
+              `${rec0.safeMode === true ? ' [安全模式]' : ''}` +
+              `${Array.isArray(rec0.escorts) && (rec0.escorts as unknown[]).length > 0 ? ' [护航 ' + (rec0.escorts as string[]).join(',') + ']' : ''}`)
+          } else if (typeof jd.riskWarning === 'string' && jd.riskWarning !== '') {
+            live(`  ├ ${jw.action} 无推荐：${jd.riskWarning.slice(0, 160)}`)
+          }
+          planned.push({ action: jw.action, plan: compactJobPlan(jd) })
+          logger.info(
+            `avorion-copilot: ${ship} 已取到 ${jw.what}（扫 ${String(jd.areasScanned ?? 0)} 区 / ` +
+            `${String(jd.scanMs ?? 0)}ms，推荐=${rec0 ? String(rec0.tag) : 'none'}）`,
+          )
+        }
+        if (planned.length > 0) facts.jobPlans = planned
+        if (planFails.length > 0) {
+          facts.planFetchFailures = planFails
+          // ★ 统一成一个**显式事实** ✓（消费方不再各自判空 ✗ —— 那一晚就是这么连崩三次的 ✓）
+          facts.planMissing = planFails.map((pf) => pf.what)
+        }
+
+      // ★★ 船上有货 → 拉一份 Sell 计划 ✓✓（Issue B：被伏击召回后必须先变现才能再贸易 ✓）
+      const cardObj = (facts.card ?? {}) as Record<string, unknown>
+      const holdHasGoods = cardObj.holdHasGoods === true
+      const canSell = nameList.includes('Sell')
+      if (holdHasGoods && canSell) {
+        const sr = await ask(peer, 'query', { what: 'sellPlan', ship }, 120)
+        if (sr.ok) {
+          facts.sellPlan = sr.data as Record<string, unknown>
+          const sd = (sr.data ?? {}) as Record<string, unknown>
+          const rec = sd.recommendation as Record<string, unknown> | undefined
+          live(`  ├ 船上有货（${String(cardObj.cargoUsed ?? '?')} 单位）→ Sell 计划：` +
+            (rec !== undefined
+              ? `期望 C${String(rec.netProfitLow ?? '?')}~${String(rec.netProfitHigh ?? '?')}，伏击 ${String(rec.attackChance ?? '?')}`
+              : `无推荐（${String(sd.riskWarning ?? 'hold empty?')}）`))
+        } else {
+          logger.warn(`avorion-copilot: ${ship} 拉卖货计划失败 ${sr.why ?? ''}`)
+        }
+      }
+      }
+
+      // ★★ 勘察计划：能 Scout 的船**无论舱里有没有货**都拉一份 ✓✓（缺陷①修复）
+      //   之前被包在 `holdHasGoods && canSell` 里 → 侦察船通常空舱 → 永远拿不到 ✗
+      //   → 模型只能猜框 ✗；现在按 `nameList.includes('Scout')` 单独门控 ✓。
+      if (nameList.includes('Scout')) {
+        const cr = await ask(peer, 'query', { what: 'scoutPlan', ship }, 120)
+        if (cr.ok) {
+          facts.scoutPlan = cr.data as Record<string, unknown>
+          const sd = cr.data as Record<string, unknown>
+          const cov = (sd.coverage ?? {}) as Record<string, unknown>
+          const cen = (sd.centre ?? {}) as Record<string, unknown>
+          live('  ├ Scout 事实：未探索 ' + String(cov.unknown ?? '?') + '/' + String(cov.total ?? '?') + '，离中心 ' + String(cen.distance ?? '?') + '，扫 ' + String(sd.areasScanned ?? '?') + ' 区 / ' + String(sd.scanMs ?? '?') + 'ms（推荐 ' + (sd.recommendation ? '有' : '无') + '）')
+        }
+      }
+
+      if (wantsTrade) {
+        const planR = await ask(peer, 'query', { what: 'tradePlan', ship, escorts: facts.escortCandidates ?? [] }, 120)
+        if (planR.ok) {
+          const pd = (planR.data ?? {}) as Record<string, unknown>
+          planRaw = pd                               // ★ rendezvous 只看它 ✓（喂模型的仍是下面那份 ✓）
+          // ★★ 多区域 tradePlan 的结论也进实时流水 ✓（人要看"为什么不推荐" ✓）
+          const plan0 = pd.recommendation as Record<string, unknown> | null | undefined
+          if (plan0 !== undefined && plan0 !== null) {
+            live(`  ├ tradePlan 推荐「${String(plan0.goodName)}」伏击 ${fmtPct(toNum(plan0.attackChance))}` +
+              `（扫 ${String(pd.areasScanned ?? '?')} 区 / ${String(pd.scanMs ?? '?')}ms）`)
+          } else if (typeof pd.riskWarning === 'string' && pd.riskWarning !== '') {
+            live(`  ├ tradePlan 无推荐：${pd.riskWarning.slice(0, 140)}`)
+          }
+          // 只给模型有用的部分：候选表 + 最优计划 ✓（area 里那 289 个坐标太占 token ✗）
+          // ★★ 把**三维搜索**的结果都喂给模型 ✓✓（2026-10-16 修 e3 —— 子代理指出：
+          //   此前只喂了旧的 candidates/best/planReason ✗，于是新加的
+          //   recommendation / areaRanking / orderHint **模型完全看不到** ✗✓，
+          //   多区域搜索白做了 ✓。）
+          //   areaRanking 会裁剪到关键字段，免得把 RPC 响应原样灌进 prompt 撑爆上下文 ✓。
+          const rank = Array.isArray(pd.areaRanking) ? (pd.areaRanking as Record<string, unknown>[]) : []
+          facts.tradeRoutes = {
+            recommendation: pd.recommendation ?? null,
+            riskWarning: pd.riskWarning ?? null,
+            orderHint: pd.orderHint ?? null,
+            scanMs: pd.scanMs ?? null,
+            areasScanned: pd.areasScanned ?? null,
+            areas: rank.slice(0, 9).map((a) => ({
+              // ★★ 2026-10-17：并排比较表要用的字段**一个都不能少** ✓✓
+              //   （x/y = 绝对框心 ✓、shape/sizeX/sizeY = 形状 ✓、origin = 粗扫还是细扫 ✓、
+              //    bestCase* = 最好情况 ✓ —— 之前只挑了几个数字，模型看不到它们 ✗）
+              x: a.x ?? null,
+              y: a.y ?? null,
+              shape: a.shape ?? null,
+              sizeX: a.sizeX ?? null,
+              sizeY: a.sizeY ?? null,
+              origin: a.origin ?? null,
+              offset: (a.area as Record<string, unknown> | undefined)?.offset ?? a.offset ?? null,
+              bestRouteName: a.bestRouteName,
+              netProfitLow: a.netProfitLow,
+              netProfitHigh: a.netProfitHigh,
+              bestCaseLow: a.bestCaseLow ?? null,
+              bestCaseHigh: a.bestCaseHigh ?? null,
+              attackChance: a.attackChance,
+              attackChanceWithEscorts: a.attackChanceWithEscorts ?? null,
+              profitPerSize: a.profitPerSize,
+              flights: a.flights,
+              deposit: a.deposit,
+              escortsNeeded: a.escortsNeeded ?? null,
+              acceptable: a.acceptable,
+            })),
+            candidates: pd.candidates,
+          }
+          logger.info(`avorion-copilot: ${ship} 已取到 ${String(pd.routeCount ?? 0)} 条贸易候选 ✓`)
+        } else {
+          logger.warn(`avorion-copilot: ${ship} 拉贸易候选失败 ${planR.why ?? ''}`)
+        }
+      }
+
+      // ★ 记录②"输入"（主人要看的 ✓）
+      rec.goalText = facts.goalText
+      rec.goalOptions = facts.goalOptions
+      rec.card = facts.card
+      rec.routes = facts.tradeRoutes
+      live(`  ├ 事实  目标=[${facts.goalText}] 允许=[${facts.goalOptions.join(',') || '不限'}]`)
+      if (facts.tradeRoutes !== undefined) {
+        const cand = (facts.tradeRoutes as Record<string, unknown>).candidates
+        // ⚠️ 原写法会往流水里印一个光秃秃的 `?` ✗（字段名对不上 → undefined ✓ —— 主人截图里那个 ✓）
+        //   → 必须说人话 ✓：没取到就明说"没取到" ✓，并**明说这不代表没有候选** ✓✓
+        live(Array.isArray(cand)
+          ? `  ├ 贸易候选 ${cand.length} 条已喂给模型`
+          : '  ├ 贸易候选：本次没取到候选数组 ✗（**不代表没有路线** ✓ —— 见 facts.planMissing ✓）')
+      }
+      logger.info(
+        `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
+      )
+
+      // ★★★ 单发路径的**档案**（2026-10-17 主人批准的改动 ✓✓）--------------------------
+      //   组装点 `dossierInputOf` 已挪到 `prefetchSingleShot` **之后**定义 ✓（它只读 facts、
+      //   不参与预取，放在预取之后、runSingleShot 之前，语义更清楚 ✓）。
+      // ★★ 护航 rendezvous（2026-10-17 ✓）--------------------------------------
+      //   主人：「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
+      //   触发：tradePlan 真的缺护航 ✓ + 本星系没有护航候选 ✓ + 别的星系有闲置战斗船 ✓
+      //   → 先派船 Travel 过去 ✓；**本轮不下单** ✓（等它到位，下一轮就看得见护航了 ✓）。
+      if (wantsTrade && planRaw !== undefined) {
+        const need = escortNeedOf(planRaw, facts.escortCandidates ?? [])
+        live(`  ├ 护航需求：${need.needed ? '缺护航' : '不需要'} —— ${need.why}`)
+        if (need.needed) {
+          const target = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
+          const prev = rendezvousMemo.get(ship)
+          const fresh = prev !== undefined && (Date.now() - prev.at) < RENDEZVOUS_MEMO_MS
+          if (prev !== undefined && fresh) {
+            // ★ 已经派过（在途 / 被拒）→ **不重复派** ✓（Travel 是异步的，护航没到之前条件一直成立 ✗）
+            const mins = Math.round((Date.now() - prev.at) / 60000)
+            const reason = prev.ok
+              ? `护航 ${prev.escort} 已在飞往 (${prev.x},${prev.y}) 的路上（${mins} 分钟前派出），本轮不下单，` +
+                `等它到位后下一轮再带上它出海`
+              : `上一轮派 ${prev.escort} 去 (${prev.x},${prev.y}) 被游戏拒绝（${prev.why}），` +
+                `${Math.round(RENDEZVOUS_MEMO_MS / 60000)} 分钟内不重复派，本轮不出海`
+            live(`  ├ rendezvous 已记录（${mins} 分钟前，${prev.ok ? '在途' : '被拒'}）→ 不重复派 ✓`)
+            const answer: DecideAnswer = { action: 'None', params: { escort: prev.escort, x: prev.x, y: prev.y }, reason }
+            rec.source = 'rendezvous'
+            return answer
+          }
+
+          const pick = pickRendezvousEscort(fleetShips, ship, pilotedName, target)
+          if (pick === null) {
+            live('  └ 别的星系没有空闲的、有船长的战斗船 → 派不出去（照常交给模型判断 ✓）')
+          } else if (target.x === undefined || target.y === undefined) {
+            live('  └ 读不到行动船的星区坐标 → 不敢乱派（照常交给模型判断 ✓）')
+          } else {
+            // ⚠️ 同类脆弱点（同一晚一起排掉 ✓）: `pick.sector` 可能缺失/为 null ✗ → 不许直接点 `.x` ✓
+            const pkSec = ((pick as unknown as { sector?: { x?: unknown; y?: unknown } }).sector ?? {})
+            live(`  ├ 选中护航 ${pick.name}（在 ${toNum(pkSec.x) ?? '?'},${toNum(pkSec.y) ?? '?'}；${pick.basis}）`)
+            live(`  ├ 下单 Travel：${pick.name} → (${target.x},${target.y})（目的地必须 ≥2 跳，太近游戏会拒 ✓）`)
+            const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 30)
+            const why = ord.ok ? '' : (ord.why ?? 'unknown')
+            rendezvousMemo.set(ship, {
+              escort: pick.name, at: Date.now(), ok: ord.ok, why, x: target.x, y: target.y,
+            })
+            rec.orderResult = ord.ok ? ord.data : { failed: why }
+            if (ord.ok) {
+              live('  └ Travel 已接受 ✓ 本轮不下单（等它到位 → 下一轮它就在护航候选里 ✓）')
+            } else {
+              live(`  └ Travel 被游戏拒绝 ✗ ${why} —— 本轮不出海，记下不盲目重试 ✓`)
+            }
+            const reason = ord.ok
+              ? `已派护航 ${pick.name} 前往本星系 (${target.x},${target.y})，本轮不下单，等它到位后下一轮再出海`
+              : `想派护航 ${pick.name} 前往 (${target.x},${target.y})，但被游戏拒绝（${why}），本轮不出海`
+            const answer: DecideAnswer = { action: 'None', params: { escort: pick.name, x: target.x, y: target.y }, reason }
+            rec.source = 'rendezvous'
+            logger.info(`avorion-copilot: ${ship} 护航 rendezvous → ${pick.name} Travel (${target.x},${target.y}) accepted=${String(ord.ok)}`)
+            return answer
+          }
+        }
+      }
+
+      // ★★ 增量 2：结算**上一次**任务（busy→idle 转换 ✓）
+      //   游戏侧没有把产出回灌给 Lua 的干净通道 ✗（见提交说明），所以这里记录的是
+      //   **可得到的弱信号**：它忙了多久 / 是否远早于申请时长结束（远早 ≈ 被伏击或召回 ✓）。
+      // ★★ 实测崩溃点（2026-10-17，真机 Scout-00001 逐字复现 ✓）:
+      //   `sector` 可能是 **null** ✗ —— 此时 `cardSec !== undefined` **仍然成立** ✓
+      //   → `cardSec.x` 抛 `Cannot read properties of null (reading 'x')` ✓✓
+      //   ★ 读不到坐标 = "**取数缺失**"这个事实 ✓ —— 绝不当成 (0,0) 用 ✗（那会**伪造**一个星区 ✓）。
+      const cardSecRaw = (facts.card as Record<string, unknown>).sector
+      const cardSecObj = (typeof cardSecRaw === 'object' && cardSecRaw !== null)
+        ? (cardSecRaw as Record<string, unknown>)
+        : undefined
+      const cardSecX = toNum(cardSecObj?.x)
+      const cardSecY = toNum(cardSecObj?.y)
+      const memSectors: string[] = []
+      if (cardSecX !== undefined && cardSecY !== undefined) {
+        memSectors.push(String(cardSecX) + "," + String(cardSecY))
+      }
+      const hint = (facts.tradeRoutes as Record<string, unknown> | undefined)?.orderHint as
+        { x?: number; y?: number } | undefined
+      // ★★ 2026-10-17 实机崩溃真凶 ✓✓：`?.orderHint` 在 JSON 里是 null 时返回 **null** ✗，
+      //   而 `hint !== undefined` 对 null **依然成立** ✓ → 下一句 `hint.x` 抛
+      //   `Cannot read properties of null (reading 'x')` ✓（与日志逐字吻合 ✓，行序也吻合 ✓）。
+      //   ★ 规矩：判**对象**（null + undefined 一起判 ✓），不要只判属性 ✗；
+      //     读不到坐标 = **缺数据** ✓，绝不当 0（那会伪造一个星区 ✓）。
+      if (hint !== undefined && hint !== null &&
+          typeof hint.x === 'number' && typeof hint.y === 'number') {
+        memSectors.push(String(hint.x) + "," + String(hint.y))
+      }
+      sectorKey = memSectors.length > 0 ? memSectors[memSectors.length - 1] : ""
+
+      const prevJob = pendingJobs.get(ship)
+      if (prevJob !== undefined) {
+        const busyNow = (facts.card as Record<string, unknown>).busy
+        if (busyNow === false) {
+          const busySeconds = Math.max(0, Math.round((Date.now() - prevJob.atMs) / 1000))
+          const requestedSec = (prevJob.hours ?? 0) * 3600
+          const endedEarly = requestedSec > 0 && busySeconds < requestedSec * 0.5
+          rememberOutcome(ship, {
+            at: new Date().toISOString(), action: prevJob.action, goodName: prevJob.goodName,
+            sector: prevJob.sector, busySeconds, requestedHours: prevJob.hours, endedEarly,
+          })
+          live("  ├ 结算上一次：" + prevJob.action + (prevJob.goodName !== undefined ? " " + prevJob.goodName : "")
+            + " 忙了 " + busySeconds + "s" + (endedEarly ? "（远早于申请时长 → 疑似被伏击/召回 ✓）" : "（正常完成 ✓）"))
+          pendingJobs.delete(ship)
+        }
+      }
+
+      // ★★ 增量 1/3：只载入**这一轮真正相关**的记忆 ✓（按预算截断 ✓，绝不整库灌入 ✓）
+      const mem = retrieveMemory(ship, memSectors)
+      live("  ├ 载入记忆：" + mem.counts + (mem.compressed > 0 ? "（压缩 " + mem.compressed + " 条）" : ""))
+      memoryBlock = "【你自己的记忆 —— 仅供参考 ✓；若与下面新算出的游戏数据冲突，以游戏数据为准 ✗】"
+        + String.fromCharCode(10) + mem.text
+
+      // 预取结束、rendezvous 也没拦截 → 返回 null，照常走模型（dossier + 单发 ✓）
+      return null
     }
-    logger.info(
-      `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
-    )
 
     // ★★★ 单发路径的**档案**（2026-10-17 主人批准的改动 ✓✓）--------------------------
     //
@@ -1567,116 +1704,6 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       }
       return d as unknown as DossierPayload
     }
-
-    // ★★ 护航 rendezvous（2026-10-17 ✓）--------------------------------------
-    //   主人：「当一艘船需要护卫时，可以把空闲战斗舰调到目标舰星系，再发起指令。」
-    //   触发：tradePlan 真的缺护航 ✓ + 本星系没有护航候选 ✓ + 别的星系有闲置战斗船 ✓
-    //   → 先派船 Travel 过去 ✓；**本轮不下单** ✓（等它到位，下一轮就看得见护航了 ✓）。
-    if (wantsTrade && planRaw !== undefined) {
-      const need = escortNeedOf(planRaw, facts.escortCandidates ?? [])
-      live(`  ├ 护航需求：${need.needed ? '缺护航' : '不需要'} —— ${need.why}`)
-      if (need.needed) {
-        const target = ((facts.card as Record<string, unknown>).sector ?? {}) as { x?: number; y?: number }
-        const prev = rendezvousMemo.get(ship)
-        const fresh = prev !== undefined && (Date.now() - prev.at) < RENDEZVOUS_MEMO_MS
-        if (prev !== undefined && fresh) {
-          // ★ 已经派过（在途 / 被拒）→ **不重复派** ✓（Travel 是异步的，护航没到之前条件一直成立 ✗）
-          const mins = Math.round((Date.now() - prev.at) / 60000)
-          const reason = prev.ok
-            ? `护航 ${prev.escort} 已在飞往 (${prev.x},${prev.y}) 的路上（${mins} 分钟前派出），本轮不下单，` +
-              `等它到位后下一轮再带上它出海`
-            : `上一轮派 ${prev.escort} 去 (${prev.x},${prev.y}) 被游戏拒绝（${prev.why}），` +
-              `${Math.round(RENDEZVOUS_MEMO_MS / 60000)} 分钟内不重复派，本轮不出海`
-          live(`  ├ rendezvous 已记录（${mins} 分钟前，${prev.ok ? '在途' : '被拒'}）→ 不重复派 ✓`)
-          const answer: DecideAnswer = { action: 'None', params: { escort: prev.escort, x: prev.x, y: prev.y }, reason }
-          rec.source = 'rendezvous'
-          return [true, answer]
-        }
-
-        const pick = pickRendezvousEscort(fleetShips, ship, pilotedName, target)
-        if (pick === null) {
-          live('  └ 别的星系没有空闲的、有船长的战斗船 → 派不出去（照常交给模型判断 ✓）')
-        } else if (target.x === undefined || target.y === undefined) {
-          live('  └ 读不到行动船的星区坐标 → 不敢乱派（照常交给模型判断 ✓）')
-        } else {
-          // ⚠️ 同类脆弱点（同一晚一起排掉 ✓）: `pick.sector` 可能缺失/为 null ✗ → 不许直接点 `.x` ✓
-          const pkSec = ((pick as unknown as { sector?: { x?: unknown; y?: unknown } }).sector ?? {})
-          live(`  ├ 选中护航 ${pick.name}（在 ${toNum(pkSec.x) ?? '?'},${toNum(pkSec.y) ?? '?'}；${pick.basis}）`)
-          live(`  ├ 下单 Travel：${pick.name} → (${target.x},${target.y})（目的地必须 ≥2 跳，太近游戏会拒 ✓）`)
-          const ord = await ask(peer, 'order', { ship: pick.name, action: 'Travel', x: target.x, y: target.y }, 30)
-          const why = ord.ok ? '' : (ord.why ?? 'unknown')
-          rendezvousMemo.set(ship, {
-            escort: pick.name, at: Date.now(), ok: ord.ok, why, x: target.x, y: target.y,
-          })
-          rec.orderResult = ord.ok ? ord.data : { failed: why }
-          if (ord.ok) {
-            live('  └ Travel 已接受 ✓ 本轮不下单（等它到位 → 下一轮它就在护航候选里 ✓）')
-          } else {
-            live(`  └ Travel 被游戏拒绝 ✗ ${why} —— 本轮不出海，记下不盲目重试 ✓`)
-          }
-          const reason = ord.ok
-            ? `已派护航 ${pick.name} 前往本星系 (${target.x},${target.y})，本轮不下单，等它到位后下一轮再出海`
-            : `想派护航 ${pick.name} 前往 (${target.x},${target.y})，但被游戏拒绝（${why}），本轮不出海`
-          const answer: DecideAnswer = { action: 'None', params: { escort: pick.name, x: target.x, y: target.y }, reason }
-          rec.source = 'rendezvous'
-          logger.info(`avorion-copilot: ${ship} 护航 rendezvous → ${pick.name} Travel (${target.x},${target.y}) accepted=${String(ord.ok)}`)
-          return [true, answer]
-        }
-      }
-    }
-
-    // ★★ 增量 2：结算**上一次**任务（busy→idle 转换 ✓）
-    //   游戏侧没有把产出回灌给 Lua 的干净通道 ✗（见提交说明），所以这里记录的是
-    //   **可得到的弱信号**：它忙了多久 / 是否远早于申请时长结束（远早 ≈ 被伏击或召回 ✓）。
-    // ★★ 实测崩溃点（2026-10-17，真机 Scout-00001 逐字复现 ✓）:
-    //   `sector` 可能是 **null** ✗ —— 此时 `cardSec !== undefined` **仍然成立** ✓
-    //   → `cardSec.x` 抛 `Cannot read properties of null (reading 'x')` ✓✓
-    //   ★ 读不到坐标 = "**取数缺失**"这个事实 ✓ —— 绝不当成 (0,0) 用 ✗（那会**伪造**一个星区 ✓）。
-    const cardSecRaw = (facts.card as Record<string, unknown>).sector
-    const cardSecObj = (typeof cardSecRaw === 'object' && cardSecRaw !== null)
-      ? (cardSecRaw as Record<string, unknown>)
-      : undefined
-    const cardSecX = toNum(cardSecObj?.x)
-    const cardSecY = toNum(cardSecObj?.y)
-    const memSectors: string[] = []
-    if (cardSecX !== undefined && cardSecY !== undefined) {
-      memSectors.push(String(cardSecX) + "," + String(cardSecY))
-    }
-    const hint = (facts.tradeRoutes as Record<string, unknown> | undefined)?.orderHint as
-      { x?: number; y?: number } | undefined
-    // ★★ 2026-10-17 实机崩溃真凶 ✓✓：`?.orderHint` 在 JSON 里是 null 时返回 **null** ✗，
-    //   而 `hint !== undefined` 对 null **依然成立** ✓ → 下一句 `hint.x` 抛
-    //   `Cannot read properties of null (reading 'x')` ✓（与日志逐字吻合 ✓，行序也吻合 ✓）。
-    //   ★ 规矩：判**对象**（null + undefined 一起判 ✓），不要只判属性 ✗；
-    //     读不到坐标 = **缺数据** ✓，绝不当 0（那会伪造一个星区 ✓）。
-    if (hint !== undefined && hint !== null &&
-        typeof hint.x === 'number' && typeof hint.y === 'number') {
-      memSectors.push(String(hint.x) + "," + String(hint.y))
-    }
-    const sectorKey = memSectors.length > 0 ? memSectors[memSectors.length - 1] : ""
-
-    const prevJob = pendingJobs.get(ship)
-    if (prevJob !== undefined) {
-      const busyNow = (facts.card as Record<string, unknown>).busy
-      if (busyNow === false) {
-        const busySeconds = Math.max(0, Math.round((Date.now() - prevJob.atMs) / 1000))
-        const requestedSec = (prevJob.hours ?? 0) * 3600
-        const endedEarly = requestedSec > 0 && busySeconds < requestedSec * 0.5
-        rememberOutcome(ship, {
-          at: new Date().toISOString(), action: prevJob.action, goodName: prevJob.goodName,
-          sector: prevJob.sector, busySeconds, requestedHours: prevJob.hours, endedEarly,
-        })
-        live("  ├ 结算上一次：" + prevJob.action + (prevJob.goodName !== undefined ? " " + prevJob.goodName : "")
-          + " 忙了 " + busySeconds + "s" + (endedEarly ? "（远早于申请时长 → 疑似被伏击/召回 ✓）" : "（正常完成 ✓）"))
-        pendingJobs.delete(ship)
-      }
-    }
-
-    // ★★ 增量 1/3：只载入**这一轮真正相关**的记忆 ✓（按预算截断 ✓，绝不整库灌入 ✓）
-    const mem = retrieveMemory(ship, memSectors)
-    live("  ├ 载入记忆：" + mem.counts + (mem.compressed > 0 ? "（压缩 " + mem.compressed + " 条）" : ""))
-    const memoryBlock = "【你自己的记忆 —— 仅供参考 ✓；若与下面新算出的游戏数据冲突，以游戏数据为准 ✗】"
-      + String.fromCharCode(10) + mem.text
 
     // ★★★ 决策来源：**先试着投给主人的会话**，不行才自己单发 ✓✓
     //   （范围见 commander.ts 的文件头：没有分身、没有新建会话 ✓；
@@ -1857,6 +1884,14 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     let outcome: DispatchOutcome
     if (agents === undefined || ctx.on === undefined) {
       // 拿不到会话服务 → 与今天完全一致 ✓（不绕远、不报错 ✓；**含那条重试** ✓）
+      // ★ 单发路径的预取在这里**急切**跑一次（含护航 rendezvous ✓ —— 今天的行为逐字不变 ✓）
+      const rv = await prefetchSingleShot()
+      if (rv !== null) {
+        rec.source = 'rendezvous'
+        rec.answer = rv
+        live(`  ├ 决策 [rendezvous] ${rv.action} ${JSON.stringify(rv.params)}  (${rv.reason ?? ''})`)
+        return [true, rv]
+      }
       const r = await singleShotWithRetry()
       if (r.failure !== undefined) {
         const fail = failSingleShot(`模型失败 ${r.failure}`, r)
@@ -1873,11 +1908,13 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       live(`  ├ 决策来源：${target === undefined
         ? '**只走单发**（未指定投递目标会话 ✓）'
         : `优先投给会话 ${target}（模式=${decideMode}；忙时${steerWhenBusy ? '会插队' : '绝不打扰主人 ✗'}）`}`)
+      live('  ├ 会话路径：未预取计划 ✓（投递前只取 goal；计划/船卡/记忆留给单发兜底或她自己查 ✓）')
       outcome = await dispatchDecision({
         registry: agents as { get(id: string): AgentLike | undefined; list(): AgentLike[] },
         commanderId: target,
         subscribe: subscribeSession as any,
         followup: (agent: AgentLike, block: string) => deliverToSession(agent, block),
+        prefetch: prefetchSingleShot,
         singleShot: runSingleShot,
         allowedActions: facts.goalOptions.length > 0 ? facts.goalOptions : [...ALL_ACTIONS],
         mode: decideMode,

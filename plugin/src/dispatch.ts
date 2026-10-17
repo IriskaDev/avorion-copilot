@@ -130,6 +130,7 @@ export type DecisionSource =
   | 'single-shot'    // 单发定的 ✓
   | 'shadow'         // ★ 影子模式：会话答了、但采纳的是单发 ✓
   | 'asked-owner'    // 显式延期：投递会话在问主人 ✓
+  | 'rendezvous'     // ★ 单发预取阶段直接定下（护航 rendezvous 派了 Travel ✓）
   | 'none'           // 都没有 → action=None ✓
 
 /** 会话这一级的结果（**影子模式也要报出来** ✓ —— 主人要看她答了什么 ✓） */
@@ -161,6 +162,13 @@ export interface DispatchDeps {
   subscribe?: Subscribe
   /** 单发路径（**必给** ✓ —— 没有它阶梯就没有第二级 ✓）。`hint` 非空 = 那次"只要答案行"的重试 ✓ */
   singleShot: (hint?: string) => Promise<SingleShotResult>
+  /**
+   * ★ 单发路径的**重数据预取**（2026-10-17：会话路径不再预取计划 ✓✓）。
+   *   它在阶梯①（会话）之后、阶梯②（单发）之前跑一次，**不受** singleShotTimeoutMs 限制
+   *   （计划查询在游戏主线程同步算，tradePlan 实测 20s+ ✓）。返回非 null = 预取期间
+   *   **已经定了这一单**（例如护航 rendezvous 派了 Travel ✓）→ 直接采纳并跳过单发模型 ✓。
+   */
+  prefetch?: () => Promise<PrefetchDecision | null>
   /**
    * ★ 真正把任务块**投进会话** ✓（真实现 = `agent.followup(createUserMessage({...}))` ✓）。
    *   单列成一个注入点，是为了让本模块**不 import `dsh-llm`** ✓ ——
@@ -200,6 +208,17 @@ export interface DispatchOutcome {
   session?: SessionAttempt
   /** 会话答案 vs 单发答案**是否一致**（影子模式下最有用的一个数 ✓；会话没答 = undefined ✓） */
   agreement?: boolean
+}
+
+/**
+ * ★ 单发预取阶段**直接定下**的一单（2026-10-17 ✓）：
+ *   例如护航 rendezvous —— 预取时发现缺护航、本星系又没有候选，就派一艘 Travel 过去、
+ *   本轮 action=None（**不跑模型** ✓）。它跳过单发模型调用，但**不**跳过记录/审计 ✓。
+ */
+export interface PrefetchDecision {
+  action: string
+  params: Record<string, unknown>
+  reason?: string
 }
 
 const nowMs = (): number => Date.now()
@@ -328,6 +347,28 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
         `（${sessionAttempt.steps} 步 / ${sessionAttempt.tookMs}ms ✓）—— ★ **本轮不采纳** ✓，仍由单发决定 ✓`)
     } else {
       say(`  [shadow] 投递目标会话没答成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）✓`)
+    }
+  }
+  // ---- 阶梯①.5：单发路径的重数据预取（会话路径不预取 ✓）------------------
+  //   ★ 2026-10-17：会话路径投递前只取 goal（毫秒级 ✓）—— 船卡/舰队/计划/记忆/rendezvous
+  //     全在这里**惰性**预取，只在真正要跑单发时（没有会话 / 会话没答成 / 影子模式兜底）才跑 ✓。
+  //   ★ 它**不受** singleShotTimeoutMs 限制（计划查询在游戏主线程同步算，tradePlan 20s+ ✓）。
+  if (deps.prefetch !== undefined) {
+    let early: PrefetchDecision | null = null
+    try {
+      early = await deps.prefetch()
+    } catch (error) {
+      say(`  [prefetch] 预取异常（${String(error)}）→ 继续走单发，档案可能缺计划 ✓`)
+    }
+    if (early !== null) {
+      say(`  [prefetch] 预取期间已定这一单：${early.action}（${early.reason ?? ''}）→ 跳过单发模型调用 ✓`)
+      return {
+        action: early.action,
+        params: early.params,
+        reason: early.reason,
+        source: 'rendezvous',
+        session: sessionAttempt,
+      }
     }
   }
   say(`  [ladder] → ② 单发模型调用（今天那条路 ✓；硬期限 ${B.singleShotTimeoutMs}ms ✓）`)

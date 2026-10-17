@@ -179,6 +179,29 @@ export async function dispatchDecision(deps, req) {
             say(`  [shadow] 投递目标会话没答成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）✓`);
         }
     }
+    // ---- 阶梯①.5：单发路径的重数据预取（会话路径不预取 ✓）------------------
+    //   ★ 2026-10-17：会话路径投递前只取 goal（毫秒级 ✓）—— 船卡/舰队/计划/记忆/rendezvous
+    //     全在这里**惰性**预取，只在真正要跑单发时（没有会话 / 会话没答成 / 影子模式兜底）才跑 ✓。
+    //   ★ 它**不受** singleShotTimeoutMs 限制（计划查询在游戏主线程同步算，tradePlan 20s+ ✓）。
+    if (deps.prefetch !== undefined) {
+        let early = null;
+        try {
+            early = await deps.prefetch();
+        }
+        catch (error) {
+            say(`  [prefetch] 预取异常（${String(error)}）→ 继续走单发，档案可能缺计划 ✓`);
+        }
+        if (early !== null) {
+            say(`  [prefetch] 预取期间已定这一单：${early.action}（${early.reason ?? ''}）→ 跳过单发模型调用 ✓`);
+            return {
+                action: early.action,
+                params: early.params,
+                reason: early.reason,
+                source: 'rendezvous',
+                session: sessionAttempt,
+            };
+        }
+    }
     say(`  [ladder] → ② 单发模型调用（今天那条路 ✓；硬期限 ${B.singleShotTimeoutMs}ms ✓）`);
     const single = await runSingleShot(deps, B.retryOnceMs, say);
     if (!single.ok || single.action === undefined) {
