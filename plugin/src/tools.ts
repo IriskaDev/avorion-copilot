@@ -328,7 +328,10 @@ export function registerFleetTools(
       name: 'fleet_escort',
       description:
         'Send an escort ship to the target ship sector with a Travel background command, so the ' +
-        'target can later take a risky job with a SAME-SECTOR escort. HARD RULE: an escort only ' +
+        'target can later take a risky job with a SAME-SECTOR escort. FIRST judge whether the target ' +
+        'actually needs it: predict the target job ambush risk (risk.baseAttackChance); at/below the ' +
+        '10% gate it usually does NOT need an escort, and combat ships are allowed to idle, so do not ' +
+        'send one just to give an idle ship work. HARD RULE: an escort only ' +
         'counts if it is in the same sector as the action ship, so this is the only way to make an ' +
         'escort usable. The target sector is resolved here from the target ship card. Travel needs a ' +
         'destination at least 2 jumps away; if the game refuses for any reason, the refusal is ' +
