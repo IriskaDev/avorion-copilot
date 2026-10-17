@@ -364,8 +364,10 @@ plan:addBlock(position, size, parentIndex, -1, color, Material(m), orientation, 
 * 收费 = 原版修船坞的差价算法（`repairdock.lua:993-1017` / `:1019-1037` / `:1138-1141`），
   即资源差 × 0.5 × 0.5，向上取整；信用点同理。
 * 数据路径 = **路径 B**（附录 C.2）；路径 A 已被真机证伪（附录 C.1）。
-* ★ 真机已跑通一次（Lady，2026-10-17）：材料变、形状不变、资源按报价扣、档案同步 ✓（附录 C.4）。
-  唯一没覆盖的是“船上本来就装着炮塔”时的外观恢复（Lady 没有炮塔）。
+* ★ 真机已跑通 **两次**（2026-10-17）：
+  * **Lady**（空闲船）：材料变、形状不变、资源按报价扣、档案同步 ✓（附录 C.4）
+  * **Raven**（主人**正驾驶**、装着 4 个炮塔）：炮塔 4→4、样式 20→20 全保住，
+    驾驶无可见中断 ✓（附录 C.4b）—— 调研里的风险 #7 实测可接受。
 
 ---
 
@@ -537,9 +539,43 @@ Ship database plan synced: yes
 `entry:setPlan` 并没有清掉它（若清掉这里会是 0）✓。
 
 → 结论：**`setMovePlan` 写回活实体这条路在真船上跑通了**，形状/块数/资源/档案四项都对上。
-唯一“没覆盖到”的场景是**船上真装着炮塔**时的外观恢复（Lady 本来就没有炮塔）；
-样式重映射逻辑有离线断言（`native/harness/_mounts_selftest.lua` 的 remap 组），
-真机最后一条建议主人在一艘**有炮塔的空闲船**上验一次（Raven 正被主人开着，本鱼没碰）。
+
+### C.4b ★★ 驾驶中的船 + **装着炮塔**的船（2026-10-17，主人授权 Raven）
+
+> Raven：主人**正在驾驶**的船，4617 块、24 个炮塔底座、物理炮塔 4 个、实体炮塔样式 20 个。
+> 这是调研里标为“风险 #7（驾驶中执行 → 画面/操控瞬断）”的场景，主人明确要求试。
+
+**执行**：`/copilot mounts naonite Raven confirm`（预览：`34 Naonite + 24 credits`）
+
+```
+Applied. Paid 34 Naonite + 24 credits.
+Verified: 24 base(s) now Naonite, 0 not upgraded.
+Shape: blocks 4617 -> 4617 (unchanged); bounding box unchanged
+Turrets: 4 -> 4; turret designs restored 20
+Ship database plan synced: yes
+```
+
+**独立复核**：
+
+| 项 | 升级前 | 升级后 |
+|---|---|---|
+| 24 个底座材料 | Iron / Titanium 混合 | **全部 Naonite** ✓ |
+| 炮塔样式 `getDesigns()` | 20（key 全是底座索引） | **20，key 仍全部对上** ✓ |
+| 物理炮塔 `ship:getTurrets()` | 4 | **4** ✓ |
+| 方块数 | 4617 | 4617 ✓ |
+| Naonite | 39.508 | **39.474**（-34 ✓） |
+| 信用点 | 7.108.051 | **7.108.027**（-24 ✓） |
+| 舰体耐久（HUD） | 117,66 千（100%） | 117,66 千（100%）✓ |
+
+画面实拍：船正常飞行、炮塔外观仍在、HUD 无异常；写回瞬间**没有**可见的操控中断。
+
+→ 风险 #7 实测**可接受**；炮塔实物与样式都无损失，`remapDesigns` 的按中心重映射在真船上生效（`restored 20`）。
+
+> 顺带一个**不是 bug 的**观察：`fleet_query{what="ship"}` 的 `turretCount` 对 Raven / Lady /
+> Combat-00001 / Trader-00001 **全部报 1** —— 因为它读 `ShipDatabaseEntry:getTurrets()`
+> （返回 `pair<ScriptTurretTemplate, table_t>...`，`{...}` 收成 1 个元素，见 `card.lua:225-227`
+> 与 `ShipDatabaseEntry [Server].html:877-883`），**不代表炮塔数量**，与本功能无关 ✓。
+
 
 
 ### C.5 要不要重启游戏？—— 命令不用，**面板 UI 要一次**
