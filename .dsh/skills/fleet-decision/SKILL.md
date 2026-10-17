@@ -26,7 +26,9 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 伏击概率**随时长增长**（>1h 后每多 1h 基准 +40%）→ `docs/game/mechanics/risk-and-ambush.md:44-48`。
 - 被伏击 = **强制召回 + 部分结算**（Mine/Salvage 须过 35% 才给 20%~95%；Trade 被中断那班无利润）→ 同文件 `:83-92`。
 - **打捞主角是装备件数**（`items.from/to` + `rarityTier` + `fieldTier`），废铁 `scrapLow/High` 只作审计 → `docs/game/ops/atomic-rpc.md:82`；装备只在 `onFinish` 生成 → `risk-and-ambush.md:88`。
-- **贸易看 `profitPerSize`**（单位货舱容积利润），**净收益 ≥ 预付金 `deposit` 才值得跑**（`deposit` 不是成本、结束全额退还）→ `atomic-rpc.md:94` + `docs/game/mechanics/cargo-and-goods.md:57-66`。
+- **贸易排序键 = 单位时间净利**（`profitPerHour = netProfitLow / durationHours`）✓，**不是** `profitPerSize` 比率、
+  也不是单看 `netProfitLow`（`docs/game/lessons/orders.md` L17 ③ ✓）；本金（`deposit`）**不是成本**、结束全额退还 ✓。
+- **贸易要一次比一片**：`tradeEvaluate`（多框 × 全商品 × 多本金，一次调用 ≤60 组合 ✓）；`flights.from = 0` = 空跑 ✗。
 - **护航既降险也加产**；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（不是"必须同星系"）→ `docs/game/mechanics/escorts.md:7-19`、`:28-36`、`:38-44`。
 
 ## 4. 原子接口作业规程（与代码一致）
@@ -41,8 +43,17 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 4. ★ **自己决定要比哪几个框** → `fleet_query {what:"predict", ship, action, x, y, sizeX, sizeY, …}` → **一个框**，返回 `risk.baseAttackChance` / `value` / `box.containsShip`。
    - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）—— 现在**也带阵营/友好度**：`factionIndex` / `factionName` / `relation` / `isFriendly` / `hasStations`（原版 relation 判定 ✓）。
    - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → ★ 主判据 `value.revealsOffgrid`（隐藏质量物质区**枚举** 0=none/1=some/2=all，**不是计数**）+ `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（无未探索且计数可信 → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
-5. 贸易：`fleet_query {what:"tradeRoutes", ship, x, y, sizeX, sizeY}` → 框内路线（`profitPerSize` 等）→ 再 `predict` 比风险。
+5. 贸易：★ **先算再选，别看见有得赚就上** ✗（主人 2026-10-18 原话：「你应大胆一点，多做些计算」✓）：
+   `fleet_query {what:"tradeEvaluate", ship, boxes:[{x,y,sizeX,sizeY}…], deposits:[…], goodsFilter?}` → **一次**拿到
+   「多框 × 全商品 × 多本金」的**单位时间净利**榜：`results[]` 已按 `profitPerHour = netProfitLow / durationHours` 降序 ✓，
+   `rejected[]` 写明每条被丢的原因（`EMPTY_RUN` 空跑 / `RISK_OVER_GATE` 风险超闸门 / `RISK_UNKNOWN` / `PREDICTION_FAILED`）。
+   - 排序键是**主人定的口径**：单位时间利润最高才是最好（`docs/game/lessons/orders.md` L17 ③ ✓）。
+   - `maxAvailable` / `flightsFrom` / `flightsTo` 小 → 这趟总盈利就小（`profitPerSize` 只是**比率**，不是能赚多少 ✗）；
+     `flights.from = 0` 的空跑必须当"没有收益" ✗。
+   - 本金（`deposits`）同时改**带货量**与**伏击概率** → 至少试 2~3 档 ✓。
+   - 选中后要下单的那个组合，按同框同商品同本金用一次 `predict` 复核（数字与 `tradeEvaluate` **逐字一致** ✓）。
    - ★ **下单前逐个核星区阵营**：对路线两端与框内星区 `fleet_query {what:"sectorFacts", x, y}` 看 `isFriendly`；任一个 `isFriendly=false` → **不派** 或换框/换形状。
+   - 查到满意的就**立刻**下单（原版路线清单**会变** ✓）。
 6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
 
 ✗ **legacy 计划不要用**：`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`（游戏侧扫 ~67 框 + 自带排序推荐）——策略必须每次由决策者自己判断。
