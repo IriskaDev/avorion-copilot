@@ -111,7 +111,7 @@ export function renderTaskBlock(req) {
     L.push('  ★ 用 fleet_query；legacy 计划用 compact/top。');
     L.push('');
     L.push('答复格式（★ **第一行**请直接写结论行 action=…（便于解析；之后再写理由 ✓））：');
-    L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | None>');
+    L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | Refine | None>');
     L.push(`  第 2 行 task=${req.taskId}  ← ★**必须回显**，这是认出"回给哪一单"的**唯一凭据**；`);
     L.push('    写错/写成别的号 → 判无效 ✗（绝不把别船的答案用在这艘船上 ✗）。');
     L.push('  之后按需要：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=');

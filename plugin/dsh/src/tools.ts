@@ -26,6 +26,11 @@ import type { RpcPeer } from './rpc.js'
 // Type-only import: erased at compile time, so the index <-> tools cycle is harmless.
 import type { DecisionRecord } from './index.js'
 import { readDecisionFile, deciderOf } from './index.js'
+// ★★ 预检/实测的渲染与轮询（2026-10-17 ✓）：与决策路径**共用同一份** ✓（不各写一套 ✗）
+import {
+  waitForOrderVerify, preflightText, preflightWarningText, verifyText,
+} from './index.js'
+import type { OrderPreflight } from './index.js'
 
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
@@ -131,6 +136,11 @@ export function registerFleetTools(
       description:
         'Query Avorion game state with ATOMIC interfaces -- each call does ONE small thing and the ' +
         'decision-maker composes them (list -> pick a ship -> ship -> goal -> predict/tradeRoutes). ' +
+        '★ what=orderStatus returns the POST-ORDER VERIFICATION of one order (pass orderId, or ship for ' +
+        'the latest order of that ship): {started, verify:{ok, evidence, busy, moved, atDestination, ' +
+        'cargoUsed, cargoUsedDelta, reason, ...}}. It is the ONLY honest answer to "did it actually run?" ' +
+        '-- `accepted:true, executed:true` in an order receipt only means the order entered the RPC ' +
+        'queue; verify.pending=true means the sample is not due yet (that is NOT success either). ' +
         '★ what=list returns an INDEX-LEVEL roster: only name / idle / has captain / sector per ship ' +
         '(NO per-ship full state, NO cargo detail, NO prediction) -- use it FIRST to pick which ship ' +
         'to look at, then query that one. what=ship returns ONE ship capability card (brief=true for ' +
@@ -148,13 +158,19 @@ export function registerFleetTools(
         '(boolean from vanilla relation), hasStations (SectorView.numStations>0). Use isFriendly to ' +
         'enforce the owner rule "trader travels only through friendly sectors". ★ what=predict is ' +
         'the CORE computation atom: ONE box (x,y,sizeX,' +
-        'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout|Travel) + that action minimal params -> the ' +
+        'sizeY) + ONE action (Mine|Salvage|Trade|Sell|Scout|Travel|Refine) + that action minimal params -> the ' +
         'prediction numbers (risk + value) for THAT box only; batch via boxes=[...] (N<=24, each box ' +
         'independent). ★ Travel is the ONE exception to "the box must contain the ship": a Travel box is ' +
         'the 1x1 DESTINATION (vanilla travelcommand.lua isShipRequiredInArea=false), and its risk is the ' +
         'WHOLE-TRIP ambush chance (the same number the vanilla Travel UI shows) with value.distance / ' +
         'value.travelTime / value.routeSectors. Travel exposes NO separate base value -> ' +
         'risk.baseAttackChance is null and risk.baseAttackChanceKnown=false (+ reason); never read that as 0. ' +
+        '★ Refine predict: pass sizeX=31,sizeY=31 (vanilla getAreaSize + isAreaFixed; the game re-centres ' +
+        'the box on the ship, so predict reports the ship-centred box and echoes your centre as ' +
+        'box.requestedCentre). Refine needs ORE IN THE HOLD, requires no refinery/faction (a refinery only ' +
+        'halves duration and lowers tax), outputs into the faction RESOURCE POOL, and its risk is the ' +
+        'vanilla hardcoded 0 (that command never registers for attack) -- value.yields / value.duration / ' +
+        'value.tax carry the numbers. ' +
         '★ Scout predict returns value.unknownCount/knownCount/totalSectors (unexplored/' +
         'explored/total sectors in that box) + value.revealsNothingNew (true => the box has no ' +
         'unexplored sectors, reveals no new map) + box.containsShip; the Scout box is 21x21 (vanilla ' +
@@ -170,14 +186,15 @@ export function registerFleetTools(
         what: {
           type: 'string',
           required: true,
-          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | dossier | ' +
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | orderStatus | dossier | ' +
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
+        orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
         ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/any plan' },
         x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
-        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1' },
-        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX); Travel: use 1' },
+        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1; Refine: must be 31' },
+        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX); Travel: use 1; Refine: must be 31' },
         goodName: { type: 'string', description: 'predict Trade only: WHICH route to evaluate (from tradeRoutes)' },
         deposit: { type: 'number', description: 'predict Trade only: upfront budget (must be > 0)' },
         duration: { type: 'number', description: 'predict Mine/Salvage only: task hours (optional)' },
@@ -206,7 +223,7 @@ export function registerFleetTools(
             '+ current-sector numbers; no depth sampling, no long per-action prose). Answers "what can ' +
             'it do now". The identity fields are copied verbatim from the full card (same source).',
         },
-        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel (Travel predict: box = 1x1 destination, ship need NOT be inside)' },
+        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel | Refine (Travel predict: box = 1x1 destination, ship need NOT be inside; Refine: 31x31, box re-centred on the ship by the game)' },
       },
       output: {
         schema: { type: 'string' },
@@ -217,11 +234,15 @@ export function registerFleetTools(
         sizeX?: number; sizeY?: number; goodName?: string; deposit?: number
         duration?: number; safeMode?: boolean; escorts?: string[]; goodsToSell?: unknown; boxes?: unknown[]
         compact?: boolean; top?: number; full?: boolean; brief?: boolean; action?: string
+        orderId?: number
       }) {
         // ★ sectorFacts 只需坐标 ✓；list 什么都不用 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
+        //   ★ orderStatus 例外：给 orderId 就够（精确到某一单 ✓），不给才按 ship 取最近一单 ✓
+        const orderStatusById = args.what === 'orderStatus' && args.orderId !== undefined
         const needsShip = args.what !== 'fleet' && args.what !== 'sectorFacts' && args.what !== 'list'
+          && !orderStatusById
         if (needsShip && (args.ship === undefined || args.ship === '')) {
-          return `what=${args.what} needs the ship parameter`
+          return `what=${args.what} needs the ship parameter${args.what === 'orderStatus' ? ' (or an orderId)' : ''}`
         }
         if (args.what === 'sectorFacts' && (args.x === undefined || args.y === undefined)) {
           return 'what=sectorFacts needs the x and y parameters'
@@ -239,7 +260,7 @@ export function registerFleetTools(
           duration: args.duration, safeMode: args.safeMode, escorts: args.escorts,
           goodsToSell: args.goodsToSell, boxes: args.boxes,
           compact: args.compact, top: args.top, full: args.full, brief: args.brief,
-          action: args.action,
+          action: args.action, orderId: args.orderId,
         }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`
         const body = text(r.data)
@@ -268,21 +289,35 @@ export function registerFleetTools(
       description:
         'Give ONE background command to ONE ship (atomic: one ship + one action + that action ' +
         'minimal params -- NO auto box, NO auto params, NO auto retreat). action is one of Mine, ' +
-        'Salvage, Trade, Travel, Sell, Scout. You MUST provide the explicit box (x, y + size, or ' +
+        'Salvage, Trade, Travel, Sell, Scout, Refine. You MUST provide the explicit box (x, y + size, or ' +
         'sizeX+sizeY for Trade) and, for Trade, an explicit goodName (a route name from ' +
         'fleet_query what=tradeRoutes) and deposit > 0. Travel needs NO size: x/y is the destination ' +
-        'sector (the box is 1x1 and the ship does NOT have to be inside it). ★ The receipt carries ' +
+        'sector (the box is 1x1 and the ship does NOT have to be inside it). Refine needs size=31 ' +
+        '(its box is FIXED at 31x31 and the game re-centres it on the ship) and ore in the hold ' +
+        '(it has no duration/safeMode config). ★ For Sell you may pass goodsToSell to pick a subset ' +
+        '(WHITELIST); omitting it means "every sellable good in the hold". The game filters the list ' +
+        'BEFORE ordering (vanilla rejects the WHOLE command if any listed good has no buyer), so the ' +
+        'receipt carries sellable:{kinds,units,goods} and skipped:[{goodName,amount,reason}] -- and if ' +
+        'not one requested good has a buyer the order fails with NO_BUYER (nothing is queued). ★ The receipt carries ' +
         'risk:{known, attackChance, baseAttackChance, riskKind, ...} = the ambush assessment of THIS ' +
         'order, computed by the SAME code as fleet_query what=predict (so it matches what you predicted; ' +
         'for Travel it is the whole-trip ambush chance). known=false means the game could NOT compute it: ' +
-        'attackChance is then null -- never read that as 0%. The command is ASYNCHRONOUS: the captain ' +
+        'attackChance is then null -- never read that as 0%. ★★ The receipt now ALSO carries ' +
+        'preflight:{ok, code, reason, checks, warnings, ...} (the game checked the vanilla ' +
+        'preconditions BEFORE ordering -- preflight.ok=false means NOTHING was ordered: no area ' +
+        'analysis, no startCommand) and verify:{ok, evidence, busy, moved, atDestination, cargoUsed, ' +
+        'cargoUsedDelta, reason, ...} (the game RE-READ the ship state a few seconds after ' +
+        'startCommand). `accepted:true, executed:true` alone only means the order entered the RPC ' +
+        'queue -- verify is the honest "did it actually run" answer, and verify.ok=false means ' +
+        'nothing observable happened after the order (the vanilla "accepted then silently refused" ' +
+        'case). The command is ASYNCHRONOUS: the captain ' +
         'takes the ship out of the player sector and is unreachable while working.',
       parameters: {
         ship: { type: 'string', required: true, description: 'ship name (must be on the Copilot roster)' },
-        action: { type: 'string', required: true, description: 'Mine | Salvage | Trade | Travel | Sell | Scout' },
+        action: { type: 'string', required: true, description: 'Mine | Salvage | Trade | Travel | Sell | Scout | Refine' },
         x: { type: 'number', description: 'target sector x (required; box centre for work actions; for Travel = destination)' },
         y: { type: 'number', description: 'target sector y (required; for Travel = destination)' },
-        size: { type: 'number', description: 'area edge length (required for work actions; NOT needed for Travel -- its box is the 1x1 destination)' },
+        size: { type: 'number', description: 'area edge length (required for work actions; NOT needed for Travel -- its box is the 1x1 destination; Refine must be 31 -- its area is fixed)' },
         sizeX: {
           type: 'number',
           description:
@@ -310,8 +345,22 @@ export function registerFleetTools(
           type: 'array',
           items: { type: 'string' },
           description:
-            'Trade/Travel: escort ship names. HARD RULE: an escort must be in the SAME SECTOR as ' +
-            'the action ship, otherwise it cannot take part.',
+            'Trade/Travel/Mine/Salvage: escort ship names. The vanilla escort check is ' +
+            'SimulationUtility.isShipUsableAsEscort: available, and within the ESCORT\'s own ' +
+            'hyperspace reach (a same-sector escort is just the easy case) -- "too far away" makes ' +
+            'the game abort the whole order. Owner rule: an escort only counts for the risk model ' +
+            'when it is in the SAME SECTOR, so prefer same-sector escorts. Vanilla never checks ' +
+            'armament; the receipt reports canFight as a warning.',
+        },
+        goodsToSell: {
+          type: 'array',
+          description:
+            'Sell only: WHICH goods to sell -- a WHITELIST. Either plain names ["Drill","Oxygen"] ' +
+            'or objects [{goodName:"Drill", amount:100}] (amount defaults to the whole stack). ' +
+            'Omit it = sell every SELLABLE good in the hold. ★ Names must match the cargo keys ' +
+            'exactly (see the ship card / sellPlan). Goods with no buyer in the box are dropped and ' +
+            'reported in the receipt (skipped[]); if none of them has a buyer the order fails with ' +
+            'NO_BUYER and nothing is queued.',
         },
       },
       output: {
@@ -327,11 +376,46 @@ export function registerFleetTools(
         sizeX?: number
         sizeY?: number
         duration?: number
+        goodsToSell?: unknown
       }) {
         // ★ 60s：order 现在**同时**为回执算一次风险预测（= predict 同口径 ✓）—— Travel 还要先算航线分析 ✓
         const r = await ask(peer, 'order', args, opts.orderTimeoutSec ?? 60)
         if (!r.ok) return `order failed: ${r.why ?? 'unknown'}`
-        return `ordered: ${args.ship} -> ${args.action}\n${text(r.data)}`
+        const data = (r.data ?? {}) as Record<string, unknown>
+        const preflight = (data.preflight !== null && typeof data.preflight === 'object'
+          && !Array.isArray(data.preflight)) ? data.preflight as OrderPreflight : undefined
+        const head = `ordered: ${args.ship} -> ${args.action}`
+        const lines: string[] = [head]
+
+        const pt = preflightText(preflight)
+        if (pt !== undefined) {
+          // ★★ 预检不过 = **没有下单** ✗✓（游戏侧连区域分析都没发起 ✓）—— 别再说 ordered ✓
+          lines[0] = `NOT ordered: ${args.ship} -> ${args.action}`
+          lines.push(pt)
+          const body0 = text(r.data)
+          lines.push(body0)
+          return lines.join('\n')
+        }
+        const pw = preflightWarningText(preflight)
+        if (pw !== undefined) lines.push(pw)
+
+        // ★★ 实测（2026-10-17 ✓✓）：`accepted:true executed:true` 只代表"进了 RPC 队列" ✗ ——
+        //   这里**再问一次游戏**（orderStatus ✓）拿实体状态的证据 ✓；拿不到就明说（不编 ✗）。
+        //   ★ 有界：预算 30s（6s startCommand + 6s 采样 + 可能的重采 9s + 余量 ✓）。
+        const orderId = (typeof data.orderId === 'number' || typeof data.orderId === 'string')
+          ? data.orderId : undefined
+        if (orderId !== undefined) {
+          const v = await waitForOrderVerify(peer, { orderId, ship: args.ship }, { budgetMs: 30_000 })
+          if (v !== undefined) {
+            data.verify = v
+            const vt = verifyText(v)
+            if (vt !== undefined) lines.push(`实测：${vt}`)
+          } else {
+            lines.push('实测：游戏侧没给结论（老版本 / 记录已过期）→ 回执保持 pending ✓（不编 ✗）')
+          }
+        }
+        lines.push(text(data))
+        return lines.join('\n')
       },
     },
     'fleet_order tool',

@@ -207,7 +207,7 @@ function renderShip(d: DossierPayload): string[] {
 function renderRules(goalText: string, goalOptions: string[], gate: number): string[] {
   const L: string[] = []
   L.push(`玩家给这艘船的目标：${goalText !== '' ? goalText : '(只给了动作边界，没有文字目标)'}`)
-  L.push(`允许的动作：${goalOptions.length > 0 ? goalOptions.join(', ') : '(不限 —— Mine/Salvage/Trade/Travel/Sell/Scout 里挑)'}`)
+  L.push(`允许的动作：${goalOptions.length > 0 ? goalOptions.join(', ') : '(不限 —— Mine/Salvage/Trade/Travel/Sell/Scout/Refine 里挑)'}`)
   L.push(`风险闸门：attackChance ≤ ${gate}（★ 判断只看**基准**概率 baseAttackChance，不看被 safeMode 修正后的数 ✓）`)
   return L
 }

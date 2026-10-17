@@ -279,6 +279,95 @@ export interface OrderRisk {
   attackChanceWithEscorts?: number | null
 }
 
+/**
+ * ★★ 预检（preflight）—— 游戏侧在**下单前**按动作核对前置条件的结论 ✓✓（2026-10-17）
+ *
+ * 主人的原话（这套结构的由来）：「你下的指令似乎你都不知道是有没有正常执行啊，回执没法带结果吗？」
+ * 今晚四种「接了却没做」（回执都是 accepted:true executed:true ✗）：
+ *   ① Sell 清单里混了没人收的货 → 一件没卖；② Sell 在没买家的框 → 空转；
+ *   ③ `startCommand -> ok=true` 只是"进队列"；④ Travel 只有 1 跳 → 接单不动。
+ * 根因 = 回执只反映 RPC 队列那一步 ✗ —— 所以游戏侧加了这一层：
+ *   `preflight.ok=false` → **压根没下单**（没发起区域分析、没排 startCommand ✓）。
+ * ★ `ok=false` 时字段是 `{ok:false, code, reason, detail}` ✓；通过时还会有 checks / warnings。
+ */
+export interface OrderPreflightCheck { name?: string; ok?: boolean; reason?: string; detail?: string }
+export interface OrderPreflightWarning { code?: string; detail?: string }
+
+export interface OrderPreflight {
+  ok: boolean
+  /** 失败码：MIN_DISTANCE / ALREADY_THERE / SHIP_NOT_IN_AREA / CAPTAIN_NOT_MERCHANT / ... */
+  code?: string
+  /** 人话原因（游戏侧原文，**不翻译** ✓） */
+  reason?: string
+  detail?: string
+  /** 逐项结论（ok=true 的那些也在这里 ✓） */
+  checks?: OrderPreflightCheck[]
+  /**
+   * ★ 提示（**不是失败** ✓）：原版**不会**拒绝、但按主人的规矩/机制值得知道的事。
+   *   例：`DURATION_CLAMPED`（被原版夹紧）、`SELL_SKIPPED`（卖不掉的货被剔掉）、
+   *       `ESCORT_UNARMED`（原版不查武装 ✗）、`ESCORT_NOT_SAME_SECTOR`（原版允许一跳之内 ✓）
+   */
+  warnings?: OrderPreflightWarning[]
+  /** 预检时真的改过的参数（如 duration 被夹紧 ✓） */
+  applied?: Record<string, unknown>
+  /** 预检时读到的船状态（位置 / busy / 货舱 ✓ —— 与实测同一个读取函数 ✓） */
+  state?: Record<string, unknown>
+  /** Sell 专用：有买家 / 卖不掉 的逐货结论（判据 = 原版 getErrors ✓） */
+  sell?: {
+    sellableKinds?: number
+    sellableUnits?: number
+    skippedKinds?: number
+    skippedUnits?: number
+    skipped?: Array<{ goodName?: string; amount?: number; reason?: string }>
+  }
+  /** 护航逐条事实（available / sameSector / distance / reach / canFight ✓） */
+  escorts?: Array<Record<string, unknown>>
+  /** Travel 专用：距离 / route 段数 / 时长 ✓（与 predict 同一份分析 ✓） */
+  travel?: Record<string, unknown>
+}
+
+/**
+ * ★★ 实测（verify）—— startCommand 之后**延迟重读实体状态**的结论 ✓✓（2026-10-17）
+ *
+ * ★ 判定口径（游戏侧 verifyVerdict ✓，都来自原版实读）：
+ *   · **主证据 = `busy:true`**（= `InBackground`，simulation.lua:584 —— 这一行在**所有**闸门之后 ✓）；
+ *   · Travel：位置/终点（但原版**只在 onFinish/onRecall 才写坐标** → 航程中间不动是正常的 ✓）；
+ *   · Sell/Refine：`cargoUsed` 下降（★ 只在**跑完**才结算 ✓ —— 短窗口里 `busy` 才是证据 ✓）；
+ *   · Mine/Salvage/Trade/Scout：`busy:true`（产出进派系资源池 / 货舱在结束时才变 ✓）。
+ *   · `ok=false` + `reason` = "**接了却什么都没发生**"（原版静默拒绝的样子 ✓）。
+ * ★ `pending:true` = 还没到采样点（RPC 是一次问答，实测只能**稍后**取 ✓）。
+ */
+export interface OrderVerify {
+  pending?: boolean
+  /** 还要等几秒（pending 时有 ✓） */
+  etaSeconds?: number
+  at?: string
+  ok?: boolean
+  reason?: string
+  note?: string
+  /** atDestination / moved / busy / cargoUsedDecreased / cargoUsedIncreased / cargoChanged */
+  evidence?: string
+  started?: boolean
+  startCommandQueued?: boolean
+  afterStartSec?: number
+  busy?: boolean
+  busyKnown?: boolean
+  availability?: unknown
+  moved?: boolean | null
+  atDestination?: boolean
+  position?: { x: number; y: number }
+  positionBefore?: { x: number; y: number }
+  cargoUsed?: number
+  cargoUsedBefore?: number
+  cargoUsedDelta?: number
+  cargoKinds?: number
+  cargoKindsBefore?: number
+  holdHasGoods?: boolean
+  destination?: { x: number; y: number }
+  stage?: number
+  hint?: string
+}
+
 export interface OrderReceipt {
   at: string
   accepted: boolean
@@ -293,6 +382,12 @@ export interface OrderReceipt {
   unconfirmed?: boolean
   /** ★ 游戏侧对**这一单**的伏击风险评估（2026-10-17 ✓）；缺省 = 老游戏侧没这个字段 ✓ */
   risk?: OrderRisk
+  /** ★★ 下单**之前**的前置条件核对（2026-10-17 ✓✓）；`ok=false` = 这单**根本没下** ✗✓ */
+  preflight?: OrderPreflight
+  /** ★★ 下单**之后**的实测结论（2026-10-17 ✓✓）；`pending:true` = 还没到采样点 ✓ */
+  verify?: OrderVerify
+  /** ★★ 下单号（取实测结论用 ✓）：`fleet_query{what:'orderStatus', orderId}` 或按 ship ✓ */
+  orderId?: number | string
   error?: string
   note?: string
 }
@@ -484,7 +579,17 @@ function receiptOf(ord: { ok: boolean; data?: any; why?: string }, at: string): 
         note: `order sent, no ack (${why}) — verify next round via list/ship busy+cargo`,
       }
     }
-    return { at, accepted: false, executed: false, error: why }
+    // ★★ 游戏侧的**拒绝**（`ok=false`）也统一成 preflight 形状 ✓（2026-10-17）：
+    //   老检查（NO_BUYER / HOLD_HAS_GOODS / PILOTED_SHIP / SHIP_NOT_AVAILABLE / BAD_REQUEST）
+    //   回的是 `false, CODE, message` → 这里把 code 与 message 都留下来 ✓，
+    //   于是**任何**被拒的单在回执里都能一眼看出"哪一项没过 + 原话" ✓✓。
+    const code = typeof ord.data === 'string' && ord.data !== '' ? ord.data : undefined
+    return {
+      at, accepted: false, executed: false, error: why,
+      preflight: code !== undefined
+        ? { ok: false, code, reason: why }
+        : { ok: false, reason: why },
+    }
   }
   const d = (ord.data ?? {}) as Record<string, unknown>
   const accepted = d.accepted !== false
@@ -494,8 +599,18 @@ function receiptOf(ord: { ok: boolean; data?: any; why?: string }, at: string): 
   const risk = (d.risk !== null && typeof d.risk === 'object' && !Array.isArray(d.risk))
     ? d.risk as OrderRisk
     : undefined
-  if (accepted && executed) return { at, accepted: true, executed: true, note, risk }
-  return { at, accepted, executed, error: note ?? 'order not executed', note, risk }
+  const isObj = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+  // ★★ 预检 / 实测 / 下单号（2026-10-17 ✓✓）：老游戏侧没有这些字段 → undefined ✓（不编 ✗）
+  const preflight = isObj(d.preflight) ? (d.preflight as unknown as OrderPreflight) : undefined
+  const verify = isObj(d.verify) ? (d.verify as unknown as OrderVerify) : undefined
+  const orderId = (typeof d.orderId === 'number' || typeof d.orderId === 'string') ? d.orderId : undefined
+  const extra: Partial<OrderReceipt> = {}
+  if (preflight !== undefined) extra.preflight = preflight
+  if (verify !== undefined) extra.verify = verify
+  if (orderId !== undefined) extra.orderId = orderId
+  if (accepted && executed) return { at, accepted: true, executed: true, note, risk, ...extra }
+  return { at, accepted, executed, error: note ?? 'order not executed', note, risk, ...extra }
 }
 
 /** 这单算不算失败（被拒 / 未执行都算 ✗；**未确认不算** ✓ —— 见 OrderReceipt.unconfirmed ✓） */
@@ -509,6 +624,81 @@ function receiptFailText(r: OrderReceipt): string {
   const err = String(r.error ?? 'unknown')
   const short = err.length > 120 ? err.slice(0, 120) + '…' : err
   return r.accepted ? `未执行（${short}）` : `被拒（${short}）`
+}
+
+// ---------------------------------------------------------------------------
+// ★★ 取「实测（verify）」结论 —— 下单**之后**的事，只能**再问一次** ✓✓（2026-10-17）
+// ---------------------------------------------------------------------------
+//
+// 为什么不能在下单那次 RPC 里拿到 ✗：order 是一次一问一答 ✓ ——
+//   startCommand 在 6s 后才发、实测采样还要再等 ~6s ✓，答复早就回去了 ✗。
+//   所以游戏侧把结论**存住**（link_in.lua 的 orderRecords ✓），这里用
+//   `query{what:'orderStatus'}` 按 orderId（或 ship）取 ✓✓。
+//
+// ★ 三条硬规矩：
+//   ① **绝不编**：拿不到就返回 undefined（回执里 verify 保持 pending / 缺省 ✓）；
+//   ② **有界**：总预算内轮询，绝不无限等（游戏侧自己也会在两次采样后定稿 ✓）；
+//   ③ **不炸**：任何异常/断连都只意味着"没拿到实测"，**不影响**已经下出去的单 ✓。
+
+function askPeer(
+  peer: Pick<RpcPeer, 'call'>,
+  cmd: string,
+  data: unknown,
+  timeoutSec = 10,
+): Promise<{ ok: boolean; data?: any; why?: string }> {
+  return new Promise((resolve) => {
+    let done = false
+    const sent = peer.call(
+      cmd,
+      data,
+      (ok, payload, why) => { if (!done) { done = true; resolve({ ok, data: payload, why }) } },
+      timeoutSec,
+    )
+    if (!sent) resolve({ ok: false, why: 'not connected to the game' })
+  })
+}
+
+export interface VerifyWaitOptions {
+  /** 总共最多等多久（ms ✓；缺省 25s —— 够 startCommand 6s + 采样 6s + 一次重采 9s ✓） */
+  budgetMs?: number
+  /** 两次查询之间至少隔多久（ms ✓） */
+  pollMs?: number
+}
+
+/**
+ * ★★ 轮询 `orderStatus` 直到拿到**定稿**的实测结论 ✓✓（2026-10-17）
+ *   返回 `undefined` = 老游戏侧 / 没有这单的记录 / 断连（**不编** ✓）；
+ *   返回 `{pending:true,…}` = 预算到了还没定稿（**也不编成功** ✓）。
+ */
+export async function waitForOrderVerify(
+  peer: Pick<RpcPeer, 'call'>,
+  target: { orderId?: number | string; ship?: string },
+  opts: VerifyWaitOptions = {},
+): Promise<OrderVerify | undefined> {
+  const budgetMs = opts.budgetMs ?? 25_000
+  const pollMs = opts.pollMs ?? 2_000
+  const startedAt = Date.now()
+  let last: OrderVerify | undefined
+  for (;;) {
+    const r = await askPeer(peer, 'query', {
+      what: 'orderStatus', orderId: target.orderId, ship: target.ship,
+    }, 10)
+    if (!r.ok) {
+      // 老游戏侧（unknown what）/ 这单没有记录 / 断连 → **没有实测** ✓（回执里保持 pending ✓）
+      return last
+    }
+    const d = (r.data ?? {}) as Record<string, unknown>
+    const v = (d.verify !== null && typeof d.verify === 'object' && !Array.isArray(d.verify))
+      ? d.verify as OrderVerify
+      : undefined
+    if (v === undefined) return last
+    last = v
+    if (v.pending !== true) return v
+    const elapsed = Date.now() - startedAt
+    if (elapsed >= budgetMs) return v
+    const etaMs = typeof v.etaSeconds === 'number' && v.etaSeconds > 0 ? v.etaSeconds * 1000 : 0
+    await new Promise((r2) => setTimeout(r2, Math.max(pollMs, etaMs)))
+  }
 }
 
 /**
@@ -548,10 +738,93 @@ const redeliverMemo = new Map<string, { reason: string; count: number; atMs: num
  * ★ 上一次决策的"你上一单的结果"（2026-10-17 补 ✓）：给下一轮任务块用 ✓。
  *   先查内存（最近的 ✓），没有再回落盘 ✓ —— 这样 DSH 重启后下一轮也能看到历史 ✓。
  */
+/** 截断（回执一句话长度有预算 ✓） */
+function shorten(s: string, n: number): string {
+  const t = s.replace(/\s+/g, ' ').trim()
+  return t.length > n ? t.slice(0, n) + '…' : t
+}
+
+/**
+ * ★★ 预检结论 → 人话（2026-10-17 ✓✓）
+ *   `预检 ✗ MIN_DISTANCE — This route is too short. …`（`ok=false` = **没下单** ✓）
+ *   `ok=true` 返回 undefined（成功不需要废话 ✓；要看细节直接读 JSON ✓）。
+ */
+export function preflightText(pf: OrderPreflight | undefined | null): string | undefined {
+  if (pf === undefined || pf === null) return undefined
+  if (pf.ok === true) return undefined
+  const code = typeof pf.code === 'string' && pf.code !== '' ? pf.code : 'PREFLIGHT'
+  const reason = typeof pf.reason === 'string' && pf.reason !== '' ? shorten(pf.reason, 120) : ''
+  return `预检 ✗ ${code}${reason !== '' ? ` — ${reason}` : ''}（**没有下单** ✗）`
+}
+
+/** 预检里"值得知道但不拦"的提示（卖不掉的货 / 被夹紧的时长 / 护航事实 ✓） */
+export function preflightWarningText(pf: OrderPreflight | undefined | null): string | undefined {
+  if (pf === undefined || pf === null) return undefined
+  const ws = Array.isArray(pf.warnings) ? pf.warnings : []
+  if (ws.length === 0) return undefined
+  const codes = ws.map((w) => String(w.code ?? '')).filter((c) => c !== '')
+  const bits: string[] = []
+  if (codes.length > 0) bits.push(codes.join('/'))
+  if (pf.sell !== undefined && typeof pf.sell.skippedKinds === 'number' && pf.sell.skippedKinds > 0) {
+    const units = typeof pf.sell.skippedUnits === 'number' ? pf.sell.skippedUnits : undefined
+    bits.push(`卖不掉 ${pf.sell.skippedKinds} 种${units !== undefined ? `/${units} 单位` : ''}已剔除`)
+  }
+  return bits.length > 0 ? `预检提示 ${bits.join('；')}` : undefined
+}
+
+/**
+ * ★★ 实测结论 → 人话（2026-10-17 ✓✓）
+ *
+ *   `已到 ✓` / `在跑 ✓（货舱要跑完才结算）` / `货舱 -120 ✓` /
+ *   `实测 ✗ 货舱没少、也不在后台运行 —— …`（**这就是"接了就完"的样子** ✓）
+ *   `实测待回（~8s）` = 还没到采样点（**不是成功** ✗✓）
+ */
+export function verifyText(v: OrderVerify | undefined | null): string | undefined {
+  if (v === undefined || v === null) return undefined
+  if (v.pending === true) {
+    const eta = typeof v.etaSeconds === 'number' && v.etaSeconds > 0 ? `~${Math.round(v.etaSeconds)}s 后` : '稍后'
+    return `实测待回（${eta}）`
+  }
+  if (v.ok === false) {
+    const why = typeof v.reason === 'string' && v.reason !== '' ? shorten(v.reason, 110) : '启动后状态没有变化'
+    return `实测 ✗ —— ${why}`
+  }
+  const delta = typeof v.cargoUsedDelta === 'number' ? v.cargoUsedDelta : undefined
+  switch (v.evidence) {
+    case 'atDestination':
+      return '已到 ✓'
+    case 'moved':
+      return '已移动 ✓'
+    case 'busy': {
+      const note = typeof v.note === 'string' ? v.note : ''
+      if (note.includes('结算')) return '在跑 ✓（货舱要跑完才结算）'
+      if (note.includes('onFinish') || note.includes('onRecall')) return '在跑 ✓（原版只在到达/召回时写坐标）'
+      return '在跑 ✓'
+    }
+    case 'cargoUsedDecreased':
+      return delta !== undefined ? `货舱 ${delta} ✓` : '货舱下降 ✓'
+    case 'cargoUsedIncreased':
+      return delta !== undefined ? `货舱 +${delta} ✓` : '货舱上升 ✓'
+    case 'cargoChanged':
+      return delta !== undefined ? `货舱变化 ${delta > 0 ? '+' : ''}${delta} ✓` : '货舱变化 ✓'
+    default:
+      return v.ok === true ? '实测 ✓' : undefined
+  }
+}
+
+/** 货舱/位置的最短人话（prevResult 预算紧，只挑一条 ✓） */
+function verifyOrPreflightText(r: OrderReceipt): string | undefined {
+  const vt = verifyText(r.verify)
+  const pf = preflightWarningText(r.preflight)
+  if (vt !== undefined && pf !== undefined) return `${vt}${pf !== undefined ? `｜${pf}` : ''}`
+  return vt ?? pf
+}
+
 /**
  * ★ 把一条决策记录渲染成「上一单的结果」一行（**带 decider 来源标签** ✓✓）。
  *   2026-10-17 主人要求：不许把单发/兜底的结论写成"你（会话）上一单" ✗ ——
  *   所以每一行都带 `[session]` / `[single-shot]` / `[rendezvous]` / `[fallbackNone]` ✓。
+ *   ★ 2026-10-17 第二轮追加：**预检 / 实测**也要在这行里（这是主人"回执带结果"的落点 ✓✓）。
  *   导出给测试 ✓。
  */
 export function renderPrevResult(rec: DecisionRecord): string | undefined {
@@ -564,9 +837,16 @@ export function renderPrevResult(rec: DecisionRecord): string | undefined {
   if (rec.receipt !== undefined) {
     if (rec.receipt.accepted && rec.receipt.executed) {
       const rt = riskText(rec.receipt.risk)
-      return `${tag}${action}${loc}：成功 ✓${rt !== undefined ? `｜${rt}` : ''}`
+      const vt = verifyOrPreflightText(rec.receipt)
+      const parts = [vt, rt].filter((s): s is string => s !== undefined && s !== '')
+      // ★ 实测明确**没有成功证据**时**不许**写"成功" ✗✓（那就是主人今晚骂的那种假回执 ✓）
+      const verdict = rec.receipt.verify?.ok === false ? '下单 ✓' : '成功 ✓'
+      return `${tag}${action}${loc}：${verdict}${parts.length > 0 ? `｜${parts.join('｜')}` : ''}`
     }
     if (rec.receipt.unconfirmed === true) return `${tag}${action}${loc}：已发送，未确认（${rec.receipt.note ?? ''}）`
+    // ★ 被拒：先看预检（"哪一项没过 + 原话" ✓），再看老式 error ✓
+    const pt = preflightText(rec.receipt.preflight)
+    if (pt !== undefined) return `${tag}${action}${loc}：${pt}`
     return `${tag}${action}${loc}：${receiptFailText(rec.receipt)}`
   }
   // ★ 旧记录没有 receipt → 从 orderResult 反推（向后兼容 ✓）
@@ -677,7 +957,7 @@ const NONE_WORDS = new Set(['', '-', 'none', 'null', 'n/a', 'na', '无', '没有
  *  提示词（prompt/system.md 的输出格式）、这里（解析器）、以及 toAnswer 的默认白名单
  *  三处**必须一致** ✗ —— 2026-10-17 的 pro 审查抓到 `Scout` / `Sell` 漏在解析器与白名单之外 ✓，
  *  于是"计划里算得出来、却永远下不了单" ✗✓。test/actions-consistency.mjs 会守住这条 ✓。 */
-export const ALL_ACTIONS = ['Mine', 'Salvage', 'Trade', 'Travel', 'Sell', 'Scout'] as const
+export const ALL_ACTIONS = ['Mine', 'Salvage', 'Trade', 'Travel', 'Sell', 'Scout', 'Refine'] as const
 
 /** 解析模型回复。解析不出 action 就算失败，交给游戏按错误处理 ✓ */
 function parseDecision(text: string): Decision {
@@ -2335,6 +2615,25 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         // ★ 游戏侧对**这一单**的伏击评估（2026-10-17 ✓）：进 decisions.live.log，主人现场看得见 ✓
         const rt = riskText(receipt.risk)
         if (rt !== undefined) live(`  ├ ${rt}（游戏侧评估 ✓）`)
+        // ★★ 实测（2026-10-17 第二轮 ✓✓）：startCommand 之后**再问游戏要结果** ✓。
+        //   为什么在这里等 ✗→✓：这单的委托是"下单"，而主人的要求是"回执要带结果" ✓ ——
+        //   不等到实体状态有证据就返回，就又变成"接了就完" ✗✓。
+        //   ★ 有界（预算 18s：6s startCommand + 6s 采样 + 余量 ✓）+ 拿不到就是拿不到（不编 ✓）；
+        //   ★ 老游戏侧（没有 orderId / 没有 orderStatus）→ 立刻跳过，一秒都不等 ✓。
+        if (receipt.orderId !== undefined) {
+          live(`  ├ 等实测：orderId=${String(receipt.orderId)}（startCommand 之后重读实体状态 ✓）`)
+          const v = await waitForOrderVerify(peer, { orderId: receipt.orderId, ship }, { budgetMs: 18_000 })
+          if (v !== undefined) {
+            receipt.verify = v
+            const vt = verifyText(v) ?? '实测（无结论）'
+            live(`  ├ 实测：${vt}`)
+            if (v.ok === false) {
+              logger.warn(`avorion-copilot: ${ship} -> ${a.action} **下单后实测没有成功证据**（${v.reason ?? '状态未变'}）`)
+            }
+          } else {
+            live('  ├ 实测：游戏侧没给结论（老版本 / 记录已过期）→ 回执保持 pending ✓（不编 ✗）')
+          }
+        }
       } else if (receipt.unconfirmed === true) {
         // ★★ 假阴性（超时/断连）：order 已送出、游戏可能已经在跑 ✗✓ ——
         //   **绝不判失败、绝不回投** ✗（否则同一艘船两条矛盾命令 ✓）。

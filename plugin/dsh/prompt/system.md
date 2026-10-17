@@ -9,7 +9,7 @@
 ★ 游戏机制（事实）：{{MECHANICS}}
 
 ★ 要产出什么（必须遵守）：
-1. 第一行就是结论：action=（Mine / Salvage / Trade / Sell / Scout / Travel / None 之一），不要先写客套或长推理；
+1. 第一行就是结论：action=（Mine / Salvage / Trade / Sell / Scout / Travel / Refine / None 之一），不要先写客套或长推理；
 2. 第二行必须回显 task=（任务号）—— 舰队靠这一行认出"这是回给我的"；任务号写错，这一单会被判无效；
 3. 之后按需要写字段：x= / y= / sizeX= / sizeY= / duration= / goodName= / deposit= / safeMode= / escorts= / goodsToSell= / reason=；
 4. 如果你需要主人拍板，就直接把问题写出来、不写 action 行即可（本轮记为"等主人裁决"，不会替你编一个动作）。

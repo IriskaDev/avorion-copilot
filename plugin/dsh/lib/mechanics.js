@@ -6,7 +6,8 @@ export const MECHANICS_BRIEF = `可用命令（都是后台命令：船长带队
 - Salvage 打捞：区域 15x15，船须在区内。产出资源 + 装备/插件(炮塔与子系统各半)，稀有度用原版固定混合表(Exceptional .02/Rare .05/Uncommon .25/Common .5/Petty .18)，期望层级约 1.23。配置同 Mine，Scavenger 船长加长时长。
 - Trade   贸易：合法区域只有 17x17 / 29x11 / 11x29，船须在区内，且船长必须是 Merchant。需要 goodName(路线名，必填) 与 deposit(>0)。收益 = 每航班利润 × 航班数；预付款结束时退还(不是成本)。被伏击时被中断的那一班不给利润；已完成的班次照算；中止后货可能留在船上。
 - Sell    卖货：区域 15x15，船须在区内。卖的是船上那些"该星区有需求"的货。被伏击时只有 runTime>=11 分钟或 >duration*0.8 才按 runTime/duration 部分卖出，否则一点也卖不掉；未卖完的货留在船上。
-- Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；原版不允许"一跳就能到"的目的地(该检查在客户端，经 RPC 可能不生效)。到达后可在那儿接新命令。
+- Refine  精炼：区域 31x31 且**固定**(isAreaFixed：服务端无视你给的框心、按船重算)，船须在区内。**货舱里必须有原矿**(按货物 tag 认材料，rich 富矿产出×4)；**不需要**精炼厂/阵营/友好度 —— 区域里有自有/友方精炼厂只让时长÷2、税率更低，一个都没有则时长×2(不是错误)。产出进**派系资源池**，货舱里的原矿被扣掉(不变成货舱成品)。没有 duration/safeMode 配置。attackChance 是原版**硬编码 0**(该命令从不登记伏击)。
+- Travel  旅行：区域 1x1(目标星区)，船不必在区内；只移动，不产出；★ 原版**服务端**也拒"一跳就能到"的目的地(initialize 里：路线段<=2 → "This route is too short.")，所以现在 order 的预检直接回 MIN_DISTANCE、不发单。到达后可在那儿接新命令；航程中坐标**不变**(只在到达/召回时写)，所以"位置没变"不是失败证据(看 busy)。
 - Scout   侦察/开图：区域 21x21，船须在区内；配置只有 addCaptainsNote；时长由原版按 reachable/25 自算。产出 revealsOffgrid = 隐藏质量星区的**枚举档位**(0=none / 1=some / 2=all；不是计数 ✗)；真实揭图由原版按运行时间调 revealSectors(ratio) 完成(scoutcommand.lua:157/162/179)，可达星区数在 area.analysis.reachable。
 
 框选区域(所有用框的命令共用)：区域是**必须包含船**的方块，框心可以在这个约束内平移(船不用动)；框选位置不同 → 落在框里的星区不同 → 那里的收益与伏击概率也不同(实机：同船同星区，Salvage 偏移 (0,0)=0.04、(0,-4)=0.02)。Trade 的框形状也能变，合法形状只有 17x17 / 29x11 / 11x29(tradecommand.lua:584-585)。我们的扫描是两阶段的：粗扫(步长 4) + 在最好的几个粗扫框周围步长 1 细扫。计划里每条候选都带绝对星区坐标 x/y(= 框心)与 offset(= 相对船的偏移)。Scout 的候选框另外带**框内未探索星区数**(unknownCount / knownCount / totalSectors，判据 player:getKnownSector(x,y)==nil)；框内一个未探索星区都没有的框，侦察它揭不出新地图。
@@ -69,5 +70,7 @@ player:getKnownSector(x,y)==nil 视为未探索(orderchain.lua:887)；框内一�
 计划(plan)给的是事实与选项：多区域 × 多参数档的原版预测数字(伏击概率、风险折算后的期望收益、时长、口径 scoreBasis)。每条候选都带绝对星区坐标 x/y(= 框心)与 offset；每条命令的概率都带 riskKind 标签(Sell/Salvage/Trade 的概率不是一回事，比较前先看标签)。
 玩家的风险闸门默认 attackChance<=0.10：超闸门的候选也会列出并标 exceedsRiskLimit=true，不静默丢弃。
 recommendation/orderHint 只是其中一个选项，供人审计，不是必须照抄的答案。
-已知缺口：计划只在船当前星区周围扫描(框心可在船周围 half 格内平移，但不会跑到别的星区)；可直接查上面的富饶度/材料函数，或先 Travel/Scout 过去；经 RPC 的 Travel 可能不受"不能太近"限制。`;
+已知缺口：计划只在船当前星区周围扫描(框心可在船周围 half 格内平移，但不会跑到别的星区)；可直接查上面的富饶度/材料函数，或先 Travel/Scout 过去。
+
+回执(下单=两段式：先区域分析、6 秒后才 startCommand)：accepted/executed 只代表"进了 RPC 队列"，**不是做成了**。所以回执还带 preflight(下单**前**的前置核对：ok=false 表示**根本没下单**，code 如 MIN_DISTANCE/SHIP_NOT_IN_AREA/CAPTAIN_NOT_MERCHANT；warnings 里是"原版不拒但值得知道"的事，如卖不掉的货被剔除/时长被夹紧/护航没武装)与 verify(下单**后**延迟重读实体状态：ok=false + reason = 启动后短窗口内没有任何成功证据，多半是原版静默拒了)。成功证据：busy=true(=后台在跑，原版在所有闸门之后才置它)最硬；Travel 看位置/到达；Sell/Refine 的货舱只在**跑完**才降，所以短窗口里别指望 cargoUsed 掉。取实测：fleet_query what=orderStatus 带 orderId(或 ship=该船最近一单)；verify.pending=true 只是"还没到采样点"，不是成功。`;
 //# sourceMappingURL=mechanics.js.map
