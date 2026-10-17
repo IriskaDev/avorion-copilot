@@ -176,32 +176,43 @@ export function registerFleetTools(
         'unexplored sectors, reveals no new map) + box.containsShip; the Scout box is 21x21 (vanilla ' +
         'scoutcommand getAreaSize). ★ what=tradeRoutes returns the trade routes inside ONE box + ' +
         'per-good numbers ' +
-        '(no sorting, no recommendation). The old plan queries -- tradePlan | minePlan | salvagePlan | ' +
-        'sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
+        '(no sorting, no recommendation). ★★ what=tradeEvaluate is the ONE-CALL matrix for trade: ' +
+        'boxes[] (1..6) x ALL routes in each box (goodsFilter[] optional) x deposits[] (1..3 tiers) -> ' +
+        'ONE array `results` sorted by netProfitLow / durationHours (profitPerHour, the owner-specified ' +
+        'unit-time key) plus `rejected[]` with a reason for every dropped combination (EMPTY_RUN when ' +
+        'flights.from==0, RISK_OVER_GATE when attackChance>maxAttackChance, RISK_UNKNOWN, ' +
+        'PREDICTION_FAILED). Each box is area-analysed exactly ONCE and the numbers come from the SAME ' +
+        'code as what=predict (so they match it verbatim). It computes only -- NO recommendation / ' +
+        'orderHint / best pick; choosing is yours. Combination cap 60 (over it -> TOO_MANY_COMBINATIONS ' +
+        'with a shrink hint). Unknown numbers stay null (never 0). The old plan queries -- tradePlan | minePlan | ' +
+        'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
-        '(list -> ship -> predict/tradeRoutes) instead. what=dossier is the single-shot helper (no ' +
+        '(list -> ship -> predict/tradeRoutes/tradeEvaluate) instead. what=dossier is the single-shot helper (no ' +
         'tools / no file access). This is the ONLY proper way to look at the game -- do not rely on ' +
         'screenshots.',
       parameters: {
         what: {
           type: 'string',
           required: true,
-          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | orderStatus | dossier | ' +
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | orderStatus | dossier | ' +
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
         orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
-        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/any plan' },
+        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/any plan' },
         x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
-        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1; Refine: must be 31' },
-        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX); Travel: use 1; Refine: must be 31' },
+        sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1; Refine: must be 31; tradeEvaluate: put it inside each boxes[] entry' },
+        sizeY: { type: 'number', description: 'box HEIGHT; required for what=predict/tradeRoutes (with sizeX); Travel: use 1; Refine: must be 31; tradeEvaluate: put it inside each boxes[] entry' },
         goodName: { type: 'string', description: 'predict Trade only: WHICH route to evaluate (from tradeRoutes)' },
         deposit: { type: 'number', description: 'predict Trade only: upfront budget (must be > 0)' },
+        deposits: { type: 'array', items: { type: 'number' }, description: 'tradeEvaluate only: 1..3 upfront-budget tiers (each > 0). The deposit changes BOTH the cargo carried and the ambush chance, so try several tiers.' },
+        goodsFilter: { type: 'array', items: { type: 'string' }, description: 'tradeEvaluate only (optional): evaluate only these route names; default = EVERY route in each box (vanilla gives at most 4 per box).' },
+        maxAttackChance: { type: 'number', description: 'tradeEvaluate: risk gate (default 0.10) used ONLY to classify rejected[] -- it never changes a number.' },
         duration: { type: 'number', description: 'predict Mine/Salvage only: task hours (optional)' },
         safeMode: { type: 'boolean', description: 'predict Mine/Salvage only: safe mode (optional)' },
-        escorts: { type: 'array', items: { type: 'string' }, description: 'predict/plan: escort ship names (optional)' },
+        escorts: { type: 'array', items: { type: 'string' }, description: 'predict/tradeEvaluate/plan: escort ship names (optional)' },
         goodsToSell: { type: 'array', description: 'predict Sell only: goods to sell (optional; default = whole hold)' },
-        boxes: { type: 'array', description: 'predict batch: array of {x,y,sizeX,sizeY,...per-action params} (N<=24)' },
+        boxes: { type: 'array', description: 'predict batch: array of {x,y,sizeX,sizeY,...per-action params} (N<=24). tradeEvaluate: array of 1..6 {x,y,sizeX,sizeY} work boxes (legal Trade shapes 17x17 / 29x11 / 11x29).' },
         compact: {
           type: 'boolean',
           description:
@@ -232,6 +243,7 @@ export function registerFleetTools(
       async execute(args: {
         what: string; ship?: string; x?: number; y?: number
         sizeX?: number; sizeY?: number; goodName?: string; deposit?: number
+        deposits?: number[]; goodsFilter?: string[]; maxAttackChance?: number
         duration?: number; safeMode?: boolean; escorts?: string[]; goodsToSell?: unknown; boxes?: unknown[]
         compact?: boolean; top?: number; full?: boolean; brief?: boolean; action?: string
         orderId?: number
@@ -249,7 +261,9 @@ export function registerFleetTools(
         }
         // tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
         // which takes far longer than a plain query -- give it room (2026-10-16).
-        const timeout = args.what === 'tradePlan' ? 120 : 10
+        // ★ tradeEvaluate = 每个框一次 run()（最多 6 框 ✓）+ 逐组合 predict（≤60 ✓）≈ 秒级；
+        //   给 60 s 上限，避免"游戏算得完而 DSH 先超时"✗✓（2026-10-18 ✓）。
+        const timeout = args.what === 'tradePlan' ? 120 : args.what === 'tradeEvaluate' ? 60 : 10
         // ★★ 计划查询的**体积旋钮**（2026-10-17 ✓✓）：原样透传给游戏侧 ✓。
         //   ★ **一个都不默认** ✗ —— 缺省由**游戏侧**定（compact=true / top=4 ✓），
         //     这样"工具说明"与"游戏行为"只有一个真相来源 ✓（不会各改各的 ✓）。
@@ -257,6 +271,8 @@ export function registerFleetTools(
         const r = await ask(peer, 'query', {
           what: args.what, ship: args.ship, x: args.x, y: args.y,
           sizeX: args.sizeX, sizeY: args.sizeY, goodName: args.goodName, deposit: args.deposit,
+          deposits: args.deposits, goodsFilter: args.goodsFilter,
+          maxAttackChance: args.maxAttackChance,
           duration: args.duration, safeMode: args.safeMode, escorts: args.escorts,
           goodsToSell: args.goodsToSell, boxes: args.boxes,
           compact: args.compact, top: args.top, full: args.full, brief: args.brief,
