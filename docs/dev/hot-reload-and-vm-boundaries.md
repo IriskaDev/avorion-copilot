@@ -70,3 +70,27 @@ pcall(chunk)
 > 另一个同源教训（也在本文件里）：`CopilotRpc.handle(cmd, **CopilotLinkIn.onQuery**)` 是
 > **抓函数指针** ✗ —— 与「引擎按名字查表」相反，重载后会留下旧指针 ✓。
 > 现已改成 `bind(name)` 间接调用，**每次现场查表** ✓✓。
+
+## ★★★ `/copilot netstop` + `netstart` 并**不**可靠（2026-10-17 真机两次实测 ✗✓）
+
+改 `net/*.lua` 之后，除了重启游戏，还有一种被文档推荐过的做法：
+`/copilot netstop` → `/copilot netstart`。**今晚实测它会把链搞成“只发不收”** ✗：
+
+| 步骤 | 真机现象（clientlog / rpc_trace.log） |
+|---|---|
+| `/copilot netstop` | `Copilot net chain: unmounted. Now run /copilot netstart.` ✓，随后心跳停 ✓ |
+| `/copilot netstart` | `remounted (**cleared 1 cached modules**)` + `[net] initialize：即将连接 …` + `已连接 ✓ 开始发 hello` ✓ |
+| 之后 DSH 发查询 | 游戏侧 trace **有** `收到一帧 95 字节`，却**没有** `dispatch type=request` ✗ → 答复永远不来 → DSH 侧 `超时 id=… cmd=query` ✗ |
+
+**两个独立证据点**：
+* `cleared 1 cached modules` —— 清 `package.loaded` 的循环跑在**命令脚本那个 VM**里（`cli.lua` ✓），
+  而 `net/*.lua` 活在**另一个 VM** ✗ → 缓存**没被清** ✓，新实例拿到的还是旧模块、`CopilotIn.installed`
+  之类的“只做一次”守卫也还在 → 事件总线上没有活的 `message` 监听者 ✓（= 有帧、无派发 ✓）。
+* 连接也会抖：新实例 connect → DSH 按协议关旧连接 → 游戏重连 …… 出现
+  `新连接到达 → 关掉旧连接` / `连接断开 ✗ 将自动重连` 反复 ✓（`rpc_dsh.log` 可见）。
+
+**结论（改口）**：
+* **改 `net/*.lua` 的唯一可靠生效方式 = 重新载入存档或重启游戏** ✓✓
+  （真机实测：主菜单 → 继续 → 按空格，链立刻恢复，`dispatch` 正常 ✓）。
+* `netstop/netstart` **不要再当常规手段** ✗ —— 只在“反正要重载存档/重启”的时候当清理用 ✓。
+
