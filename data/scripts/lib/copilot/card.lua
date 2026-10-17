@@ -876,6 +876,24 @@ function M.shipCard(player, name)
             -- ★ 同上（主人机制 ✓）：产出直接进全局资源，货舱不是限制 ✓
             yield = "recycled output goes straight into the faction stockpile of GLOBAL RESOURCES; cargo space is NOT a constraint",
         },
+        -- ★★ Refine（2026-10-17 加 ✓✓）：原版 refinecommand.lua 全文实读
+        --   · 区域 **31x31 且 isAreaFixed=true**（:318-320 getAreaSize / :326-328）→
+        --     服务端会按船重算框心（simulation.lua:790-801 ✓），调用方给的框心不作数 ✓
+        --   · 船必须在区内（:330-332 ✓）
+        --   · **不需要**精炼厂/阵营/友好度 ✓ —— 找不到精炼厂只是时长 ×2（:463-468 ✓），不是错误 ✓
+        --   · **需要货舱里有原矿**（:443-446 ✓），否则命令起不来 ✓
+        --   · 产出进**派系资源池**，货舱里的原矿被扣掉（:185-217 ✓）
+        --   · attackChance 硬编码 0、从不 registerForAttack（:364 / :51 ✓）→ 没有伏击风险
+        Refine = {
+            areaSize = { 31, 31 },
+            areaFixed = true,
+            shipMustBeInside = true,
+            needsCaptain = true,
+            requires = "ore in the cargo hold (goods tagged iron/titanium/naonite/trinium/xanion/ogonite/avorion; rich variants yield 4x)",
+            note = "refines ore already in the hold; the box is FIXED at 31x31 centred on the ship (isAreaFixed), so a 31x31 box at the ship's sector is the only real choice",
+            yield = "refined output goes straight into the faction stockpile of GLOBAL RESOURCES (addYield(..., 0, yields)); the ore itself is removed from the cargo hold",
+            noAmbushModel = true,
+        },
         Trade = {
             -- ★ 修正（2026-10-16 ✓）：合法形状只有 17x17 / 29x11 / 11x29 ✗
             --   原写 29x29 ✗ → 原版 startCommand 核对尺寸时会拒
@@ -900,7 +918,7 @@ function M.shipCard(player, name)
     --   配置只有 addCaptainsNote（:446，没有 duration/safeMode）、
     --   产出 = revealsOffgrid（新揭开的隐藏质量星区，:519-530）+ attackChance + duration
     card.scoutNote = 'Scout reveals hidden-mass sectors; the game gets better AND more dangerous toward the map centre. Area 21x21, ship must already be INSIDE it; the only config is addCaptainsNote.'
-    card.actionNames = { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout" }
+    card.actionNames = { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine" }
 
     if next(probeNotes) ~= nil then card.probe = probeNotes end
     return card
