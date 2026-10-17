@@ -34,6 +34,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 3. `fleet_query {what:"goal", ship}` → 这船目标/动作边界。
 4. ★ **自己决定要比哪几个框** → `fleet_query {what:"predict", ship, action, x, y, sizeX, sizeY, …}` → **一个框**，返回 `risk.baseAttackChance` / `value` / `box.containsShip`。
    - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）。
+   - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（`unknownCount==0` 时 = true → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
 5. 贸易：`fleet_query {what:"tradeRoutes", ship, x, y, sizeX, sizeY}` → 框内路线（`profitPerSize` 等）→ 再 `predict` 比风险。
 6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
 
