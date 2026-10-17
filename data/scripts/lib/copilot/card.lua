@@ -203,6 +203,114 @@ function M.shipCard(player, name)
         end
     end
 
+    -- ------------------------------------------------------------------
+    -- ★★★ 船的**称号 / 类别** —— 原版每船唯一可读的类别字段 ✓✓（2026-10-17 补）
+    -- ------------------------------------------------------------------
+    --
+    -- 主人上一轮把「原版没有类别字段」否掉了 ✓ —— 他说对了 ✓，本鱼当时找错了地方 ✗：
+    --   类别**不在** Entity 的属性表里，而是 **ShipDatabaseEntry 上的 title** ✓✓。
+    --
+    -- 依据（逐条实读 ✓）：
+    --   · Documentation/ShipDatabaseEntry [Server].html:848-853  `function Format getTitle()`
+    --       —— ★ **服务端也有这一份** ✓，所以跨星区、没实体的后台船照样读得到 ✓✓
+    --   · Documentation/ShipDatabaseEntry [Server].html:1253-1257 `function var setTitle(NamedFormat title)`
+    --   · Documentation/Entity.html:1103   `property string title`（可写 ✓）
+    --   · Documentation/Entity.html:1109   `property var translatedTitle` [read-only]
+    --   · Documentation/Format.html:52 `translated()`；:84 `property string text`（原串 ✓）
+    --   · ★ **原版就是拿它当"类别"用的** ✓：`data/scripts/lib/shipgenerator.lua`
+    --       :40/95/112  `ship.title = ShipUtility.getMilitaryNameByVolume(ship.volume)`
+    --       :132        `ship.title = ShipUtility.getTraderNameByVolume(ship.volume)`
+    --       :165        `ship.title = ShipUtility.getFreighterNameByVolume(ship.volume)`
+    --       :194        `ship.title = ShipUtility.getMinerNameByVolume(ship.volume)`
+    --     —— 而那几个名字表就是 "Miner / Trader / Freighter / Carrier" 这一套 ✓✓
+    --       （shiputility.lua:125-166 的 MilitaryShipTypes/Trader/Freighter/MinerShipTypes ✓）
+    --   · ★ 原版 UI 也这么显示 ✓：simulationutility.lua:508-512
+    --       `local title = entry:getTitle():translated()`
+    --       `if title ~= "" then listEntry.fullName = title .. " - " .. listEntry.fullName end`
+    --     ★ 那句 `title ~= ""` 本身就是**玩家自建船没有称号**的原版证据 ✓
+    --
+    -- ★ 「读到了空串」与「读不到」被**分开** ✓（与本文件其它字段同一规矩 ✓）：
+    --   · 调用成功 → shipTitleKnown = true，shipTitle 照写（真值；空就是真·没称号 ✓）
+    --   · 调用失败 → 不写 shipTitle ✗，probe.shipTitle 记原因 ✓
+    do
+        local okT, fmt = pcall(function() return entry:getTitle() end)
+        if okT and fmt ~= nil then
+            card.shipTitleKnown = true
+
+            -- 原始格式串（Format.text ✓；拿不到就退回 tostring ✓）
+            local raw = nil
+            local okRaw, r = pcall(function() return fmt.text end)
+            if okRaw and r ~= nil then raw = tostring(r) end
+            if raw == nil then
+                local okTs, ts = pcall(function() return tostring(fmt) end)
+                if okTs and ts ~= nil then raw = tostring(ts) end
+            end
+            card.shipTitleRaw = raw or ""
+
+            -- 已翻译文本（玩家真正看到的字 ✓）
+            local txt = nil
+            local okTr, tr = pcall(function() return fmt:translated() end)
+            if okTr and tr ~= nil then
+                txt = tostring(tr)
+            else
+                txt = raw
+                probeNotes.shipTitle = "getTitle():translated() failed: " .. tostring(tr)
+            end
+            card.shipTitle = txt or ""
+
+            if card.shipTitle == "" then
+                -- ★ 主人要的"类别"在这里**确实有空值** ✓ —— 说清楚为什么，别让模型瞎猜 ✗✓
+                -- ★ 措辞按真机事实收窄（2026-10-17 ✓）：本机 Raven 就带 "Combat" ✓，
+                --   所以不能说"玩家船一律没称号" ✗ —— 只能说"通常没有、要看具体船" ✓
+                card.shipTitleNote = "这艘船**没有称号** ✓（`ShipDatabaseEntry:getTitle()` 返回空串 ✓）。" ..
+                    "原版只给**生成出来的 NPC 船**写 title（shipgenerator.lua:40/132/165/194 用 " ..
+                    "ShipUtility.getMilitary/Trader/Freighter/MinerNameByVolume ✓），玩家自建的船**通常**没有" ..
+                    "（simulationutility.lua:512 的 `if title ~= \"\"` 就是这个意思 ✓）—— 但**不是绝对** ✓：" ..
+                    "本机 Raven 就带 `Combat` ✓。要判断这艘船是干什么的 → 看**装备 / 船长职业 / 名字** ✓；" ..
+                    "想给船挂类别可以调 `ShipDatabaseEntry:setTitle()`（服务端可写 ✓，ShipDatabaseEntry [Server].html:1253）✓。"
+            end
+        else
+            card.shipTitleKnown = false
+            probeNotes.shipTitle = "entry:getTitle() failed: " .. tostring(fmt)
+        end
+    end
+
+    -- 实体类型（EntityType.Ship / Drone / Station …）✓
+    -- 原版 `Player:getShipType` 就是同一个东西：shipfounding.lua:62
+    --   `if faction:getShipType(name) == EntityType.Ship then` ✓（refinecommand.lua:138 用的是 Station ✓）
+    -- → 它是「船/站/残骸」的**种类**，不是"这船干什么用的" ✗✓，但确是可读、可靠的类别位 ✓。
+    --
+    -- ★ 名字映射**不碰 `EntityType` 全局** ✗→✓（2026-10-17 真机实测）：
+    --   第一版用 `for k,v in pairs(EntityType)` 反查 → 真机输出 `entityType: "Unknown(1)"` ✓
+    --   （即那个 VM 里拿不到可用的 EntityType 表，数字 1 是拿到了 ✓）。
+    --   → 改成**照文档枚举顺序的硬表**（与上面 MATERIAL_NAMES 同一套路 ✓）：
+    --     Documentation/Enums.html:1069-1086 `enum EntityType`：None / Ship / Drone / Station /
+    --     Turret / Asteroid / Wreckage / Anomaly / Loot / WormHole / Torpedo / Fighter /
+    --     Container / Unknown / Other（None=0 ✓，所以 Ship=1 —— 真机 `entityTypeId: 1` 对上 ✓✓）
+    local ENTITY_TYPE_NAMES = {
+        [0] = "None", [1] = "Ship", [2] = "Drone", [3] = "Station", [4] = "Turret",
+        [5] = "Asteroid", [6] = "Wreckage", [7] = "Anomaly", [8] = "Loot", [9] = "WormHole",
+        [10] = "Torpedo", [11] = "Fighter", [12] = "Container", [13] = "Unknown", [14] = "Other",
+    }
+    do
+        local okET, et = pcall(function() return entry:getEntityType() end)
+        if okET and et ~= nil then
+            local id = tonumber(et)
+            card.entityTypeId = id
+            local name = nil
+            if id ~= nil then name = ENTITY_TYPE_NAMES[id] end
+            -- 全局表能用就优先用它（将来版本新增枚举值时仍然对 ✓）；用不上退回硬表 ✓
+            if name == nil and EntityType ~= nil then
+                for k, v in pairs(EntityType) do
+                    if v ~= nil and tonumber(v) == id then name = tostring(k) end
+                end
+            end
+            card.entityType = name or ("Unknown(" .. tostring(et) .. ")")
+        else
+            probeNotes.entityType = "entry:getEntityType() failed: " .. tostring(et)
+        end
+    end
+
     -- 进度描述（`Simulation.getDescription(shipName)` —— 与游戏舰船页显示同一句话）
     --
     -- ⚠️ 暂时不接 ✗：`include` 会**执行**目标文件，而 simulation 是游戏的后台模拟脚本 ✓。
@@ -494,6 +602,12 @@ function M.shipBrief(player, name, card)
         --   简报少给一个，两个视图就又"口径不一致"了 ✓。
         "sector", "busy", "availability", "hasCaptain", "captainClass", "captainClassId",
         "captainClassKnown",
+        -- ★★ 身份/类别三件套（2026-10-17 加 ✓✓）：与完整卡**同源** ✓（都在 shipCard 里赋值 ✓）
+        --   `shipTitle` 是原版的"称号/类别"（Miner / Trader / Carrier …）；空串 = 原版没称号 ✓
+        --   `entityType` 是 EntityType（Ship / Drone / Station …）✓
+        --   ★ 三个 title 字段是一组（值 + 原串 + 是否已知 ✓），少给一个就又"口径不一致" ✗✓
+        "shipTitle", "shipTitleRaw", "shipTitleKnown", "shipTitleNote",
+        "entityType", "entityTypeId",
         "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
         "holdHasGoods", "cargoState", "turretCount", "hyperspace", "actionNames", "actions",
         "scoutNote", "cargoNote", "probe",
