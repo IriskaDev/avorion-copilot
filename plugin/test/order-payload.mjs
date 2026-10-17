@@ -490,6 +490,19 @@ try {
       rpc.ok === true && order?.sizeX === 11 && order?.sizeY === 29,
       JSON.stringify({ x: order?.sizeX, y: order?.sizeY }))
   }
+  {
+    // ★★ e5. Sell + size=15（正方形边长 ✓✓ 2026-10-17 补）——
+    //   单发路径此前**漏解析 `size`** ✗ → 模型答 `size=15` 会被静默丢掉 → order 缺框被拒 ✗✓。
+    //   这里端到端钉住：`size=15` 必须和会话回单路径一样透传到 order 载荷 ✓✓。
+    const { rpc, order } = await decideOnce(
+      `action=Sell\nx=${HERE.x}\ny=${HERE.y}\nsize=15\ngoodsToSell=all\nreason=卖货\n`)
+    console.log(`\n[e5] order 载荷: ${show(order)}`)
+    check('e5. Sell size=15: decide 成功', rpc.ok === true, rpc)
+    check('e5. Sell size=15: ★ 载荷带 size=15（此前被静默丢掉 ✗）',
+      order?.size === 15, order?.size)
+    check('e5. Sell size=15: goodsToSell=all 不回传字符串（默认全卖 ✓）',
+      order?.goodsToSell === undefined, JSON.stringify(order?.goodsToSell))
+  }
 
   // ---- f. ★★ Sell 的**逐货数字**必须真的送到模型眼前（主人 2026-10-17 要求 ✓✓）----
   //   "送到眼前"= facts.sellPlan → buildPrompt 的 JSON 里**逐字**出现 ✓。
