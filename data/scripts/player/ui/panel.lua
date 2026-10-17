@@ -150,6 +150,11 @@ function CopilotUI.updateClient(timeStep)
         CopilotUI.refresh()
     end
 
+    -- 炮塔底座面板：只在它开着时同步服务端给的报价/结果（服务端只在按钮/选船时算 ✓）
+    if self.mountsWindow and self.mountsWindow.visible then
+        CopilotUI.refreshMounts()
+    end
+
     CopilotUI.updateHudButtonVisibility()
 end
 
@@ -206,6 +211,11 @@ function CopilotUI.buildPanel()
 
     self.hintLabel = window:createLabel(lister:nextRect(44), "", 12)
     self.hintLabel.caption = "Only ticked ships are ever touched. Everything else is left alone.\nThe decision layer itself is not wired up yet - this only stores your selection."%_t
+
+    -- ★ 炮塔底座材料升级（2026-10-17）—— 只在**玩家点击**后才动，绝不自动 ✓
+    self.mountsButton = window:createButton(lister:nextRect(30), "Turret base materials..."%_t,
+        "onMountsPressed")
+    self.mountsButton.tooltip = "Upgrade the material of turret bases on a ship you pick. Costs resources and credits."%_t
 
     -- force layout once, then hide (same order the vanilla sector overview uses)
     window:show()
@@ -607,3 +617,322 @@ function CopilotUI.setAutoShips(serialized, cfgText)
     player:setValue("copilot_auto_cfg", tostring(cfgText or ""))
 end
 callable(CopilotUI, "setAutoShips")
+
+-- ===========================================================================
+-- ★ 炮塔底座材料升级（2026-10-17）
+--
+-- 主人的规格（逐字）：材料由玩家选 / 收费 / 执行条件照抄原版修船坞 /
+-- **绝不自动升级**（只有玩家点按钮才动）/ 所有炮塔底座（含空底座）/ 面板按钮。
+--
+-- 数据路径：见 data/scripts/lib/copilot/mounts.lua 的 rebuildPlan ——
+--   ⚠ 路径 A（block.material = …）2026-10-17 真机实测是空操作 ✗，
+--     所以走**整船重建 plan + setMovePlan**（原版 plangenerator.lua:429-431 的复制方式）。
+--
+-- 不自动：本段代码只由按钮回调 / invokeServerFunction 触发；**没有** hooks 进
+-- updateServer/updateClient 的自动逻辑，也没有任何 tick 扫描 ✓。
+-- ===========================================================================
+
+local MOUNTS_WIDTH = 560
+local MOUNTS_HEIGHT = 560
+
+-- 材料名（MaterialType 0..6，Enums.html:1408-1417）—— 只用于显示，命令层用英文/数字
+local MATERIAL_LABELS = {
+    "Iron", "Titanium", "Naonite", "Trinium", "Xanion", "Ogonite", "Avorion",
+}
+
+CopilotUI.mountsWindow = nil
+CopilotUI.mountsStateText = nil
+CopilotUI.mountsConfirmPending = false
+
+local function mountsValue(player, key)
+    return tostring(player:getValue(key) or "")
+end
+
+-- 状态字符串的格式（server -> player value -> 这里解析）：
+--   SHIP|name|bases|turrets|maxMaterial
+--   SEL|name        MAT|int        COST|int|resourceUnits|credits|text     REPORT|text
+function CopilotUI.parseMountsState(text)
+    local state = { ships = {}, costs = {}, report = "", selectedShip = "", selectedMaterial = 0 }
+    for line in tostring(text or ""):gmatch("[^\n]+") do
+        local kind, rest = line:match("^([A-Z]+)|(.*)$")
+        if kind == "SHIP" then
+            local name, bases, turrets, maxMaterial =
+                rest:match("^(.-)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+            if name ~= nil then
+                state.ships[#state.ships + 1] = {
+                    name = name, bases = tonumber(bases),
+                    turrets = tonumber(turrets), maxMaterial = tonumber(maxMaterial),
+                }
+            end
+        elseif kind == "SEL" then
+            state.selectedShip = rest
+        elseif kind == "MAT" then
+            state.selectedMaterial = tonumber(rest) or 0
+        elseif kind == "COST" then
+            local value, units, credits, text =
+                rest:match("^(%-?%d+)|(%-?%d+)|(%-?%d+)|(.*)$")
+            if value ~= nil then
+                state.costs[tonumber(value)] = {
+                    units = tonumber(units), credits = tonumber(credits), text = text,
+                }
+            end
+        elseif kind == "REPORT" then
+            state.report = rest
+        end
+    end
+    return state
+end
+
+function CopilotUI.buildMountsWindow()
+    if self.mountsWindow then return end
+
+    local res = getResolution()
+    local size = vec2(MOUNTS_WIDTH, MOUNTS_HEIGHT)
+    local lower = vec2(res.x * 0.5 - size.x * 0.5, res.y * 0.5 - size.y * 0.5)
+
+    local window = Hud():createWindow(Rect(lower, lower + size))
+    self.mountsWindow = window
+    window.caption = "Turret base materials"%_t
+    window.moveable = true
+    window.showCloseButton = true
+
+    local lister = UIVerticalLister(Rect(vec2(10, 10), vec2(size.x - 10, size.y - 10)), 6, 0)
+
+    self.mountsReportLabel = window:createLabel(lister:nextRect(56), "", 13)
+    self.mountsReportLabel.caption = ""
+
+    self.mountsSelectedLabel = window:createLabel(lister:nextRect(20), "", 14)
+    self.mountsSelectedLabel.caption = ""
+
+    window:createLabel(lister:nextRect(20), "Ships in this sector"%_t, 14)
+
+    local shipList = window:createListBoxEx(lister:nextRect(120))
+    self.mountsShipList = shipList
+    shipList.columns = 2
+    shipList:setColumnWidth(0, 260)
+    shipList:setColumnWidth(1, MOUNTS_WIDTH - 260 - 40)
+    shipList.rowHeight = 22
+    shipList.entriesSelectable = true
+    shipList.onSelectFunction = "onMountsShipSelected"
+
+    window:createLabel(lister:nextRect(20), "Target material (cost)"%_t, 14)
+
+    local materialList = window:createListBoxEx(lister:nextRect(196))
+    self.mountsMaterialList = materialList
+    materialList.columns = 3
+    materialList:setColumnWidth(0, 140)
+    materialList:setColumnWidth(1, 200)
+    materialList:setColumnWidth(2, MOUNTS_WIDTH - 140 - 200 - 40)
+    materialList.rowHeight = 22
+    materialList.entriesSelectable = true
+    materialList.onSelectFunction = "onMountsMaterialSelected"
+
+    self.mountsApplyButton = window:createButton(lister:nextRect(30), "Apply upgrade"%_t,
+        "onMountsApplyPressed")
+    self.mountsApplyButton.tooltip = "First click shows the price again. Second click charges and applies."%_t
+
+    self.mountsRefreshButton = window:createButton(lister:nextRect(28), "Refresh"%_t,
+        "onMountsRefreshPressed")
+
+    window:show()
+    window:hide()
+end
+
+function CopilotUI.openMounts()
+    CopilotUI.buildMountsWindow()
+    if not self.mountsWindow then return end
+
+    self.mountsConfirmPending = false
+    if self.mountsApplyButton then
+        self.mountsApplyButton.caption = "Apply upgrade"%_t
+    end
+
+    -- 打开时向服务端要一次真实状态（报价在服务端算，客户端只显示 ✓）
+    invokeServerFunction("mountsRefresh")
+    self.mountsWindow:show()
+    Hud():addMouseShowingWindow(self.mountsWindow)
+end
+
+function CopilotUI.onMountsPressed(button)
+    if onClient() then
+        CopilotUI.openMounts()
+    end
+end
+
+function CopilotUI.refreshMounts()
+    if not self.mountsWindow or not self.mountsWindow.visible then return end
+    local player = Player()
+    if not player then return end
+
+    local text = tostring(player:getValue("copilot_mounts_state") or "")
+    if text == self.mountsStateText then return end
+    self.mountsStateText = text
+
+    local state = CopilotUI.parseMountsState(text)
+
+    if self.mountsReportLabel then
+        self.mountsReportLabel.caption = tostring(state.report):gsub(" /// ", "\n")
+    end
+
+    local selectedName = tostring(state.selectedShip or "")
+    if self.mountsSelectedLabel then
+        self.mountsSelectedLabel.caption = "Selected: " .. selectedName
+            .. "   target: " .. (MATERIAL_LABELS[state.selectedMaterial] or "?")
+    end
+
+    -- ships
+    local shipList = self.mountsShipList
+    if shipList then
+        shipList.onChangedFunction = ""
+        shipList.onSelectFunction = ""
+        shipList:clear()
+        for _, item in ipairs(state.ships) do
+            shipList:addRow()
+            local row = shipList.rows - 1
+            shipList:setEntry(0, row, item.name, false, false, ColorRGB(0.9, 0.9, 0.9))
+            shipList:setEntryType(0, row, ListBoxEntryType.Text)
+            shipList:setEntry(1, row,
+                tostring(item.bases) .. " bases / " .. tostring(item.turrets) .. " turrets",
+                false, false, ColorRGB(0.7, 0.85, 1.0))
+            shipList:setEntryType(1, row, ListBoxEntryType.Text)
+        end
+        shipList.onSelectFunction = "onMountsShipSelected"
+    end
+
+    -- materials: always 7 rows (0..6), cost only where the server could price it
+    local materialList = self.mountsMaterialList
+    if materialList then
+        materialList.onSelectFunction = ""
+        materialList:clear()
+        for value = 0, 6 do
+            materialList:addRow()
+            local row = materialList.rows - 1
+            local label = MATERIAL_LABELS[value] or tostring(value)
+            if value == state.selectedMaterial then label = "> " .. label .. " <" end
+            materialList:setEntry(0, row, label, false, false, ColorRGB(0.9, 0.9, 0.9))
+            materialList:setEntryType(0, row, ListBoxEntryType.Text)
+
+            local cost = state.costs[value]
+            local resources = "-"
+            local credits = "-"
+            if cost ~= nil then
+                resources = tostring(cost.text)
+                credits = tostring(cost.credits)
+            end
+            materialList:setEntry(1, row, resources, false, false, ColorRGB(0.8, 0.95, 0.8))
+            materialList:setEntryType(1, row, ListBoxEntryType.Text)
+            materialList:setEntry(2, row, credits, false, false, ColorRGB(0.8, 0.9, 1.0))
+            materialList:setEntryType(2, row, ListBoxEntryType.Text)
+        end
+        materialList.onSelectFunction = "onMountsMaterialSelected"
+    end
+end
+
+function CopilotUI.onMountsShipSelected()
+    if not self.mountsShipList then return end
+    local row = self.mountsShipList.selected
+    if row == nil or row < 0 or row >= self.mountsShipList.rows then return end
+    local name = self.mountsShipList:getEntry(0, row)
+    if name == nil or name == "" then return end
+    self.mountsConfirmPending = false
+    invokeServerFunction("mountsSelectShip", name)
+end
+
+function CopilotUI.onMountsMaterialSelected()
+    if not self.mountsMaterialList then return end
+    local row = self.mountsMaterialList.selected
+    if row == nil or row < 0 or row >= self.mountsMaterialList.rows then return end
+    self.mountsConfirmPending = false
+    invokeServerFunction("mountsSelectMaterial", row)
+end
+
+function CopilotUI.onMountsApplyPressed(button)
+    if not onClient() then return end
+    if self.mountsConfirmPending then
+        self.mountsConfirmPending = false
+        if self.mountsApplyButton then self.mountsApplyButton.caption = "Apply upgrade"%_t end
+        invokeServerFunction("mountsApply", true)
+    else
+        self.mountsConfirmPending = true
+        if self.mountsApplyButton then self.mountsApplyButton.caption = "Click again to confirm"%_t end
+        invokeServerFunction("mountsApply", false)
+    end
+end
+
+function CopilotUI.onMountsRefreshPressed(button)
+    if onClient() then
+        invokeServerFunction("mountsRefresh")
+    end
+end
+
+-- ---- server side ----------------------------------------------------------
+
+local function mountsCli()
+    local ok, Cli = pcall(include, "copilot/cli")
+    if ok and type(Cli) == "table" then return Cli end
+    return nil
+end
+
+function CopilotUI.mountsPushState(player, reportOverride)
+    local Cli = mountsCli()
+    if Cli == nil then return end
+    local ship = tostring(player:getValue("copilot_mounts_ship") or "")
+    local material = tonumber(player:getValue("copilot_mounts_mat")) or 1
+    player:setValue("copilot_mounts_state",
+        Cli.mountsPanelState(player, ship, material, reportOverride))
+end
+
+function CopilotUI.mountsRefresh()
+    if onClient() then
+        invokeServerFunction("mountsRefresh")
+        return
+    end
+    local player = Player(callingPlayer)
+    if not player then return end
+    CopilotUI.mountsPushState(player)
+end
+callable(CopilotUI, "mountsRefresh")
+
+function CopilotUI.mountsSelectShip(name)
+    if onClient() then
+        invokeServerFunction("mountsSelectShip", name)
+        return
+    end
+    local player = Player(callingPlayer)
+    if not player then return end
+    player:setValue("copilot_mounts_ship", tostring(name or ""))
+    CopilotUI.mountsPushState(player)
+end
+callable(CopilotUI, "mountsSelectShip")
+
+function CopilotUI.mountsSelectMaterial(value)
+    if onClient() then
+        invokeServerFunction("mountsSelectMaterial", value)
+        return
+    end
+    local player = Player(callingPlayer)
+    if not player then return end
+    player:setValue("copilot_mounts_mat", tonumber(value) or 1)
+    CopilotUI.mountsPushState(player)
+end
+callable(CopilotUI, "mountsSelectMaterial")
+
+-- ★ confirmed=false：只报价（服务端会重建副本算价，然后**一个字节都不写** ✓）
+-- ★ confirmed=true ：真正扣钱 + setMovePlan + 补炮塔样式/耐久/档案（玩家点了两次才到这里 ✓）
+function CopilotUI.mountsApply(confirmed)
+    if onClient() then
+        invokeServerFunction("mountsApply", confirmed)
+        return
+    end
+    local player = Player(callingPlayer)
+    if not player then return end
+
+    local Cli = mountsCli()
+    if Cli == nil then return end
+
+    local ship = tostring(player:getValue("copilot_mounts_ship") or "")
+    local material = tonumber(player:getValue("copilot_mounts_mat")) or 1
+    local result = Cli.mountsUpgrade(player, ship, material, confirmed and true or false)
+    CopilotUI.mountsPushState(player, table.concat(result.lines or {}, " /// "))
+end
+callable(CopilotUI, "mountsApply")

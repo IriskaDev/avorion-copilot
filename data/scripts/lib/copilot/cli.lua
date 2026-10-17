@@ -298,6 +298,863 @@ function self.opsStatus(player)
 end
 
 -- ---------------------------------------------------------------------------
+-- /copilot mounts —— 炮塔底座材料升级（**只由玩家手动触发**，绝不自动 ✓）
+--
+-- 规格（主人 2026-10-17 逐字决定 ✓）：
+--   ① 材料由**玩家选** ✓ ② **收费** ✓ ③ 执行条件**照抄原版修船坞** ✓
+--   ④ ★ **绝不自动升级**：只有玩家敲命令 / 点面板按钮才动 ✓
+--   ⑤ 目标 = **所有炮塔底座**（含空底座 ✓）⑥ 面板按钮 ✓
+--
+-- 实现路径（调研文档 docs/game/ops/mount-material-upgrade.md §8 路径 A）：
+--   getFullPlanCopy → 逐块 block.material = … → setMovePlan → 补炮塔样式/耐久/档案
+--   原版先例：data/scripts/entity/merchants/repairdock.lua:697-734 ✓
+-- ---------------------------------------------------------------------------
+
+local function mountSend(player, text)
+    player:sendChatMessage("Server", ChatMessageType.Information, text)
+end
+
+function self.mountsBaseSet()
+    local Mounts = include("copilot/mounts")
+    return Mounts.baseTypeSet(BlockType)
+end
+
+-- 找船：不给名字 = 玩家正在开的这艘 ✓；给名字 = **本星区里你自己的船** ✓。
+-- （跨星区的船没有实体可 setMovePlan —— 老实说做不到，不硬编 ✗）
+function self.mountsResolveShip(player, shipName)
+    local name = tostring(shipName or "")
+    local craft = player.craft
+    if name == "" then
+        if craft == nil then return nil, "You are not flying a ship. Use: /copilot mounts list <ship>" end
+        return craft, nil
+    end
+    if craft ~= nil and tostring(craft.name) == name then return craft, nil end
+
+    local ok, ships = pcall(function() return { Sector():getEntitiesByType(EntityType.Ship) } end)
+    if ok and type(ships) == "table" then
+        for _, entity in ipairs(ships) do
+            if entity ~= nil and tostring(entity.name) == name then
+                if entity.factionIndex == player.index then
+                    return entity, nil
+                end
+                return nil, "That ship does not belong to you."
+            end
+        end
+    end
+    return nil, "Ship '" .. name .. "' is not in this sector. Only ships in your current sector can be upgraded."
+end
+
+-- ★ 执行条件：照抄原版修船坞（repairdock.lua:681-691 + Functions.html:903-906 的
+--   canRepairInCurrentEnvironment）。判据（EnemiesNearby / UnderAttack / RecentlyDamaged）
+--   是引擎给的，不是本 mod 另造的阈值 ✓；报错文案也照抄 repairdock.lua:683-688 ✓。
+function self.mountsEnvironmentGate(ship)
+    if type(canRepairInCurrentEnvironment) ~= "function" then
+        return false, "Environment check unavailable (canRepairInCurrentEnvironment missing)."
+    end
+    local ok, result = pcall(function() return canRepairInCurrentEnvironment(ship) end)
+    if not ok then
+        return false, "Environment check failed: " .. tostring(result)
+    end
+    if result == nil then
+        return false, "Environment check returned nothing."
+    end
+    local buildingOk = (BuildError ~= nil) and BuildError.BuildingOk or nil
+    if buildingOk == nil then
+        return true, nil   -- 拿不到枚举就只认可调用成功（不阻断，但下面会再报一行）
+    end
+    if result == buildingOk then return true, nil end
+
+    local messages = {}
+    if BuildError ~= nil then
+        messages[BuildError.EnemiesNearby] = "You can't upgrade this ship while enemies are nearby."
+        messages[BuildError.UnderAttack] = "You can't upgrade this ship while enemies are nearby."
+        messages[BuildError.RecentlyDamaged] = "You were damaged recently."
+    end
+    return false, messages[result] or ("You can't upgrade this ship right now (BuildError "
+        .. tostring(result) .. ").")
+end
+
+-- 玩家能不能付：优先 canPay（repairdock.lua:710 同款，Player 继承自 Faction），
+-- 失败退到手动比对（money + getResources）。
+function self.mountsCanPay(player, quote)
+    local canPay, msg, args = nil, nil, nil
+    local ok = pcall(function()
+        canPay, msg, args = player:canPay(quote.money, table.unpack(quote.resources))
+    end)
+    if ok and canPay ~= nil then
+        return canPay and true or false, msg, args
+    end
+
+    -- 退路：自己比
+    local money = tonumber(player.money) or 0
+    if money < quote.money then
+        return false, "Not enough credits: need " .. tostring(quote.money)
+    end
+    local resourcesOk, resources = pcall(function() return { player:getResources() } end)
+    if resourcesOk and type(resources) == "table" then
+        for i = 1, #quote.resources do
+            local have = tonumber(resources[i]) or 0
+            if have < quote.resources[i] then
+                return false, "Not enough " .. include("copilot/mounts").materialName(i - 1)
+            end
+        end
+    end
+    return true, nil
+end
+
+-- 执行器：**一次调用内**从副本算到写回，不跨调用保存半成品 ✓。
+-- 返回 { ok, stage, shipName, lines, quote, changed, ... }
+-- ★ confirmed=false 时**只报价、一个字节都不改** ✓（这是"绝不自动"的硬闸门）
+function self.mountsUpgrade(player, shipName, targetValue, confirmed)
+    local Mounts = include("copilot/mounts")
+
+    local result = { ok = false, stage = "start", lines = {}, changed = 0 }
+    local function line(text) result.lines[#result.lines + 1] = tostring(text) end
+
+    local target = tonumber(targetValue)
+    if target == nil or target ~= math.floor(target) or target < 0 or target >= Mounts.NUM_MATERIALS then
+        line("Invalid target material.")
+        return result
+    end
+    local targetName = Mounts.materialName(target)
+    result.targetMaterial = target
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then line(shipErr) return result end
+    result.shipName = tostring(ship.name)
+
+    -- ① 环境闸门（照抄原版）
+    local gateOk, gateMsg = self.mountsEnvironmentGate(ship)
+    if not gateOk then
+        result.stage = "gate"
+        line(gateMsg)
+        return result
+    end
+
+    local baseSet = self.mountsBaseSet()
+    if next(baseSet) == nil then
+        line("BlockType enum unavailable - cannot identify turret bases.")
+        return result
+    end
+
+    -- ② 副本上找底座（含空底座）+ 只挑比目标低的
+    local plan, copyErr = ship:getFullPlanCopy()
+    if plan == nil then
+        line("getFullPlanCopy failed: " .. tostring(copyErr))
+        return result
+    end
+    local bases, collectErr = Mounts.collectBases(plan, baseSet)
+    result.baseCount = #bases
+    if #bases == 0 then
+        result.stage = "plan"
+        line(collectErr or "This ship has no turret bases.")
+        return result
+    end
+
+    local need = {}
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue < target then
+            need[#need + 1] = base.index
+        end
+    end
+    result.needCount = #need
+    result.basesBefore = bases
+    if #need == 0 then
+        result.stage = "plan"
+        line("Nothing to do: all " .. tostring(#bases) .. " turret base(s) are already "
+            .. targetName .. " or better.")
+        return result
+    end
+
+    -- ③ ★ 路径 B：**按树拓扑序重建一份 plan**（原版 plangenerator.lua:429-431 的逐块复制）。
+    --   ★ 为什么不用路径 A（block.material = …）✗：2026-10-17 真机实测它是**空操作**
+    --     （读回原值、资源值 delta = 0，BlockPlan 也没有按下标的 material setter），
+    --     证据见 docs/game/ops/mount-material-upgrade.md 的实测记录。
+    local oldRes, oldMoney = Mounts.snapshot(plan)
+    local newPlan, rebuild = Mounts.rebuildPlan(plan, baseSet, target, Material)
+    result.rebuild = rebuild
+    if newPlan == nil or rebuild.failed > 0 then
+        result.stage = "plan"
+        line("Plan rebuild failed - nothing was written to the ship.")
+        line("added=" .. tostring(rebuild.added) .. " failed=" .. tostring(rebuild.failed)
+            .. " upgraded=" .. tostring(rebuild.upgraded))
+        for i = 1, math.min(#rebuild.errors, 3) do line("  " .. rebuild.errors[i]) end
+        return result
+    end
+    if rebuild.upgraded ~= #need then
+        result.stage = "plan"
+        line("Plan rebuild upgraded " .. tostring(rebuild.upgraded) .. " base(s), expected "
+            .. tostring(#need) .. " - aborting, nothing was written.")
+        return result
+    end
+
+    local newRes, newMoney = Mounts.snapshot(newPlan)
+    local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
+    result.quote = quote
+    line("Upgrade " .. tostring(#need) .. " of " .. tostring(#bases) .. " turret base(s) to "
+        .. targetName .. ": " .. Mounts.formatResources(quote.resources)
+        .. " + " .. tostring(quote.money) .. " credits")
+
+    if quote.resourceUnits == 0 and quote.money == 0 then
+        result.stage = "plan"
+        line("ABORT: the rebuilt plan has the same value as the old one - nothing was written.")
+        return result
+    end
+
+    local affordable, payMsg, payArgs = self.mountsCanPay(player, quote)
+    if not affordable then
+        result.stage = "pay"
+        if payMsg ~= nil then
+            local okFmt = pcall(function()
+                line(payMsg % _T, table.unpack(payArgs or {}))
+            end)
+            if not okFmt then line("You cannot pay for this upgrade.") end
+        else
+            line("You cannot pay for this upgrade.")
+        end
+        return result
+    end
+
+    if not confirmed then
+        result.ok = true
+        result.stage = "preview"
+        line("PREVIEW ONLY - nothing was changed. Re-run with 'confirm' to apply.")
+        return result
+    end
+
+    -- ④ 执行：先记下所有要保命的东西，再 pay + setMovePlan
+    local turretDesigns = nil
+    local okTB, turretBases = pcall(function() return TurretBases(ship) end)
+    if okTB and turretBases ~= nil then
+        local okD, designs = pcall(function() return turretBases:getDesigns() end)
+        if okD and type(designs) == "table" then turretDesigns = designs end
+    end
+    if turretDesigns == nil then
+        -- 退路：原版修船坞读的是档案里的样式（repairdock.lua:729）
+        local okP, designs = pcall(function() return player:getShipTurretDesigns(ship.name) end)
+        if okP and type(designs) == "table" then turretDesigns = designs end
+    end
+
+    local durabilityRatio = 1.0
+    local okDur = pcall(function()
+        local maxDur = tonumber(ship.maxDurability) or 0
+        if maxDur > 0 then durabilityRatio = (tonumber(ship.durability) or maxDur) / maxDur end
+        if durabilityRatio > 1.0 then durabilityRatio = 1.0 end
+        if durabilityRatio < 0.0 then durabilityRatio = 0.0 end
+    end)
+
+    local turretsBefore = 0
+    pcall(function() turretsBefore = select("#", ship:getTurrets()) end)
+
+    local blockCountBefore = #(Mounts.blockIndices(plan) or {})
+    local bboxBefore = nil
+    pcall(function() bboxBefore = plan:getBoundingBox() end)
+
+    local paidOk, paidErr = pcall(function()
+        player:pay(quote.money, table.unpack(quote.resources))
+    end)
+    if not paidOk then
+        line("Payment failed: " .. tostring(paidErr))
+        return result
+    end
+    result.paid = { money = quote.money, resources = quote.resources }
+
+    local moved, moveErr = pcall(function() ship:setMovePlan(newPlan) end)
+    if not moved then
+        result.stage = "write"
+        line("setMovePlan failed: " .. tostring(moveErr) .. " (you were charged; the plan was not replaced)")
+        return result
+    end
+
+    -- 耐久按原比例保回（不白送一次修理 ✓）
+    if okDur then
+        pcall(function() ship.durability = ship.maxDurability * durabilityRatio end)
+    end
+
+    -- 炮塔样式：按 box.center 重映射后设回（setMovePlan 后索引是否重排都不怕 ✓）
+    local afterPlan = ship:getFullPlanCopy()
+    local afterBases = {}
+    if afterPlan ~= nil then
+        afterBases = Mounts.collectBases(afterPlan, baseSet)
+    end
+    local designsMapped, dropped = 0, 0
+    if turretDesigns ~= nil and next(turretDesigns) ~= nil then
+        local remapped, mapped, lost = Mounts.remapDesigns(turretDesigns, bases, afterBases)
+        designsMapped, dropped = mapped, lost
+        if next(remapped) ~= nil then
+            local okS, setErr = pcall(function() TurretBases(ship):setDesigns(remapped) end)
+            if not okS then line("Turret design restore failed: " .. tostring(setErr)) end
+        end
+    end
+
+    -- 炮塔实物：数量掉了才补（原版 repairdock.lua:734 用的是同一个 Player:restoreTurrets）
+    local turretsAfter = 0
+    pcall(function() turretsAfter = select("#", ship:getTurrets()) end)
+    if turretsAfter < turretsBefore then
+        pcall(function() player:restoreTurrets(ship) end)
+    end
+    local turretsFinal = 0
+    pcall(function() turretsFinal = select("#", ship:getTurrets()) end)
+
+    -- ★ 船档案同步（漏了这条下次修船会按旧档案把材料改回去 ✓，
+    --   原版写法：lib/entitydbg.lua:5872-5873）
+    local entrySynced = false
+    local okEntry, entry = pcall(function() return ShipDatabaseEntry(ship.factionIndex, ship.name) end)
+    if okEntry and entry ~= nil then
+        local okSet = pcall(function() entry:setPlan(ship:getFullPlanCopy()) end)
+        entrySynced = okSet
+    end
+
+    -- ⑤ 事后核验：材料真变了 / 块数没变 / 包围盒没变 / 炮塔没少
+    local verifyPlan = ship:getFullPlanCopy()
+    local verifyBases = {}
+    if verifyPlan ~= nil then verifyBases = Mounts.collectBases(verifyPlan, baseSet) end
+    local byCenter = {}
+    for _, base in ipairs(verifyBases) do
+        local key = Mounts.centerKey(base.center)
+        if key ~= nil then byCenter[key] = base end
+    end
+    local verified, wrong = 0, 0
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue < target then
+            local key = Mounts.centerKey(base.center)
+            local now = key and byCenter[key] or nil
+            if now ~= nil and now.materialValue == target then
+                verified = verified + 1
+            else
+                wrong = wrong + 1
+            end
+        end
+    end
+
+    local blockCountAfter = #(Mounts.blockIndices(verifyPlan or {}) or {})
+    local shapeKept = (blockCountAfter == blockCountBefore)
+    local bboxKept = nil
+    if verifyPlan ~= nil and bboxBefore ~= nil then
+        local okB, bboxAfter = pcall(function() return verifyPlan:getBoundingBox() end)
+        if okB and bboxAfter ~= nil then
+            local function close(a, b) return math.abs((a or 0) - (b or 0)) <= 0.001 end
+            bboxKept = close(bboxAfter.size.x, bboxBefore.size.x)
+                and close(bboxAfter.size.y, bboxBefore.size.y)
+                and close(bboxAfter.size.z, bboxBefore.size.z)
+                and close(bboxAfter.center.x, bboxBefore.center.x)
+                and close(bboxAfter.center.y, bboxBefore.center.y)
+                and close(bboxAfter.center.z, bboxBefore.center.z)
+        end
+    end
+
+    result.ok = (wrong == 0)
+    result.stage = "applied"
+    result.changed = verified
+    result.verified = verified
+    result.wrong = wrong
+    line("Applied. Paid " .. Mounts.formatResources(quote.resources)
+        .. " + " .. tostring(quote.money) .. " credits.")
+    line("Verified: " .. tostring(verified) .. " base(s) now " .. targetName
+        .. ", " .. tostring(wrong) .. " not upgraded.")
+    line("Shape: blocks " .. tostring(blockCountBefore) .. " -> " .. tostring(blockCountAfter)
+        .. (shapeKept and " (unchanged)" or " *** CHANGED ***")
+        .. "; bounding box " .. (bboxKept == nil and "unknown" or (bboxKept and "unchanged" or "*** CHANGED ***")))
+    line("Turrets: " .. tostring(turretsBefore) .. " -> " .. tostring(turretsFinal)
+        .. "; turret designs restored " .. tostring(designsMapped)
+        .. (dropped > 0 and (" (lost " .. tostring(dropped) .. ")") or ""))
+    line("Ship database plan synced: " .. (entrySynced and "yes" or "NO"))
+    return result
+end
+
+-- 预览/执行结果 → 聊天（命令层用）
+function self.mountsReport(player, result)
+    for _, text in ipairs(result.lines or {}) do
+        mountSend(player, text)
+    end
+end
+
+-- /copilot mounts ... 的命令解析
+function self.mountsCommand(player, rest)
+    local Mounts = include("copilot/mounts")
+    rest = rest or {}
+
+    local sub = tostring(rest[1] or ""):lower()
+
+    -- 无参数 / list：列底座（默认“我正在开的这艘”）
+    if sub == "" or sub == "list" then
+        local shipName = ""
+        if sub == "list" then shipName = table.concat(rest, " ", 2) end
+        local ship, shipErr = self.mountsResolveShip(player, shipName)
+        if ship == nil then
+            mountSend(player, shipErr)
+            mountSend(player, "Usage: /copilot mounts list [ship]")
+            return
+        end
+
+        local baseSet = self.mountsBaseSet()
+        local plan = ship:getFullPlanCopy()
+        local bases, collectErr = Mounts.collectBases(plan, baseSet)
+        if #bases == 0 then
+            mountSend(player, tostring(ship.name) .. ": " .. tostring(collectErr or "no turret bases"))
+            return
+        end
+
+        -- 每种底座的行（含空底座 ✓），按索引排序（getBlockIndices 的顺序即索引顺序）
+        for _, base in ipairs(bases) do
+            mountSend(player, "base #" .. tostring(base.index) .. "  material "
+                .. tostring(base.materialName) .. "  type " .. tostring(base.typeValue))
+        end
+        mountSend(player, tostring(ship.name) .. ": " .. tostring(#bases) .. " turret base(s).")
+        mountSend(player, "Preview: /copilot mounts <material> [ship]   Apply: ... confirm")
+        return
+    end
+
+    local target = Mounts.parseMaterial(sub)
+    if target == nil then
+        mountSend(player, "Unknown material '" .. tostring(rest[1]) .. "'.")
+        mountSend(player, "Materials: iron titanium naonite trinium xanion ogonite avorion (or 0-6)")
+        mountSend(player, "Usage: /copilot mounts list [ship] | /copilot mounts <material> [ship] [confirm]")
+        return
+    end
+
+    local words = {}
+    for i = 2, #rest do words[#words + 1] = tostring(rest[i]) end
+    local confirmed = false
+    if #words > 0 and tostring(words[#words]):lower() == "confirm" then
+        confirmed = true
+        table.remove(words)
+    end
+    local shipName = table.concat(words, " ")
+
+    local result = self.mountsUpgrade(player, shipName, target, confirmed)
+    self.mountsReport(player, result)
+end
+
+-- /copilot mountprobe —— ★ 只读探针：回答调研里的两个 ⚠，**绝不 setPlan/setMovePlan** ✗
+--
+--   Q1 getFullPlanCopy 可用吗 / 方块总数 / 4 种炮塔底座各几块
+--   Q2 getDesigns() 的 key 与底座方块索引是否一致（判据互验）
+--   Q3 ★ 在**副本**上 block.material = … 之后：读回变了吗 + 资源值变了吗（引用语义）
+--   Q4 ★ 改材料后 getUndamagedResourceValue 的差值 = 报价算得出来吗
+--   Q5 同一 plan 内写 material 前后索引是否稳定（setMovePlan 是否重排**只能真机执行**时才知，
+--      实现已不依赖它：炮塔样式按 box.center 重映射 ✓）
+function self.mountProbe(player, shipName)
+    local Mounts = include("copilot/mounts")
+    local function probe(text) mountSend(player, "[mountprobe] " .. tostring(text)) end
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then probe(shipErr) return end
+    probe("ship = " .. tostring(ship.name) .. " (read-only; no plan is ever written back)")
+
+    local plan = ship:getFullPlanCopy()
+    if plan == nil then probe("Q1 FAIL getFullPlanCopy returned nil") return end
+    local indices = Mounts.blockIndices(plan) or {}
+    probe("Q1 plan copy OK, blocks = " .. tostring(#indices))
+
+    local baseSet = self.mountsBaseSet()
+    if next(baseSet) == nil then probe("Q1 base type set EMPTY (BlockType missing)") return end
+
+    local bases = Mounts.collectBases(plan, baseSet)
+    local perType = {}
+    for _, base in ipairs(bases) do
+        perType[tostring(base.typeValue)] = (perType[tostring(base.typeValue)] or 0) + 1
+    end
+    local typeParts = {}
+    for key, count in pairs(perType) do typeParts[#typeParts + 1] = key .. ":" .. count end
+    probe("Q1 turret bases = " .. tostring(#bases) .. "  [" .. table.concat(typeParts, " ") .. "]")
+    probe("Q1 base materials: " .. Mounts.describeBases(bases, 12))
+
+    -- Q2 designs 的 key vs 底座索引
+    local okTB, turretBases = pcall(function() return TurretBases(ship) end)
+    if okTB and turretBases ~= nil then
+        local okD, designs = pcall(function() return turretBases:getDesigns() end)
+        if okD and type(designs) == "table" then
+            local baseByIndex = {}
+            for _, base in ipairs(bases) do baseByIndex[base.index] = true end
+            local keys, match, orphan = {}, 0, 0
+            for key in pairs(designs) do
+                keys[#keys + 1] = tostring(key)
+                if baseByIndex[key] then match = match + 1 else orphan = orphan + 1 end
+            end
+            probe("Q2 designs = " .. tostring(#keys) .. ", keys matching a base index = "
+                .. tostring(match) .. ", orphan keys = " .. tostring(orphan))
+        else
+            probe("Q2 getDesigns failed: " .. tostring(designs))
+        end
+    else
+        probe("Q2 TurretBases(ship) unavailable: " .. tostring(turretBases))
+    end
+
+    if #bases == 0 then
+        probe("Q3/Q4 skipped: no turret bases on this ship")
+        return
+    end
+
+    -- 挑一个目标：比当前最高的底座再高一档（没有更高就同档，至少能测“写入”）
+    local maxCurrent = 0
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue > maxCurrent then
+            maxCurrent = base.materialValue
+        end
+    end
+    local target = math.min(maxCurrent + 1, Mounts.NUM_MATERIALS - 1)
+
+    local need = {}
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue < target then
+            need[#need + 1] = base.index
+        end
+    end
+    if #need == 0 then
+        for _, base in ipairs(bases) do need[#need + 1] = base.index end
+        target = maxCurrent
+    end
+
+    local oldRes, oldMoney = Mounts.snapshot(plan)
+    local oldIndices = {}
+    for i, index in ipairs(indices) do oldIndices[i] = index end
+
+    local applied = Mounts.applyMaterial(plan, need, target, Material)
+    probe("Q3 target = " .. Mounts.materialName(target) .. ", tried " .. tostring(#need)
+        .. " block(s): changed=" .. tostring(applied.changed)
+        .. " already=" .. tostring(applied.already)
+        .. " failed=" .. tostring(applied.failed))
+    for i = 1, math.min(#applied.errors, 3) do probe("Q3   " .. applied.errors[i]) end
+
+    local newRes, newMoney = Mounts.snapshot(plan)
+    local resDelta, moneyDelta = 0, 0
+    if type(oldRes) == "table" and type(newRes) == "table" then
+        for i = 1, Mounts.NUM_MATERIALS do
+            resDelta = resDelta + ((tonumber(newRes[i]) or 0) - (tonumber(oldRes[i]) or 0))
+        end
+    end
+    moneyDelta = (tonumber(newMoney) or 0) - (tonumber(oldMoney) or 0)
+
+    -- ★ 这一行是 ⚠① 的**决定性证据**：资源值/信用点值变了 = material 写进 plan 数据了 ✓
+    probe(string.format("Q4 plan value delta: resources = %.3f, credits = %.3f (must be > 0)",
+        resDelta, moneyDelta))
+
+    local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
+    probe("Q4 cost to " .. Mounts.materialName(target) .. ": "
+        .. Mounts.formatResources(quote.resources) .. " + " .. tostring(quote.money) .. " credits")
+
+    local afterIndices = Mounts.blockIndices(plan) or {}
+    local sameOrder = (#afterIndices == #oldIndices)
+    if sameOrder then
+        for i = 1, #oldIndices do
+            if afterIndices[i] ~= oldIndices[i] then sameOrder = false break end
+        end
+    end
+    probe("Q5 block indices stable across material writes: " .. tostring(sameOrder))
+
+    -- 复核：再读一遍每块的材料（读回 = target？）
+    local readBack, readWrong = 0, 0
+    for _, base in ipairs(bases) do
+        local index = base.index
+        if base.materialValue ~= nil and base.materialValue < target then
+            local now = plan:getBlock(index)
+            if now ~= nil and now.material ~= nil and tonumber(now.material.value) == target then
+                readBack = readBack + 1
+            else
+                readWrong = readWrong + 1
+            end
+        end
+    end
+    probe("Q3 per-block readback: " .. tostring(readBack) .. " == target, "
+        .. tostring(readWrong) .. " mismatched")
+
+    probe("done. This probe never called setPlan/setMovePlan - your ship is untouched.")
+end
+
+-- /copilot mountrebuild —— ★ 只读第三步：验证**替代路径 B**（整船重建 plan）。
+--   只 build 一份新 plan 在内存里比对，**绝不 setPlan / setMovePlan** ✓。
+function self.mountRebuildProbe(player, shipName)
+    local Mounts = include("copilot/mounts")
+    local function probe(text) mountSend(player, "[mountrebuild] " .. tostring(text)) end
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then probe(shipErr) return end
+    local baseSet = self.mountsBaseSet()
+    local old = ship:getFullPlanCopy()
+    if old == nil then probe("getFullPlanCopy failed") return end
+
+    local bases = Mounts.collectBases(old, baseSet)
+    local maxCurrent = 0
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue > maxCurrent then
+            maxCurrent = base.materialValue
+        end
+    end
+    local target = math.min(maxCurrent + 1, Mounts.NUM_MATERIALS - 1)
+    probe("ship = " .. tostring(ship.name) .. ", blocks = "
+        .. tostring(#(Mounts.blockIndices(old) or {})) .. ", bases = " .. tostring(#bases)
+        .. ", target = " .. Mounts.materialName(target))
+
+    -- 诊断：旧 plan 前 3 块的 parent 形态（父索引取不到就重建不了树）
+    local sortedOld = Mounts.blockIndices(old) or {}
+    table.sort(sortedOld)
+    for i = 1, math.min(3, #sortedOld) do
+        local block = old:getBlock(sortedOld[i])
+        local pType, pValue = "?", "?"
+        pcall(function()
+            local parent = block.parent
+            pType = type(parent)
+            pValue = tostring(parent)
+        end)
+        probe("diag old #" .. tostring(sortedOld[i]) .. " parent type=" .. pType
+            .. " value=" .. pValue .. " parentIndex=" .. tostring(Mounts.parentIndex(block)))
+    end
+
+    local newPlan, report = Mounts.rebuildPlan(old, baseSet, target, Material)
+    if newPlan == nil then
+        probe("rebuild FAILED: " .. tostring(report.errors[1]))
+        return
+    end
+    probe("rebuild: added = " .. tostring(report.added) .. ", upgraded bases = "
+        .. tostring(report.upgraded) .. ", failed = " .. tostring(report.failed)
+        .. ", parent fallback = " .. tostring(report.parentFallback))
+    for i = 1, math.min(#report.errors, 3) do probe("  " .. report.errors[i]) end
+
+    local newCount = #(Mounts.blockIndices(newPlan) or {})
+    probe("new plan blocks = " .. tostring(newCount))
+
+    local cmp = Mounts.comparePlans(old, newPlan, report.map)
+    probe("geometry: checked = " .. tostring(cmp.checked) .. ", mismatches = "
+        .. tostring(cmp.mismatch))
+    for i = 1, math.min(#cmp.items, 5) do probe("  " .. cmp.items[i]) end
+
+    local okB, oldBox = pcall(function() return old:getBoundingBox() end)
+    local okB2, newBox = pcall(function() return newPlan:getBoundingBox() end)
+    if okB and okB2 and oldBox ~= nil and newBox ~= nil then
+        local function eq(a, b) return math.abs((a or 0) - (b or 0)) <= 0.001 end
+        local same = eq(oldBox.position.x, newBox.position.x) and eq(oldBox.position.y, newBox.position.y)
+            and eq(oldBox.position.z, newBox.position.z) and eq(oldBox.size.x, newBox.size.x)
+            and eq(oldBox.size.y, newBox.size.y) and eq(oldBox.size.z, newBox.size.z)
+        probe("bounding box identical = " .. tostring(same))
+    end
+
+    local oldRes = { Mounts.snapshot(old) }
+    local newRes = { Mounts.snapshot(newPlan) }
+    local delta = 0
+    if type(oldRes[1]) == "table" and type(newRes[1]) == "table" then
+        for i = 1, Mounts.NUM_MATERIALS do
+            delta = delta + ((tonumber(newRes[1][i]) or 0) - (tonumber(oldRes[1][i]) or 0))
+        end
+    end
+    probe(string.format("resource value delta = %.3f (must be > 0)", delta))
+    if type(oldRes[1]) == "table" and type(newRes[1]) == "table" then
+        local oldSum, newSum = 0, 0
+        for i = 1, Mounts.NUM_MATERIALS do
+            oldSum = oldSum + (tonumber(oldRes[1][i]) or 0)
+            newSum = newSum + (tonumber(newRes[1][i]) or 0)
+        end
+        probe(string.format("resource value absolute: old = %.1f, new = %.1f", oldSum, newSum))
+        local quote = Mounts.quote(oldRes[1], newRes[1], oldRes[2], newRes[2], 1.0)
+        probe("quote for this upgrade: " .. Mounts.formatResources(quote.resources)
+            .. " + " .. tostring(quote.money) .. " credits")
+    end
+
+    local okMat, wrong = 0, 0
+    for _, base in ipairs(bases) do
+        if base.materialValue ~= nil and base.materialValue < target then
+            local mapped = report.map[base.index]
+            local block = mapped ~= nil and newPlan:getBlock(mapped) or nil
+            if block ~= nil and block.material ~= nil and tonumber(block.material.value) == target then
+                okMat = okMat + 1
+            else
+                wrong = wrong + 1
+            end
+        end
+    end
+    probe("upgraded material readback: " .. tostring(okMat) .. " ok, " .. tostring(wrong) .. " wrong")
+    probe("done. This probe never wrote a plan back to the ship.")
+end
+--   于是找**按下标**的 setter（BlockPlan 有 setBlockType/setBlockColor，可能也有 setBlockMaterial）。
+--   每个候选都在**全新的 plan 副本**上试，试完只比资源值，绝不写回船 ✓。
+function self.mountSetterProbe(player, shipName)
+    local Mounts = include("copilot/mounts")
+    local function probe(text) mountSend(player, "[mountsetter] " .. tostring(text)) end
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then probe(shipErr) return end
+    local baseSet = self.mountsBaseSet()
+    local plan0 = ship:getFullPlanCopy()
+    if plan0 == nil then probe("getFullPlanCopy failed") return end
+    local bases = Mounts.collectBases(plan0, baseSet)
+    local sample = bases[1]
+    if sample == nil then probe("no turret base to test with") return end
+    local target = math.min((sample.materialValue or 0) + 1, Mounts.NUM_MATERIALS - 1)
+    local index = sample.index
+    probe("ship = " .. tostring(ship.name) .. ", sample base #" .. tostring(index)
+        .. " (" .. tostring(sample.materialName) .. " -> " .. Mounts.materialName(target) .. ")")
+
+    -- 每个候选：fn(block, plan, index) 返回 true/false 只用来表达"调用没抛错"
+    local candidates = {
+        {
+            name = "block:setMaterial(Material(v))",
+            fn = function(block, plan, i) block:setMaterial(Material(target)) end,
+        },
+        {
+            name = "block:setMaterial(v)",
+            fn = function(block, plan, i) block:setMaterial(target) end,
+        },
+        {
+            name = "block.materialValue = v",
+            fn = function(block, plan, i) block.materialValue = target end,
+        },
+        {
+            name = "block.materialIndex = v",
+            fn = function(block, plan, i) block.materialIndex = target end,
+        },
+        {
+            name = "block.material.value = v",
+            fn = function(block, plan, i) block.material.value = target end,
+        },
+        {
+            name = "plan:setBlockMaterial(i, Material(v))",
+            fn = function(block, plan, i) plan:setBlockMaterial(i, Material(target)) end,
+        },
+        {
+            name = "plan:setBlockMaterial(i, v)",
+            fn = function(block, plan, i) plan:setBlockMaterial(i, target) end,
+        },
+        {
+            name = "plan:setMaterialAt(i, Material(v))",
+            fn = function(block, plan, i) plan:setMaterialAt(i, Material(target)) end,
+        },
+        {
+            name = "plan:setMaterial(i, Material(v))",
+            fn = function(block, plan, i) plan:setMaterial(i, Material(target)) end,
+        },
+        {
+            name = "plan:setBlockMaterialTier(i, Material(v))",
+            fn = function(block, plan, i) plan:setBlockMaterialTier(i, Material(target)) end,
+        },
+        {
+            name = "block:setMaterialValue(v)",
+            fn = function(block, plan, i) block:setMaterialValue(target) end,
+        },
+        {
+            name = "plan:setBlockType(i, t) [对照组]",
+            fn = function(block, plan, i)
+                local t = plan:getBlockType(i)
+                plan:setBlockType(i, t)
+            end,
+        },
+    }
+
+    for _, candidate in ipairs(candidates) do
+        local copy = ship:getFullPlanCopy()
+        if copy == nil then
+            probe(candidate.name .. "  -> NO COPY")
+        else
+            local before = { Mounts.snapshot(copy) }
+            local beforeSum = 0
+            if type(before[1]) == "table" then
+                for k = 1, Mounts.NUM_MATERIALS do
+                    beforeSum = beforeSum + (tonumber(before[1][k]) or 0)
+                end
+            end
+            local got = copy:getBlock(index)
+            local ok, err = pcall(candidate.fn, got, copy, index)
+            local after = { Mounts.snapshot(copy) }
+            local afterSum = 0
+            if type(after[1]) == "table" then
+                for k = 1, Mounts.NUM_MATERIALS do
+                    afterSum = afterSum + (tonumber(after[1][k]) or 0)
+                end
+            end
+            local back = nil
+            pcall(function() back = copy:getBlock(index).material.value end)
+            local delta = afterSum - beforeSum
+            probe(string.format("%-42s call=%s delta=%.3f readback=%s %s",
+                candidate.name, tostring(ok), delta, tostring(back),
+                ok and "" or ("ERR:" .. tostring(err))))
+        end
+    end
+    probe("done. No plan was ever written back to the ship.")
+end
+
+-- 面板用：把当前状态序列化成 player value（面板块是纯文本，见 panel.lua 的说明）
+function self.mountsPanelState(player, selectedShip, selectedMaterial, reportOverride)
+    local Mounts = include("copilot/mounts")
+    local lines = {}
+
+    -- 本星区里属于玩家的船（面板“挑一艘” = 这里列出的这些）
+    local ok, ships = pcall(function() return { Sector():getEntitiesByType(EntityType.Ship) } end)
+    if ok and type(ships) == "table" then
+        local baseSet = self.mountsBaseSet()
+        local list = {}
+        for _, entity in ipairs(ships) do
+            if entity ~= nil and entity.factionIndex == player.index then
+                local plan = entity:getFullPlanCopy()
+                local bases = {}
+                if plan ~= nil then bases = Mounts.collectBases(plan, baseSet) end
+                list[#list + 1] = {
+                    name = tostring(entity.name),
+                    bases = #bases,
+                    turrets = select("#", entity:getTurrets()),
+                    maxMaterial = (function()
+                        local m = -1
+                        for _, base in ipairs(bases) do
+                            if base.materialValue ~= nil and base.materialValue > m then m = base.materialValue end
+                        end
+                        return m
+                    end)(),
+                }
+            end
+        end
+        table.sort(list, function(a, b) return a.name < b.name end)
+        for _, item in ipairs(list) do
+            lines[#lines + 1] = "SHIP|" .. item.name .. "|" .. tostring(item.bases)
+                .. "|" .. tostring(item.turrets) .. "|" .. tostring(item.maxMaterial)
+        end
+    end
+    lines[#lines + 1] = "TOTAL|" .. tostring(#lines)
+
+    local shipName = tostring(selectedShip or "")
+    if shipName == "" and player.craft ~= nil then shipName = tostring(player.craft.name) end
+    lines[#lines + 1] = "SEL|" .. shipName
+
+    local target = tonumber(selectedMaterial)
+    if target == nil or target ~= math.floor(target) or target < 0 or target >= Mounts.NUM_MATERIALS then
+        target = 1
+    end
+    lines[#lines + 1] = "MAT|" .. tostring(target)
+
+    -- 选中船的 7 档报价 —— ★ 用“只含底座的微型 plan”算（Mounts.basesPlan）：
+    --   路径 A（在副本上改 block.material）是空操作 ✗，所以这里**绝不能**用那种写法；
+    --   24 块的微型 plan × 7 档 = 168 次 addBlock，秒出（整船 4617 块 × 7 会卡 ✗）。
+    local ship = self.mountsResolveShip(player, shipName)
+    if ship ~= nil then
+        local baseSet = self.mountsBaseSet()
+        local plan = ship:getFullPlanCopy()
+        if plan ~= nil then
+            local bases = Mounts.collectBases(plan, baseSet)
+            local oldBasePlan = Mounts.basesPlan(bases, nil, Material)
+            local oldRes, oldMoney = Mounts.snapshot(oldBasePlan)
+            for value = 0, Mounts.NUM_MATERIALS - 1 do
+                local newBasePlan = Mounts.basesPlan(bases, value, Material)
+                if newBasePlan ~= nil then
+                    local newRes, newMoney = Mounts.snapshot(newBasePlan)
+                    local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
+                    lines[#lines + 1] = "COST|" .. tostring(value) .. "|"
+                        .. tostring(quote.resourceUnits) .. "|" .. tostring(quote.money)
+                        .. "|" .. Mounts.formatResources(quote.resources)
+                end
+            end
+        end
+    end
+
+    -- 选中材料的预览（走完整重建路径，报价与执行时完全同一套代码 ✓）
+    local preview
+    if reportOverride ~= nil and reportOverride ~= "" then
+        preview = tostring(reportOverride)
+    else
+        local result = self.mountsUpgrade(player, shipName, target, false)
+        preview = table.concat(result.lines or {}, " /// ")
+    end
+    lines[#lines + 1] = "REPORT|" .. preview
+    return table.concat(lines, "\n")
+end
+
+-- ---------------------------------------------------------------------------
 -- 热重载（开发提速）
 -- ---------------------------------------------------------------------------
 --
@@ -321,6 +1178,10 @@ local RELOADABLE = {
     -- ★ 命令中枢（2026-10-16 起逻辑在本文件 ✓）—— 必须在表里 ✗✓，
     --   否则以后改它按 `/copilot reload` 不会生效 ✓（只能重启游戏 ✓）。
     "data\\scripts\\lib\\copilot\\cli.lua",
+    -- ★ 炮塔底座材料升级的纯逻辑（2026-10-17）—— 改它也只要 `/copilot reload` ✓。
+    --   include 会缓存它，但文件体是 `CopilotMounts = CopilotMounts or {}` + 定义，
+    --   重执行 = 原地换掉函数实现 ✓（和 cli.lua 同一个 VM）。
+    "data\\scripts\\lib\\copilot\\mounts.lua",
     "data\\scripts\\commands\\copilot.lua",
     "data\\scripts\\net\\net.lua",
     "data\\scripts\\net\\inbound.lua",
@@ -563,11 +1424,26 @@ function self.execute(player, arg, rest)
     elseif a == "ops" then
         self.opsStatus(player)
 
+    -- ★ 炮塔底座材料升级（只由玩家手动触发，绝不自动 ✓）
+    --   全部逻辑在 mountsUpgrade / mountsCommand 里；本分支只做分发 ✓。
+    elseif a == "mounts" or a == "mount" then
+        self.mountsCommand(player, rest)
+
+    -- ★ 只读探针（验证调研里的两个 ⚠；绝不写回船 ✓）
+    elseif a == "mountprobe" or a == "mountprobe2" then
+        self.mountProbe(player, table.concat(rest, " "))
+
+    elseif a == "mountsetter" then
+        self.mountSetterProbe(player, table.concat(rest, " "))
+
+    elseif a == "mountrebuild" then
+        self.mountRebuildProbe(player, table.concat(rest, " "))
+
     elseif a == "probe" then
         copilotProbe(player)
 
     else
-        player:sendChatMessage("Server", ChatMessageType.Information, "Copilot: /copilot on | off | explore on|off | status | ops | reload | probe"%_t)
+        player:sendChatMessage("Server", ChatMessageType.Information, "Copilot: /copilot on | off | explore on|off | status | ops | mounts | mountprobe | reload | probe"%_t)
     end
 
     return 0, "", ""
@@ -576,6 +1452,6 @@ end
 
 self.DESCRIPTION = "Toggle the Copilot autopilot that plays your current ship"
 
-self.HELP = "Usage: /copilot on | off | explore on|off | status | ops | reload | probe | goal <ship> <text|options ...|clear>"
+self.HELP = "Usage: /copilot on | off | explore on|off | status | ops | mounts [list|<material> [ship] [confirm]] | mountprobe [ship] | reload | probe | goal <ship> <text|options ...|clear>"
 
 return self
