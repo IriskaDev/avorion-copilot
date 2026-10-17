@@ -86,3 +86,14 @@
 
 证据：原版注册表 `player/background/simulation/commandtype.lua:8-25`（13 条）✓；
 本 mod 的 action 表 `data/scripts/net/link_in.lua:254-264` ✓（6 条，UUID 实读自原版）。
+
+## 13. 「能打不能打」：炮塔/武装判据 —— [`weapons-and-combat-readiness.md`](weapons-and-combat-readiness.md)
+
+- 那句 **「你的 X 舰船没有炮塔或武装舰载机！」** 的唯一出处：`lib/entity.lua:81`，
+  判据只有三条（鱼雷 / 已装**武装**炮塔 / 武装舰载机，`:47-85`）✓；
+  ★ 它在**实体脚本恢复时**也会跑（`orderchain.lua:314-332`），所以常在加载后冒出来 ✓。
+- 三种口径别混：**已装**（`entry:getTurrets()`，一个表、炮塔是键 ✓）/ **实体**
+  （`Entity:getNumArmedTurrets()`，多返回值那边的邻居 ✓）/ **蓝图槽位**（本卡不读 ✗）。
+- ★ 能力卡旧 `turretCount` **恒为 1** ✗（把一张表当成多返回值去 `#`）—— 已修 ✓；
+  现在给 `turretCount / turretCategories / armedTurrets / fighters / torpedoes / dps /
+  liveArmedTurrets / canFight`，取不到一律「不写 + `known=false`」✓。
