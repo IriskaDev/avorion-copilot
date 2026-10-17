@@ -16,11 +16,13 @@
  * ```
  * ① 投递目标会话（若主人指定且活着）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
- *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队，直接下② ✓
- *      超时          → cancel({kind:'timeout'}) → 下② ✓
- *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下② ✓
+ *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队 → 下①.9 ✓
+ *      超时          → cancel({kind:'hook'}) → 下①.9 ✓
+ *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下①.9 ✓
  *      在问主人       → **显式延期**（ASKED_OWNER：不派单、写清原因 ✓）—— 不是失败 ✓
- * ② 今天的单发事实调用（**保留，永远在**）★ 现在有**硬期限**了（今天没有 ✗）
+ * ①.9 ★★ 兜底不许下单（live 模式）：会话**在线**却没答成 → 直接 None（fallbackNone）✓
+ *       （只有「没有指挥官」或「会话明确离线/不在 registry」才允许下②单发 ✗）
+ * ② 今天的单发事实调用（**保留**：没有指挥官 / 会话离线时才走 ★ 有**硬期限** ✓）
  * ③ 都没有 → action=None + 原因写清 ✓
  * ```
  *
@@ -167,7 +169,33 @@ export async function dispatchDecision(deps, req) {
                 session: sessionAttempt,
             };
         }
-        say(`  [ladder] 会话那一级没成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）→ 下②单发 ✓`);
+        say(`  [ladder] 会话那一级没成：${sessionAttempt.code ?? '?'}（${sessionAttempt.message ?? ''}）`);
+    }
+    // ---- 阶梯①.9：★★ 兜底不许下单（2026-10-17 主人铁律）--------------------
+    //   当投递目标会话**已指定且在线**（`agent` 还在 registry ✓）而这一轮它没给出可用
+    //   答案（忙 / 超时 / 答错船 / 无动作行 / 锁被占 …）→ 本轮**绝不**让单发模型替它拍板 ✗
+    //   → 直接 None（fallbackNone）。
+    //
+    //   ★ 判定"慢"与"不在"（这是唯一的判据，代码里就这一处 ✓）：
+    //     · `deps.commanderId === undefined`          → **没有指挥官** → 允许单发 ✓；
+    //     · `agent === undefined`（registry 里取不到） → 会话**明确离线/已关/不可用** → 允许单发 ✓；
+    //     · 其余（agent 在、但忙/超时/没答成）          → **在线但慢** → 兜底 = None ✗（不许单发 ✓）。
+    //   ★ shadow 模式不在这里 ✗：影子模式里单发**本来就是**决策者（会话只观测 ✓），
+    //     不是"兜底替它拍板"，所以不受这条铁律约束 ✓（见下面阶梯②）。
+    if (mode === 'live' && deps.commanderId !== undefined && agent !== undefined) {
+        const why = sessionAttempt !== undefined
+            ? (sessionAttempt.code ?? 'NO_ANSWER')
+            : 'SESSION_BUSY';
+        say(`  [ladder] ★ 指挥官会话在线但本轮没答成（${why}）→ 兜底 = None（fallbackNone），` +
+            '**不许单发替它拍板** ✗');
+        return {
+            action: 'None',
+            params: {},
+            reason: `投递目标会话在线，但本轮没给出可用答案（${why}）—— 按主人规矩本轮**不下单**、` +
+                '也不让单发模型替它决策 ✗；下一轮（状态变化或冷却到期）会再次征询',
+            source: 'fallbackNone',
+            session: sessionAttempt,
+        };
     }
     // ---- 阶梯②：今天的单发事实调用（★ 现在有硬期限 ✓）-----------------------
     if (sessionAttempt !== undefined && mode === 'shadow') {
@@ -234,7 +262,7 @@ export async function dispatchDecision(deps, req) {
  *
  * ★ 为什么期限是"不管它了"而不是"掐掉" ✗：`ctx.llm.stream` 没有取消参数 ✗
  *   （今天就没法掐 ✓）。所以超时后我们**不再等它**、直接返回 ✓ —— 那条流会自己在后台
- *   收完（最多烧掉一份 maxTokens ✓），但这**不影响舰队** ✓✓。
+ *   收完（最多多跑一轮输出 ✓），但这**不影响舰队** ✓✓。
  *
  * ★ 重试一次（可选）：与今天 `index.ts` 里的重试同源 ✓ —— 同一批事实、只要求答案行、
  *   **只此一次** ✓、不重取数据 ✓。`hint` 交给调用方拼进提示词 ✓。
@@ -263,7 +291,7 @@ async function runSingleShot(deps, retryBudgetMs, say) {
         return { ok: true, ...parsed, text: first.value.text, truncated: first.value.truncated };
     }
     // ---- 只有"完全没有动作行"才重试 ✓（其它问题重试也救不回来 ✗）------------
-    //   ★ 默认**允许**（= 今天 index.ts 里那条重试 ✓ —— 实机事故：她想太久、正文一个动作行都没吐 ✓）；
+    //   ★ 默认**允许**（= 今天 index.ts 里那条重试 ✓ —— 实机事故：正文一个动作行都没吐 ✓）；
     //     传 retrySingleShotOnce:false 可关掉 ✓。
     const allowed = deps.retrySingleShotOnce !== false;
     const canRetry = allowed && retryBudgetMs > 0 && parsed.why === 'no action line';

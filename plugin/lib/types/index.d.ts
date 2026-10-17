@@ -86,6 +86,11 @@ interface CopilotConfig {
     steerWhenBusy?: boolean;
     /** 会话第一次答不上来时要不要再投一次（默认 false ✓）；单发那次重试默认开 ✓ */
     retrySessionOnce?: boolean;
+    /**
+     * ★★ 待命裁定冷却（毫秒）：决策者判某船 None 后，同船这段时间内不再征询 ✓
+     *   （默认 20 分钟；主人建议 15~30 分钟 ✓）。目标改变 / 手动召回会提前恢复 ✓。
+     */
+    noneCooldownMs?: number;
 }
 /**
  * ★★ 一次决策的完整记录（主人在 DSH 里要看得见的东西 ✓✓）。
@@ -97,6 +102,18 @@ interface CopilotConfig {
  *   ④ 结论  answer（action / params / reason）
  *   ⑤ 结果  orderResult（下单回执 ✓）/ code + message（失败时 ✓）
  */
+/**
+ * ★★ 决策的**粗粒度来源**标签（2026-10-17 主人要求 ✓✓）——
+ *   进「上一单的结果」块文案与 fleet_decisions，让主人一眼看出"这单谁定的" ✓。
+ *   `source` 更细（区分 shadow / asked-owner / none），`decider` 只回答"谁拍板/谁不下单" ✓。
+ */
+export type Decider = 'session' | 'single-shot' | 'rendezvous' | 'fallbackNone';
+/**
+ * ★ source → decider 的**单一映射**（只有一个真相来源 ✓）：
+ *   · 会话定的（含她在问主人）→ session；单发定的（含影子采纳）→ single-shot；
+ *   · rendezvous → rendezvous；「都没有」与「兜底不下单」→ fallbackNone ✓。
+ */
+export declare function deciderOf(source: string | undefined): Decider | undefined;
 export interface DecisionRecord {
     at: string;
     ship: string;
@@ -110,8 +127,19 @@ export interface DecisionRecord {
      *   `asked-owner`  = 她在问主人 → 本轮**明确延期**、未派单 ✓（人在环里 ✓）
      *   `none`         = 两条路都没有可用答案 ✓
      *   `rendezvous`   = 插件自己先派护航、本轮不下单 ✓（既有逻辑 ✓）
+     *   `fallbackNone` = ★ 指挥官会话在线但本轮没答成 → 兜底 = None（不许单发拍板 ✓）
      */
-    source?: 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'none' | 'rendezvous';
+    source?: 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'none' | 'rendezvous' | 'fallbackNone';
+    /**
+     * ★★ 这一单**谁定的**（2026-10-17 主人要求 ✓✓）—— 与 `source` 互补的**粗粒度**标签，
+     *   贯通到「上一单的结果」块文案与 fleet_decisions ✓：
+     *   · `session`      = 会话定的（含 `asked-owner`：是她在问主人，也算她这一级 ✓）；
+     *   · `single-shot`  = 单发定的（含 `shadow`：影子模式下采纳的也是单发 ✓）；
+     *   · `rendezvous`   = 护航 rendezvous 定的 ✓；
+     *   · `fallbackNone` = 兜底说"不下单"（会话在线但没答成 / 待命裁定冷却期内 ✓）。
+     *   ★ 由 `deciderOf(source)` 单一映射 ✓ —— 旧记录没有它就按 source 反推 ✓。
+     */
+    decider?: Decider;
     card?: unknown;
     routes?: unknown;
     ok: boolean;
@@ -142,6 +170,35 @@ export interface DecisionRecord {
         targetBytes: number;
     };
     dossierBytes?: unknown;
+    /**
+     * ★★ 下单回执（结构化，2026-10-17 补 ✓✓）：把游戏 order 的 accepted/executed/error 落盘 ✓。
+     *   · `accepted` = 游戏收下了这单（没被拒 ✓）；
+     *   · `executed` = 真的排进了 startCommand（两段式第二阶段 ✓）；
+     *   · `error`   = 失败/被拒/未执行时的原因（游戏原话 or "not connected to the game" ✓）。
+     */
+    receipt?: OrderReceipt;
+    /**
+     * ★★ 失败回投的完整记录（2026-10-17 补 ✓✓）：每回投一次就记一行 ✓，
+     *   `reason` = 上一单为什么失败 / `action` = 回投后重新选了啥 / `receipt` = 那次下单的回执 ✓。
+     */
+    redeliveries?: Array<{
+        at: string;
+        reason: string;
+        action?: string;
+        params?: Record<string, unknown>;
+        receipt?: OrderReceipt;
+        note?: string;
+    }>;
+    /** ★★ 回投达到上限/退避而停止时，写明"需人工介入"的原因 ✓ */
+    needsIntervention?: string;
+}
+/** ★ 下单回执（2026-10-17 补 ✓）：`accepted` + `executed` + `error`，跨重启可审计 ✓ */
+export interface OrderReceipt {
+    at: string;
+    accepted: boolean;
+    executed: boolean;
+    error?: string;
+    note?: string;
 }
 /**
  * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。
@@ -154,6 +211,17 @@ export declare function live(msg: string): void;
 export declare function liveRaw(kind: 'reasoning' | 'text', delta: string): void;
 /** 读回落盘的记录（DSH 重启后仍能看到历史 ✓） */
 export declare function readDecisionFile(limit: number): DecisionRecord[];
+/**
+ * ★ 上一次决策的"你上一单的结果"（2026-10-17 补 ✓）：给下一轮任务块用 ✓。
+ *   先查内存（最近的 ✓），没有再回落盘 ✓ —— 这样 DSH 重启后下一轮也能看到历史 ✓。
+ */
+/**
+ * ★ 把一条决策记录渲染成「上一单的结果」一行（**带 decider 来源标签** ✓✓）。
+ *   2026-10-17 主人要求：不许把单发/兜底的结论写成"你（会话）上一单" ✗ ——
+ *   所以每一行都带 `[session]` / `[single-shot]` / `[rendezvous]` / `[fallbackNone]` ✓。
+ *   导出给测试 ✓。
+ */
+export declare function renderPrevResult(rec: DecisionRecord): string | undefined;
 /** ★ 单一来源：模型可以选的**全部**行动 ✓
  *  提示词（prompt/system.md 的输出格式）、这里（解析器）、以及 toAnswer 的默认白名单
  *  三处**必须一致** ✗ —— 2026-10-17 的 pro 审查抓到 `Scout` / `Sell` 漏在解析器与白名单之外 ✓，

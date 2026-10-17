@@ -21,7 +21,7 @@
  * occasionally (see NATIVE.md), and a broken plugin would need a DSH restart to detect.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { readDecisionFile } from './index.js';
+import { readDecisionFile, deciderOf } from './index.js';
 /** Wrap the callback-based RpcPeer.call into a Promise (tool execute is async). */
 export function ask(peer, cmd, data, timeoutSec = 15) {
     return new Promise((resolve) => {
@@ -57,6 +57,8 @@ function addTool(ctx, def, label) {
     }, label);
 }
 export function registerFleetTools(ctx, peer, decisionLog, commander, 
+/** ★ 待命裁定（2026-10-17 ✓）：召回/改目标时清掉同船的 None 冷却 ✓ */
+standby, 
 /** the recall/query timeouts differ in tests; keep the production defaults */
 opts = {}) {
     // ---------------------------------------------------------------------
@@ -234,7 +236,10 @@ opts = {}) {
     addTool(ctx, {
         name: 'fleet_escort',
         description: 'Send an escort ship to the target ship sector with a Travel background command, so the ' +
-            'target can later take a risky job with a SAME-SECTOR escort. HARD RULE: an escort only ' +
+            'target can later take a risky job with a SAME-SECTOR escort. FIRST judge whether the target ' +
+            'actually needs it: predict the target job ambush risk (risk.baseAttackChance); at/below the ' +
+            '10% gate it usually does NOT need an escort, and combat ships are allowed to idle, so do not ' +
+            'send one just to give an idle ship work. HARD RULE: an escort only ' +
             'counts if it is in the same sector as the action ship, so this is the only way to make an ' +
             'escort usable. The target sector is resolved here from the target ship card. Travel needs a ' +
             'destination at least 2 jumps away; if the game refuses for any reason, the refusal is ' +
@@ -367,6 +372,11 @@ opts = {}) {
             const r = await ask(peer, 'setGoal', args, 10);
             if (!r.ok)
                 return `set goal failed: ${r.why ?? 'unknown'}`;
+            // ★ 改了目标 → 清掉待命冷却（目标指纹本就变了会自恢复；这里再显式清一次 ✓）
+            try {
+                standby?.clear(args.ship);
+            }
+            catch { /* 清冷却失败不影响改目标 ✓ */ }
             return `goal updated for ${args.ship}\n${text(r.data)}`;
         },
     }, 'fleet_goal tool');
@@ -395,6 +405,11 @@ opts = {}) {
             const r = await ask(peer, 'recall', { ship: args.ship }, 20);
             if (!r.ok)
                 return `recall failed: ${r.why ?? 'unknown'}`;
+            // ★ 手动召回 = 主人想重新评估 → 清掉该船的待命冷却 ✓（绝不"永远不问" ✗）
+            try {
+                standby?.clear(args.ship);
+            }
+            catch { /* 清冷却失败不影响召回 ✓ */ }
             return `recalled: ${args.ship}\n${text(r.data)}`;
         },
     }, 'fleet_recall tool');
@@ -420,10 +435,13 @@ opts = {}) {
                 'needs a decision gets a delimited <fleet_task> block delivered into that session ' +
                 '(visible as a normal user message) and its answer is mapped onto the same order path the ' +
                 'plugin already had. Only ONE session is ever the commander: designating a new one ' +
-                'displaces the previous one immediately. The session is never interrupted: if you are ' +
-                'chatting, the decision falls back to the plugin single-shot model call. Call with no ' +
-                'arguments to see the current commander. Pass session=<id> to designate it, or clear=true ' +
-                'to stop delivering -- clearing restores the pure single-shot behaviour.',
+                'displaces the previous one immediately. The session is never interrupted: in LIVE mode, ' +
+                'if the commander session is online but busy or times out, the decision DEFERS ' +
+                '(action=None) instead of letting the single-shot model order on its behalf. The ' +
+                'single-shot path only decides when there is NO commander or the session is ' +
+                'offline/unavailable. Call with no arguments to see the current commander. Pass ' +
+                'session=<id> to designate it, or clear=true to stop delivering -- clearing restores ' +
+                'the pure single-shot behaviour.',
             parameters: {
                 session: {
                     type: 'string',
@@ -481,9 +499,10 @@ opts = {}) {
                         lines.push(`  session status: ${String(agent?.status ?? 'unknown')}`);
                     lines.push(`  lease: ${commander.leaseFresh() ? 'fresh (recently received a task)' : 'stale/never used'} -> ` +
                         `${st.leasedUntil === null ? 'never delivered' : new Date(st.leasedUntil).toISOString()}`);
-                    lines.push('  NOTE: a BUSY session is never interrupted; the decision falls back to the ' +
-                        'plugin single-shot call instead. Fleet tasks are delimited by <fleet_task> and require ' +
-                        'a task=<id> echo, so they never get confused with your own words.');
+                    lines.push('  NOTE: a BUSY session is never interrupted; in LIVE mode the decision then DEFERS ' +
+                        '(action=None) instead of letting single-shot order. Only when there is no commander, or the ' +
+                        'session is offline/unavailable, does the single-shot path decide. Fleet tasks are delimited ' +
+                        'by <fleet_task> and require a task=<id> echo, so they never get confused with your own words.');
                 }
                 lines.push('  mode: shadow by default -- the session answer is recorded and compared with the ' +
                     'single-shot answer, but the single-shot answer is what actually gets ordered. ' +
@@ -551,6 +570,8 @@ opts = {}) {
                 const idx = filtered.length - recent.length + i + 1;
                 lines.push('');
                 lines.push(`--- #${idx}  ${rec.ship}  ${rec.at}  ${rec.ok ? 'OK' : 'FAILED'} ---`);
+                // ★★ decider 来源（2026-10-17 主人要求 ✓）：一眼看出这单谁定的 ✓
+                lines.push(`decider: ${rec.decider ?? deciderOf(rec.source) ?? '?'}${rec.source !== undefined ? ` (source=${rec.source})` : ''}`);
                 lines.push(`goal: ${rec.goalText !== '' ? rec.goalText : '(no free text)'}`);
                 if (rec.goalOptions.length > 0)
                     lines.push(`allowed actions: ${rec.goalOptions.join(', ')}`);
@@ -594,6 +615,27 @@ opts = {}) {
                 }
                 if (rec.orderResult !== undefined) {
                     lines.push(`order: ${JSON.stringify(rec.orderResult)}`);
+                }
+                // ★ 结构化回执（2026-10-17 ✓）：accepted/executed/error —— 一眼看清这单到底下没下成 ✓
+                if (rec.receipt !== undefined) {
+                    const r = rec.receipt;
+                    const okText = r.accepted && r.executed ? 'OK' : 'FAILED';
+                    lines.push(`receipt: ${okText} accepted=${String(r.accepted)} executed=${String(r.executed)}` +
+                        (r.error !== undefined ? ` error=${r.error}` : '') +
+                        (r.note !== undefined ? ` note=${String(r.note).slice(0, 80)}` : ''));
+                }
+                // ★ 失败回投记录（2026-10-17 ✓）
+                if (rec.redeliveries !== undefined && rec.redeliveries.length > 0) {
+                    lines.push(`redeliveries (${rec.redeliveries.length}):`);
+                    for (const rd of rec.redeliveries) {
+                        const how = rd.receipt !== undefined
+                            ? (rd.receipt.accepted && rd.receipt.executed ? 'accepted ✓' : 'failed')
+                            : (rd.action === 'None' ? 'decided None' : (rd.note ?? 'no decision'));
+                        lines.push(`  - ${rd.reason} → ${rd.action ?? '(no action)'} [${how}]`);
+                    }
+                }
+                if (rec.needsIntervention !== undefined) {
+                    lines.push(`★ 需人工介入: ${rec.needsIntervention}`);
                 }
                 if (!rec.ok && rec.code !== undefined) {
                     lines.push(`error: ${rec.code} - ${rec.message ?? ''}`);

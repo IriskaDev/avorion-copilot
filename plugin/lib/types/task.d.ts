@@ -59,8 +59,16 @@ export interface TaskRequest {
      *   会话要用计划就**自己查**（`fleet_query` 的 `*Plan`，缺省 compact ✓）。
      */
     planText?: string;
-    /** 建议预算（秒）；写进任务头，让她知道"别慢慢查" ✓ */
+    /** 建议预算（秒）；写进任务头，告知会话层硬期限 ✓ */
     deadlineHintSec: number;
+    /**
+     * ★ 上一单结果（2026-10-17 补 ✓）：渲染时附在块末尾的「你上一单的结果」一行 ✓。
+     *   用途两个（同一字段 ✓）：
+     *     · 正常轮：决策者下一轮就能看到"上次成没成"（不触发回投也看得见 ✓）；
+     *     · 失败回投：带上一单的失败原因 + "请重新决策" ✓。
+     *   ★ 体积预算 ~200 字节：超了就当没加上 ✗✓（renderTaskBlock 会跳过 ✓）。
+     */
+    prevResult?: string;
 }
 /** 校验结论 */
 export type AnswerCode = 'EMPTY_REPLY' | 'NO_ACTION_LINE' | 'ASKED_OWNER' | 'TASK_MISMATCH' | 'BAD_ACTION';
@@ -88,6 +96,8 @@ export type AnswerVerdict = {
  * ★ 与 index.ts 那份**故意保持同形** ✓ —— 两边读同一份"她的回答"必须得出一致的结论 ✓。
  */
 export declare function field(text: string, key: string): string | undefined;
+/** ★ 「你上一单的结果」一行的字节预算（~200 ✓；超了就当没加 ✗✓） */
+export declare const PREV_RESULT_BUDGET_BYTES = 200;
 /**
  * ★★★ 渲染任务块 —— **只告知，不灌数据** ✓✓（2026-10-17 主人批准的改动）
  *
@@ -103,8 +113,8 @@ export declare function field(text: string, key: string): string | undefined;
  * | `task=<id>` 回显 | **唯一**能认出"哪条回复是这一单"的锚点 ✓（见文件头 ✓）；对不上就判 MISMATCH 并走阶梯 ✓ |
  * | 一行"它空闲了、要一个决策" | 这就是**全部**的请求内容 ✓（主人原话 ✓） |
  * | 工具指针 | 让"自拉"变得**不用猜** ✓ —— 哪个 `what` 查什么、哪个参数要小答案 ✓（这是这次改动的**关键**：光说"你自己查"而不给路由，等于把体积问题换成瞎猜问题 ✗✓） |
- * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 让她知道别慢慢查 ✓ |
- * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：她想太久、正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
+ * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 写进任务头告知硬期限 ✓ |
+ * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
  *
  * ★ 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与 `src/index.ts` 的重试路径
  *   都记录了同一个事故 ✓ —— 把契约写清楚，最坏情况丢的是散文，不是结论 ✓。

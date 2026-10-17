@@ -80,6 +80,10 @@ export declare function ask(peer: RpcPeer, cmd: string, data: unknown, timeoutSe
     why?: string;
 }>;
 export declare function registerFleetTools(ctx: ToolCtx, peer: RpcPeer, decisionLog?: DecisionRecord[], commander?: CommanderBridge, 
+/** ★ 待命裁定（2026-10-17 ✓）：召回/改目标时清掉同船的 None 冷却 ✓ */
+standby?: {
+    clear(ship: string): void;
+}, 
 /** the recall/query timeouts differ in tests; keep the production defaults */
 opts?: {
     orderTimeoutSec?: number;

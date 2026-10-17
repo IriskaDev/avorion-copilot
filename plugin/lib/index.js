@@ -33,6 +33,9 @@ import { loadSystemPrompt, setPromptNotifier, describePromptPaths } from './prom
 // ★★ 投递阶梯（Phase A/B，2026-10-17 ✓）：目标会话 = **主人自己正在用的那个会话**
 import { dispatchDecision, BUDGETS, makeTaskId, } from './dispatch.js';
 import { getCommanderSessionId, setCommanderSession, renewLease, getState as getCommanderState, isLeaseFresh, setCommanderNotifier, COMMANDER_FILE, } from './commander.js';
+import { PREV_RESULT_BUDGET_BYTES } from './task.js';
+// ★★ 待命裁定（2026-10-17 主人要求 ✓）：决策者判 None 后同船冷却期内不再征询 ✓
+import { recordStandby, standbyVerdict, goalFingerprintOf, clearStandby, resetStandbyCache, DEFAULT_NONE_COOLDOWN_MS, } from './standby.js';
 // ★★ 单发路径的**有界档案**（2026-10-17 ✓）：预取 + 裁剪 + 硬字节预算 ✓
 //   ★ 它与 agent 路径**共享数据、不共享渲染** ✓✓ —— 见 dossier.ts 的文件头（根因就在那儿 ✓）
 import { renderDossier, byteLen as dossierByteLen } from './dossier.js';
@@ -61,6 +64,28 @@ function fileLog(line) {
     catch { /* 日志失败绝不能影响主流程 ✓ */ }
 }
 /**
+ * ★ source → decider 的**单一映射**（只有一个真相来源 ✓）：
+ *   · 会话定的（含她在问主人）→ session；单发定的（含影子采纳）→ single-shot；
+ *   · rendezvous → rendezvous；「都没有」与「兜底不下单」→ fallbackNone ✓。
+ */
+export function deciderOf(source) {
+    switch (source) {
+        case 'session':
+        case 'asked-owner':
+            return 'session';
+        case 'single-shot':
+        case 'shadow':
+            return 'single-shot';
+        case 'rendezvous':
+            return 'rendezvous';
+        case 'fallbackNone':
+        case 'none':
+            return 'fallbackNone';
+        default:
+            return undefined;
+    }
+}
+/**
  * 决策记录（环形，最多 50 条 ✓）。放在模块级，工具与 decide 处理器共用 ✓。
  * 只在内存里 —— 够主人现场回看 ✓；要长期留档再落文件 ✓。
  */
@@ -74,6 +99,10 @@ export const DECISION_LOG_LIMIT = 50;
  */
 const decisionFile = path.join(os.homedir(), 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'decisions.log');
 function recordDecision(rec) {
+    // ★★ decider 由 source 单一映射补上（旧代码只设 source，这里绝不漏 ✓；读盘旧记录则按 source 反推 ✓）
+    if (rec.decider === undefined && rec.source !== undefined) {
+        rec.decider = deciderOf(rec.source);
+    }
     decisionLog.push(rec);
     while (decisionLog.length > DECISION_LOG_LIMIT)
         decisionLog.shift();
@@ -209,13 +238,103 @@ export function readDecisionFile(limit) {
         return [];
     }
 }
+// ---------------------------------------------------------------------------
+// ★ 下单回执（2026-10-17 ✓）：把 order 的 RPC 结果统一成 accepted/executed/error ✓
+// ---------------------------------------------------------------------------
+/** 从一次 `ask(peer,'order',…)` 的结果里取出结构化回执 ✓ */
+function receiptOf(ord, at) {
+    if (!ord.ok)
+        return { at, accepted: false, executed: false, error: ord.why ?? 'unknown' };
+    const d = (ord.data ?? {});
+    const accepted = d.accepted !== false;
+    const executed = d.executed !== false;
+    const note = typeof d.note === 'string' ? d.note : undefined;
+    if (accepted && executed)
+        return { at, accepted: true, executed: true, note };
+    return { at, accepted, executed, error: note ?? 'order not executed', note };
+}
+/** 这单算不算失败（被拒 / 未执行都算 ✗） */
+function receiptFailed(r) {
+    return !(r.accepted === true && r.executed === true);
+}
+/** 失败回执的**短标签**（进块里给决策者看的那句「被拒（…）/未执行（…）」✓） */
+function receiptFailText(r) {
+    const err = String(r.error ?? 'unknown');
+    const short = err.length > 120 ? err.slice(0, 120) + '…' : err;
+    return r.accepted ? `未执行（${short}）` : `被拒（${short}）`;
+}
+// ---------------------------------------------------------------------------
+// ★ 失败回投的**上限与退避**（2026-10-17 主人要求 ✓✓）
+// ---------------------------------------------------------------------------
+/** 同一艘船同一失败原因的连续回投上限（3 次后停止并记"需人工介入" ✓） */
+const REDELIVER_MAX = 3;
+/** 每次回投前的退避（让游戏先把上次失败的状态落稳 ✓） */
+const REDELIVER_BACKOFF_MS = 1500;
+/** 回投的总时间预算（游戏侧 decide 超时 90s，留足余量 ✓） */
+const REDELIVER_DECIDE_BUDGET_MS = 60_000;
+/** 同一艘船同一失败原因的连续回投计数（内存；防无限重投 ✓） */
+const redeliverMemo = new Map();
+/**
+ * ★ 上一次决策的"你上一单的结果"（2026-10-17 补 ✓）：给下一轮任务块用 ✓。
+ *   先查内存（最近的 ✓），没有再回落盘 ✓ —— 这样 DSH 重启后下一轮也能看到历史 ✓。
+ */
+/**
+ * ★ 把一条决策记录渲染成「上一单的结果」一行（**带 decider 来源标签** ✓✓）。
+ *   2026-10-17 主人要求：不许把单发/兜底的结论写成"你（会话）上一单" ✗ ——
+ *   所以每一行都带 `[session]` / `[single-shot]` / `[rendezvous]` / `[fallbackNone]` ✓。
+ *   导出给测试 ✓。
+ */
+export function renderPrevResult(rec) {
+    if (rec.answer === undefined)
+        return undefined;
+    const action = rec.answer.action;
+    const p = rec.answer.params ?? {};
+    const loc = typeof p.x === 'number' && typeof p.y === 'number' ? ` @(${p.x},${p.y})` : '';
+    const decider = rec.decider ?? deciderOf(rec.source);
+    const tag = decider !== undefined ? `[${decider}] ` : '';
+    if (rec.receipt !== undefined) {
+        if (rec.receipt.accepted && rec.receipt.executed)
+            return `${tag}${action}${loc}：成功 ✓`;
+        return `${tag}${action}${loc}：${receiptFailText(rec.receipt)}`;
+    }
+    // ★ 旧记录没有 receipt → 从 orderResult 反推（向后兼容 ✓）
+    const or = rec.orderResult;
+    if (or === undefined)
+        return `${tag}${action}${loc}：结果未知`;
+    if (typeof or.failed === 'string')
+        return `${tag}${action}${loc}：失败（${or.failed}）`;
+    if (or.dropped !== undefined)
+        return `${tag}${action}${loc}：被幂等闸丢弃`;
+    return `${tag}${action}${loc}：成功 ✓`;
+}
+function lastResultFor(ship) {
+    let last;
+    for (let i = decisionLog.length - 1; i >= 0; i--) {
+        if (decisionLog[i].ship === ship) {
+            last = decisionLog[i];
+            break;
+        }
+    }
+    if (last === undefined) {
+        const file = readDecisionFile(200);
+        for (let i = file.length - 1; i >= 0; i--) {
+            if (file[i].ship === ship) {
+                last = file[i];
+                break;
+            }
+        }
+    }
+    if (last === undefined)
+        return undefined;
+    return renderPrevResult(last);
+}
 /** 在飞的任务（增量 2）：ship -> 我们交给它的活，等它变空闲时结算 ✓ */
 const pendingJobs = new Map();
 const DEFAULTS = {
     port: 8765,
     provider: 'deepseek-official',
     model: 'deepseek-flash',
-    maxTokens: 8000, // ★ 700 不够：模型会把额度烧在思维链上，正文被截断 → 解析失败 ✗
+    maxTokens: 8000, // ★ 700 不够：思维链会占掉输出空间、正文被截断 → 解析失败 ✗
     temperature: 0.2,
 };
 /**
@@ -697,19 +816,22 @@ const rendezvousMemo = new Map();
 // ---------------------------------------------------------------------------
 // 小数：单发路径被判成"没有动作行"时要重试一次 ✓（2026-10-17 ✓）
 //
-// 实机事故（`decisions.live.log` 16:18:10 逐字）：她想太久、**正文一个动作行都没吐** ✗
+// 实机事故（`decisions.live.log` 16:18:10 逐字）：**正文一个动作行都没吐** ✗
 //   （`BAD_MODEL_REPLY ... saw: no action line`）→ 于是整轮决策被丢弃 ✓、货也没卖成 ✓✓。
-// 规矩：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
+// 规矩：**同一批事实**再来一次 ✓、只要求"答案行在前、之后再写理由" ✓、
 //   ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗（慢且游戏状态可能已变 ✓）。
 // ---------------------------------------------------------------------------
 /** 单发路径的"重试一次"补语（进提示词末尾 ✓） */
-const SINGLE_SHOT_RETRY_HINT = '\n\n★ 你上一次**没有输出任何 action 行**（想太久、额度烧光 ✗）。\n'
-    + '现在**只输出答案行** ✓: action 必须在**第一行** ✓；**不要**写任何推理或解释 ✗；'
+const SINGLE_SHOT_RETRY_HINT = '\n\n★ 你上一次**没有输出任何 action 行**。\n'
+    + '请把结论行写在**第一行** ✓：action=… 之后再写理由 ✓；'
     + 'reason 可以留空 ✓。一行一个字段，从 action= 开始。';
 // ---------------------------------------------------------------------------
 // 插件入口：把 RPC 接起来
 // ---------------------------------------------------------------------------
 export function apply(ctx, config = {}) {
+    // ★★ 待命裁定是**运行时状态**（每个插件实例从零开始 ✓）—— 每次 apply 清空，
+    //   避免多实例/热重载之间串味（test/session-no-prefetch.mjs 的两个场景就靠它隔离 ✓）。
+    resetStandbyCache();
     const cfg = {
         port: config.port ?? DEFAULTS.port,
         provider: config.provider ?? DEFAULTS.provider,
@@ -721,6 +843,11 @@ export function apply(ctx, config = {}) {
     const decideMode = config.decideMode === 'live' ? 'live' : 'shadow';
     const steerWhenBusy = config.steerWhenBusy === true;
     const retrySessionOnce = config.retrySessionOnce === true;
+    // ★★ 待命裁定冷却（默认 20 分钟，可配置 ✓）
+    const noneCooldownMs = typeof config.noneCooldownMs === 'number' &&
+        Number.isFinite(config.noneCooldownMs) && config.noneCooldownMs > 0
+        ? config.noneCooldownMs
+        : DEFAULT_NONE_COOLDOWN_MS;
     // ★ 投递目标：① 显式 config（主人写在 profile 里 ✓）→ ② 落盘的选择（fleet_commander 指定过 ✓）
     //   都没有 = 不投递 ✓（= 今天逐字不变 ✓）。**绝不猜** ✗（猜错就塞进别人的聊天里了 ✓）。
     if (typeof config.commanderSession === 'string' && config.commanderSession.trim() !== '') {
@@ -980,6 +1107,18 @@ export function apply(ctx, config = {}) {
         };
         rec.goalText = facts.goalText;
         rec.goalOptions = facts.goalOptions;
+        // ★★ 待命裁定（2026-10-17 主人要求 ✓）：决策者判这艘船 None 后，冷却期内不再征询 ✓。
+        //   判据只有两条（见 standby.ts）：冷却到期 / 目标指纹改变 → 恢复征询；否则直接 None ✓。
+        const standbyNow = standbyVerdict(ship, facts.goalText, facts.goalOptions, noneCooldownMs);
+        if (standbyNow.kind === 'standby') {
+            const reason = `待命裁定：${ship} 上一轮被裁定待命（来源 ${standbyNow.entry.source}），` +
+                `冷却 ${Math.round(noneCooldownMs / 60000)} 分钟内不再征询（还剩约 ${standbyNow.minsLeft} 分钟）；` +
+                '目标改变、冷却到期或手动召回后恢复 ✓';
+            rec.source = 'fallbackNone';
+            rec.decider = 'fallbackNone';
+            live(`  ├ 待命裁定：${ship} 仍在冷却期内（状态未变）→ 本轮直接 None，不投递、不跑模型 ✓`);
+            return [true, { action: 'None', params: {}, reason }];
+        }
         // ── ② 单发路径的重数据预取（惰性、幂等）──────────────────────────────
         //   ★★ 这是「单发路径」**专属**的预取 ✗✓ —— 会话路径**绝不**调用它（见分支 ③ ✓）。
         //     它把船卡、舰队、minePlan/salvagePlan/sellPlan/scoutPlan/tradePlan、记忆结算与
@@ -1458,7 +1597,10 @@ export function apply(ctx, config = {}) {
                         live(`  │ 裁剪：${d}`);
                     rec.dossierBytes = dossier.stats;
                 }
-                const r = await askModel(ctx, cfg, dossier.text + (hint ?? ''), liveRaw, 
+                const r = await askModel(ctx, cfg, dossier.text +
+                    (prevFailHint !== undefined && prevFailHint !== ''
+                        ? `\n\n★ 上一单的结果：${prevFailHint}` : '') +
+                    (hint ?? ''), liveRaw, 
                 // ★ 历史参数**不再传** ✗：记忆块已经在 dossier 文本里 ✓（见上面的 memoryBlock ✓）。
                 undefined);
                 attempt.text = r.text;
@@ -1517,10 +1659,10 @@ export function apply(ctx, config = {}) {
          * 为什么必须有这个包装 ✗✓（这是本鱼自己踩的坑）：重试原来同时活在**两处** ✓ ——
          *   index.ts 里一份 ✓、投递阶梯里一份 ✓。重构时只把阶梯那份做对了 ✗，
          *   于是"**没有指定会话**"这条**与今天逐字相同**的路径**静默丢掉了重试** ✗✓，
-         *   而它正是实机事故（她想太久、正文一个动作行都没吐 ✓）发生时**唯一会走**的那条 ✓。
+         *   而它正是实机事故（正文一个动作行都没吐 ✓）发生时**唯一会走**的那条 ✓。
          *   `test/order-payload.mjs` 的 g/g2 用例当场抓住了它 ✓✓。
          *
-         * 规矩（与实机一致 ✓）：**同一批事实**再来一次 ✓、只要求"答案行在前、不写推理" ✓、
+         * 规矩（与实机一致 ✓）：**同一批事实**再来一次 ✓、只要求"答案行在前、之后再写理由" ✓、
          *   ★ **只此一次** ✗（不循环 ✓）、**不重取数据** ✗ —— 两次都不行就照旧失败 ✓，
          *   **绝不替她编一个动作** ✗✓。
          */
@@ -1580,6 +1722,36 @@ export function apply(ctx, config = {}) {
             }
             catch { /* 量体积失败不影响投递 ✓ */ }
         };
+        // ★ 失败回投时，单发路径的提示词里要带上一单失败原因（closure ✓；首轮为空 ✓）
+        let prevFailHint;
+        // ★ 首轮与**回投**共用的投递依赖（依赖都已在上方定义 ✓）
+        const dispatchDeps = {
+            registry: (agents ?? { get: () => undefined, list: () => [] }),
+            commanderId: (agents !== undefined && ctx.on !== undefined) ? targetSession() : undefined,
+            subscribe: subscribeSession,
+            followup: (agent, block) => deliverToSession(agent, block),
+            prefetch: prefetchSingleShot,
+            singleShot: runSingleShot,
+            allowedActions: facts.goalOptions.length > 0 ? facts.goalOptions : [...ALL_ACTIONS],
+            mode: decideMode,
+            steerWhenBusy,
+            retrySessionOnce,
+            lock: fleetSessionLock,
+            log: live,
+        };
+        // ★ 「上一单的结果」行（若有记录 ✓）；超 200 字节就**不附加**并在流水里说明 ✓。
+        //   2026-10-17：措辞去掉"你" ✗→"上一单"（因为上一单可能是单发/兜底定的，不是她定的 ✗✓），
+        //   来源由 renderPrevResult 的 `[decider]` 标签标明 ✓。
+        const fitPrev = (body) => {
+            if (body === undefined || body.trim() === '')
+                return undefined;
+            const full = `★ 上一单的结果：${body.trim()}`;
+            if (Buffer.byteLength(full, 'utf8') > PREV_RESULT_BUDGET_BYTES) {
+                live(`  ├ 上一单结果行 ${Buffer.byteLength(full, 'utf8')} 字节 > ${PREV_RESULT_BUDGET_BYTES} → **不附加** ✓`);
+                return undefined;
+            }
+            return body.trim();
+        };
         let outcome;
         if (agents === undefined || ctx.on === undefined) {
             // 拿不到会话服务 → 与今天完全一致 ✓（不绕远、不报错 ✓；**含那条重试** ✓）
@@ -1609,20 +1781,7 @@ export function apply(ctx, config = {}) {
                 ? '**只走单发**（未指定投递目标会话 ✓）'
                 : `优先投给会话 ${target}（模式=${decideMode}；忙时${steerWhenBusy ? '会插队' : '绝不打扰主人 ✗'}）`}`);
             live('  ├ 会话路径：未预取计划 ✓（投递前只取 goal；计划/船卡/记忆留给单发兜底或她自己查 ✓）');
-            outcome = await dispatchDecision({
-                registry: agents,
-                commanderId: target,
-                subscribe: subscribeSession,
-                followup: (agent, block) => deliverToSession(agent, block),
-                prefetch: prefetchSingleShot,
-                singleShot: runSingleShot,
-                allowedActions: facts.goalOptions.length > 0 ? facts.goalOptions : [...ALL_ACTIONS],
-                mode: decideMode,
-                steerWhenBusy,
-                retrySessionOnce,
-                lock: fleetSessionLock,
-                log: live,
-            }, {
+            outcome = await dispatchDecision(dispatchDeps, {
                 taskId: makeTaskId(),
                 ship,
                 goalText: facts.goalText,
@@ -1633,87 +1792,173 @@ export function apply(ctx, config = {}) {
                 //   → 现在 agent 路径**只告知**（`task.ts` ✓），数据她自己用工具拉 ✓（缺省 compact ✓）。
                 //   ★ 单发那条路的档案是**另一个渲染**（`dossier.ts` ✓），两条路共享数据不共享渲染 ✓✓。
                 deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
+                // ★ 上一单结果（2026-10-17 补 ✓）：下一轮就能看到"上次成没成"，不触发回投也看得见 ✓
+                prevResult: fitPrev(lastResultFor(ship)),
             });
         }
         // ★ 三条出口：① 她的答案算数 ② 单发的答案算数 ③ 两条都没有（明说的 None ✓）
-        if (outcome.source === 'none') {
-            // 单发那一路的细节要原样报给游戏 ✓（今天的行为：MODEL_FAILED / BAD_MODEL_REPLY ✓）
-            const fail = failSingleShot(outcome.reason ?? '没有可用的决策', undefined);
-            // ★ 影子模式下会话那一级**也**没成 —— 这本身就是主人要看的结论 ✓
-            rec.source = 'none';
-            rec.session = outcome.session;
-            logger.warn(`avorion-copilot: ${ship} 没有任何可用的决策（${fail.message}）`);
-            return [false, fail.code, fail.message];
-        }
-        if (outcome.source === 'single-shot' || outcome.source === 'shadow') {
-            const last = { text: outcome.text ?? '', reasoning: '', truncated: outcome.truncated === true };
-            const a = answerFromText(last);
-            if (typeof a === 'string') {
-                const fail = failSingleShot(a, last);
-                rec.source = outcome.source;
-                rec.session = outcome.session;
-                rec.agreement = outcome.agreement;
-                return [false, fail.code, fail.message];
+        //   —— 抽成纯函数：主路径与**失败回投**共用同一套"把阶梯结论落成最终答案"的逻辑 ✓
+        const resolveAnswer = (o) => {
+            if (o.source === 'none') {
+                // 单发那一路的细节要原样报给游戏 ✓（今天的行为：MODEL_FAILED / BAD_MODEL_REPLY ✓）
+                const fail = failSingleShot(o.reason ?? '没有可用的决策', undefined);
+                return { failCode: fail.code, failMessage: fail.message };
             }
-            outcome = { ...outcome, action: a.action, params: a.params, reason: a.reason };
-        }
-        // ★ 会话的答案直接可用 ✓（它已经在 dispatch 里按同一套契约校验过了 ✓）；'None' 也合法 ✓
-        const answer = {
-            action: outcome.action,
-            params: outcome.params,
-            reason: outcome.reason,
-            raw: outcome.text,
+            if (o.source === 'single-shot' || o.source === 'shadow') {
+                const last = { text: o.text ?? '', reasoning: '', truncated: o.truncated === true };
+                const a = answerFromText(last);
+                if (typeof a === 'string') {
+                    const fail = failSingleShot(a, last);
+                    return { failCode: fail.code, failMessage: fail.message };
+                }
+                return { answer: { action: a.action, params: a.params, reason: a.reason, raw: o.text } };
+            }
+            // ★ 会话的答案直接可用 ✓（它已经在 dispatch 里按同一套契约校验过了 ✓）；'None' 也合法 ✓
+            return { answer: { action: o.action, params: o.params, reason: o.reason, raw: o.text } };
         };
+        const firstResolved = resolveAnswer(outcome);
+        if (firstResolved.failCode !== undefined) {
+            // ★ 影子模式下会话那一级**也**没成 —— 这本身就是主人要看的结论 ✓
+            rec.source = outcome.source;
+            rec.session = outcome.session;
+            rec.agreement = outcome.agreement;
+            logger.warn(`avorion-copilot: ${ship} 没有任何可用的决策（${firstResolved.failMessage}）`);
+            return [false, firstResolved.failCode, firstResolved.failMessage];
+        }
+        let answer = firstResolved.answer;
         // ★ 记录④"结论"（先记下，⑤ 结果随后补 ✓）
         rec.source = outcome.source;
         rec.session = outcome.session;
         rec.agreement = outcome.agreement;
         rec.answer = answer;
         live(`  ├ 决策 [${outcome.source}] ${answer.action} ${JSON.stringify(answer.params)}  (${answer.reason ?? ''})`);
+        // ★★ 待命裁定记录（2026-10-17 主人要求 ✓）：决策者判 None（非 rendezvous）→
+        //   记下目标指纹，冷却期内同船不再征询 ✓（状态改变/冷却到期/手动召回后恢复 ✓）。
+        if (answer.action === 'None' && outcome.source !== 'rendezvous') {
+            recordStandby(ship, outcome.source, answer.reason ?? '', goalFingerprintOf(facts.goalText, facts.goalOptions));
+            live(`  ├ 待命裁定：${ship} 被裁定待命（来源 ${outcome.source}）→ 冷却 ${Math.round(noneCooldownMs / 60000)} 分钟内不再征询 ✓`);
+        }
         logger.info(`avorion-copilot: ${ship} -> ${answer.action} ${JSON.stringify(answer.params)}` +
             `  来源=${outcome.source}` +
             (answer.reason !== undefined ? `  (${answer.reason})` : '') +
             (outcome.truncated === true ? '  [被 maxTokens 截断]' : '') +
             ((rec.reasoning ?? '').length > 0 ? `\n--- 思维链 ---\n${(rec.reasoning ?? '').trim()}` : ''));
-        // ★ 真下单：DSH 主动调游戏的 order ✓✓（游戏侧会走两段式 ✓）
-        if (answer.action !== 'None') {
-            // ★★ 幂等闸（2026-10-17 ✓）：同一艘船同一刻只允许一条在飞的 order ✓。
-            //   为什么必须有：`ask()` 会超时，而**超时之后那条 RPC 其实还在飞** ✓ ——
-            //   于是"超时 → 落下一级 → 再下单"就可能变成**同一艘船两条命令** ✗✓，
-            //   正是 TAKEOVER.md 铁律要防的事 ✓。这道闸让它不可能发生 ✓。
+        /** 坐标后缀（`@(x,y)`；没有就不写 ✓） */
+        const locOf = (params) => typeof params.x === 'number' && typeof params.y === 'number' ? ` @(${params.x},${params.y})` : '';
+        // ★ 真下单（DSH 主动调游戏的 order ✓✓；游戏侧走两段式 ✓）。
+        //   ★★ 幂等闸（2026-10-17 ✓）：同一艘船同一刻只允许一条在飞的 order ✓（TAKEOVER.md 铁律 ✓）。
+        const orderShip = async (a) => {
+            const at = new Date().toISOString();
+            if (a.action === 'None') {
+                return { at, accepted: false, executed: false, error: 'action=None（本轮不下单 ✓）' };
+            }
             if (ordersInFlight.has(ship)) {
                 logger.warn(`avorion-copilot: ${ship} 已有一条 order 在飞 → **丢掉这一条** ✗（防同一艘船两条矛盾命令 ✓）`);
                 live(`  └ ⚠ ${ship} 已有一条 order 在飞 → 丢掉本条（幂等闸 ✓）`);
                 rec.orderResult = { dropped: 'another order for this ship is already in flight' };
-                return [true, answer];
+                return { at, accepted: false, executed: false, error: 'another order for this ship is already in flight' };
             }
             ordersInFlight.add(ship);
             let ord;
             try {
-                ord = await ask(peer, 'order', { ship, action: answer.action, ...answer.params }, 30);
+                ord = await ask(peer, 'order', { ship, action: a.action, ...a.params }, 30);
             }
             finally {
                 ordersInFlight.delete(ship);
             }
             // ★ 记录⑤"结果"（下单回执 ✓）
             rec.orderResult = ord.ok ? ord.data : { failed: ord.why ?? 'unknown' };
-            if (ord.ok) {
+            const receipt = receiptOf(ord, at);
+            if (receipt.accepted && receipt.executed) {
                 // ★ 增量 2：把"我们交给它的活"记下来 ✓ —— 下一轮它变空闲时就能结算 ✓✓
-                rememberStart(ship, answer.action, answer.params, sectorKey);
-                const hours = typeof answer.params.duration === 'number' ? answer.params.duration : undefined;
+                rememberStart(ship, a.action, a.params, sectorKey);
+                const hours = typeof a.params.duration === 'number' ? a.params.duration : undefined;
                 pendingJobs.set(ship, {
-                    atMs: Date.now(), action: answer.action,
-                    goodName: typeof answer.params.goodName === 'string' ? answer.params.goodName : undefined,
+                    atMs: Date.now(), action: a.action,
+                    goodName: typeof a.params.goodName === 'string' ? a.params.goodName : undefined,
                     hours, sector: sectorKey,
                 });
-            }
-            if (ord.ok) {
-                logger.info(`avorion-copilot: 已下单 ${ship} -> ${answer.action} → ${JSON.stringify(ord.data)}`);
+                logger.info(`avorion-copilot: 已下单 ${ship} -> ${a.action} → ${JSON.stringify(ord.data)}`);
             }
             else {
-                logger.warn(`avorion-copilot: 下单失败 ${ord.why ?? ''}`);
+                logger.warn(`avorion-copilot: 下单失败 ${receipt.error ?? ord.why ?? ''}`);
             }
+            return receipt;
+        };
+        let receipt = await orderShip(answer);
+        // ★★ 失败回投（2026-10-17 主人要求 ✓✓）：下单失败/被拒/未执行（或 RPC 根本没到游戏）→
+        //   自动**重新投递一个决策任务**给同一个目标（会话空闲则投 ✓；否则走既有阶梯 ✓），
+        //   块里带上一单的失败原因；同一艘船同一失败原因的连续回投有上限+退避 ✓。
+        // ★★ 2026-10-17 主人铁律：**None 不是失败** ✗✓ —— 它是"本轮不下单"的正常裁定，
+        //   **绝不**触发回投（否则会把"待命"重新拿去问、甚至被兜底改判成下单 ✗✓）。
+        if (answer.action !== 'None' && receiptFailed(receipt)) {
+            const decideStart = Date.now();
+            let reason = receiptFailText(receipt);
+            const redeliveries = [];
+            while (true) {
+                // —— 上限：同一艘船同一失败原因的连续回投最多 REDELIVER_MAX 次 ✓
+                const memo = redeliverMemo.get(ship);
+                const prior = (memo !== undefined && memo.reason === reason) ? memo.count : 0;
+                if (prior >= REDELIVER_MAX) {
+                    rec.needsIntervention = `同一失败原因（${reason}）已连续回投 ${REDELIVER_MAX} 次 → 停止，需人工介入 ✓`;
+                    live(`  └ 回投已达上限（${reason} × ${REDELIVER_MAX}）→ **需人工介入** ✗`);
+                    break;
+                }
+                // —— 退避 + decide 时间预算（游戏侧 decide 超时 90s ✓）
+                if (Date.now() - decideStart > REDELIVER_DECIDE_BUDGET_MS) {
+                    rec.needsIntervention = `回投超出 decide 时间预算（${REDELIVER_DECIDE_BUDGET_MS}ms）→ 停止，需人工介入 ✓`;
+                    live('  └ 回投超出 decide 时间预算 → 停止（需人工介入 ✗）');
+                    break;
+                }
+                redeliverMemo.set(ship, { reason, count: prior + 1, atMs: Date.now() });
+                await new Promise((r) => setTimeout(r, REDELIVER_BACKOFF_MS));
+                // —— 块里带上一单失败原因 ✓（带 decider 来源标签，不冒名 ✓）
+                const deciderTag = deciderOf(outcome.source);
+                const failBody = `${deciderTag !== undefined ? `[${deciderTag}] ` : ''}${answer.action}${locOf(answer.params)}：${reason} —— 请重新决策`;
+                const prevResult = fitPrev(failBody);
+                prevFailHint = prevResult;
+                live(`  ├ 回投 #${prior + 1}：上一单 ${answer.action}${locOf(answer.params)} ${reason} → 重新投递决策任务 ✓`);
+                const reOutcome = await dispatchDecision(dispatchDeps, {
+                    taskId: makeTaskId(),
+                    ship,
+                    goalText: facts.goalText,
+                    goalOptions: facts.goalOptions,
+                    deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
+                    prevResult,
+                });
+                prevFailHint = undefined;
+                const reResolved = resolveAnswer(reOutcome);
+                if (reResolved.failCode !== undefined) {
+                    redeliveries.push({ at: new Date().toISOString(), reason, note: `回投决策没能给出结论：${reResolved.failMessage}` });
+                    rec.needsIntervention = `回投决策没能给出结论（${reResolved.failMessage}）→ 停止，需人工介入 ✓`;
+                    break;
+                }
+                const next = reResolved.answer;
+                outcome = reOutcome;
+                answer = next;
+                rec.source = reOutcome.source;
+                rec.session = reOutcome.session;
+                rec.agreement = reOutcome.agreement;
+                rec.answer = next;
+                live(`  ├ 回投决策 [${reOutcome.source}] ${next.action} ${JSON.stringify(next.params)}  (${next.reason ?? ''})`);
+                if (next.action === 'None') {
+                    redeliveries.push({ at: new Date().toISOString(), reason, action: 'None', note: next.reason });
+                    receipt = { at: new Date().toISOString(), accepted: false, executed: false, error: '回投后决定本轮不下单（action=None）' };
+                    break;
+                }
+                receipt = await orderShip(next);
+                redeliveries.push({ at: new Date().toISOString(), reason, action: next.action, params: next.params, receipt });
+                if (!receiptFailed(receipt)) {
+                    redeliverMemo.delete(ship);
+                    live('  └ 回投成功：新单已接受 ✓');
+                    break;
+                }
+                reason = receiptFailText(receipt);
+            }
+            if (redeliveries.length > 0)
+                rec.redeliveries = redeliveries;
         }
+        rec.receipt = receipt;
         return [true, answer];
     };
     // ---- 我调游戏（DSH 主动查询 / 下单）---------------------------------------
@@ -1783,6 +2028,9 @@ export function apply(ctx, config = {}) {
                 return undefined;
             }
         },
+    }, {
+        // ★ 待命裁定（2026-10-17 ✓）：fleet_recall / fleet_goal 会清掉同船的 None 冷却 ✓
+        clear: (ship) => clearStandby(ship),
     });
     // 供将来从 DSH 侧主动操作（例如命令面板、定时巡检）使用 ✓
     void queryShip;

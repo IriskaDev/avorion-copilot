@@ -16,11 +16,13 @@
  * ```
  * ① 投递目标会话（若主人指定且活着）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
- *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队，直接下② ✓
- *      超时          → cancel({kind:'timeout'}) → 下② ✓
- *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下② ✓
+ *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队 → 下①.9 ✓
+ *      超时          → cancel({kind:'hook'}) → 下①.9 ✓
+ *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下①.9 ✓
  *      在问主人       → **显式延期**（ASKED_OWNER：不派单、写清原因 ✓）—— 不是失败 ✓
- * ② 今天的单发事实调用（**保留，永远在**）★ 现在有**硬期限**了（今天没有 ✗）
+ * ①.9 ★★ 兜底不许下单（live 模式）：会话**在线**却没答成 → 直接 None（fallbackNone）✓
+ *       （只有「没有指挥官」或「会话明确离线/不在 registry」才允许下②单发 ✗）
+ * ② 今天的单发事实调用（**保留**：没有指挥官 / 会话离线时才走 ★ 有**硬期限** ✓）
  * ③ 都没有 → action=None + 原因写清 ✓
  * ```
  *
@@ -110,7 +112,7 @@ export interface SingleShotResult {
     retryHint?: string;
 }
 /** 阶梯的结论来源（**进 DecisionRecord.source ✓**） */
-export type DecisionSource = 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'rendezvous' | 'none';
+export type DecisionSource = 'session' | 'single-shot' | 'shadow' | 'asked-owner' | 'rendezvous' | 'fallbackNone' | 'none';
 /** 会话这一级的结果（**影子模式也要报出来** ✓ —— 主人要看她答了什么 ✓） */
 export interface SessionAttempt {
     /** 会话到底有没有给出可用答案 ✓ */

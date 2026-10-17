@@ -60,8 +60,16 @@ export interface TaskRequest {
    *   会话要用计划就**自己查**（`fleet_query` 的 `*Plan`，缺省 compact ✓）。
    */
   planText?: string
-  /** 建议预算（秒）；写进任务头，让她知道"别慢慢查" ✓ */
+  /** 建议预算（秒）；写进任务头，告知会话层硬期限 ✓ */
   deadlineHintSec: number
+  /**
+   * ★ 上一单结果（2026-10-17 补 ✓）：渲染时附在块末尾的「你上一单的结果」一行 ✓。
+   *   用途两个（同一字段 ✓）：
+   *     · 正常轮：决策者下一轮就能看到"上次成没成"（不触发回投也看得见 ✓）；
+   *     · 失败回投：带上一单的失败原因 + "请重新决策" ✓。
+   *   ★ 体积预算 ~200 字节：超了就当没加上 ✗✓（renderTaskBlock 会跳过 ✓）。
+   */
+  prevResult?: string
 }
 
 /** 校验结论 */
@@ -119,6 +127,9 @@ function boolField(text: string, key: string): boolean | undefined {
   return undefined
 }
 
+/** ★ 「你上一单的结果」一行的字节预算（~200 ✓；超了就当没加 ✗✓） */
+export const PREV_RESULT_BUDGET_BYTES = 200
+
 /** 船名清单字段（`Miner-1, Miner-2`；"无" 之类的词丢掉 ✓ —— 与 index.ts 同款 ✓） */
 function listField(text: string, key: string): string[] {
   const raw = field(text, key)
@@ -142,8 +153,8 @@ function listField(text: string, key: string): string[] {
  * | `task=<id>` 回显 | **唯一**能认出"哪条回复是这一单"的锚点 ✓（见文件头 ✓）；对不上就判 MISMATCH 并走阶梯 ✓ |
  * | 一行"它空闲了、要一个决策" | 这就是**全部**的请求内容 ✓（主人原话 ✓） |
  * | 工具指针 | 让"自拉"变得**不用猜** ✓ —— 哪个 `what` 查什么、哪个参数要小答案 ✓（这是这次改动的**关键**：光说"你自己查"而不给路由，等于把体积问题换成瞎猜问题 ✗✓） |
- * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 让她知道别慢慢查 ✓ |
- * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：她想太久、正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
+ * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 写进任务头告知硬期限 ✓ |
+ * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
  *
  * ★ 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与 `src/index.ts` 的重试路径
  *   都记录了同一个事故 ✓ —— 把契约写清楚，最坏情况丢的是散文，不是结论 ✓。
@@ -165,21 +176,29 @@ export function renderTaskBlock(req: TaskRequest): string {
   L.push('  · {what:"sectorFacts", x, y} → 星区事实')
   L.push('  · {what:"tradeRoutes", ship, x, y, sizeX, sizeY} → 框内贸易路线')
   L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测')
-  L.push('  · 侦察覆盖：{what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21} → 框内未探索/已探索/总数 + revealsNothingNew（unknownCount==0 → 揭不出新地图）')
+  L.push('  · 侦察覆盖：predict{action:"Scout", sizeX:21, sizeY:21} → 未知/已知/总数 + revealsNothingNew')
   L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan')
   if (req.goalOptions.length > 0) {
     L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（★ 只有这些 + None ✓）`)
   }
   L.push(`  · fleet_decisions {ship:"${req.ship}"} → 历史决策`)
-  L.push('  ★ 用 fleet_query；legacy 计划用 compact/top 控制大小。')
+  L.push('  ★ 用 fleet_query；legacy 计划用 compact/top。')
   L.push('')
-  L.push('答复格式（★ **第一行**就是结论 —— 实测：想太久会把额度烧光、答案行吐不出来 ✗）：')
+  L.push('答复格式（★ **第一行**请直接写结论行 action=…（便于解析；之后再写理由 ✓））：')
   L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | None>')
   L.push(`  第 2 行 task=${req.taskId}  ← ★**必须回显**，这是认出"回给哪一单"的**唯一凭据**；`)
   L.push('    写错/写成别的号 → 判无效 ✗（绝不把别船的答案用在这艘船上 ✗）。')
   L.push('  之后按需要：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=')
   L.push('  需要主人拍板就直接把问题写出来 ✓（不写 action 行 → 记为"等主人裁决"，不替你编动作 ✓）。')
   L.push('  这些行之后**照常**跟主人聊天、继续原来的话题都行 ✓（舰队只看上面这几行 ✓）。')
+  // ★ 上一单结果（2026-10-17 补 ✓）：决策者下一轮就能看到"上次成没成"，失败回投时也能看到"为什么失败" ✓。
+  //   体积预算 ~200 字节：超了就当没加 ✗✓（调用方 index.ts 会先截断并在流水里说明 ✓）。
+  if (typeof req.prevResult === 'string' && req.prevResult.trim() !== '') {
+    // ★ 2026-10-17：措辞"上一单"（不是"你上一单"✗）—— 上一单可能是单发/兜底定的，
+    //   来源由调用方 index.ts 的 renderPrevResult 用 `[decider]` 标签标明 ✓（不冒名 ✗✓）。
+    const line = `★ 上一单的结果：${req.prevResult.trim()}`
+    if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES) L.push(line)
+  }
   L.push('</fleet_task>')
   return L.join('\n')
 }
