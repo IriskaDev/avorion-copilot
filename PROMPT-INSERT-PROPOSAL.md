@@ -3,7 +3,7 @@
 > ★ **权威说明**：决策口径以 [`docs/game/`](docs/game/README.md) 为准，本文件是历史/资料库。
 
 > **这是一份提案，不是改动。** 本文件只说明「要加什么、加在哪、为什么能过守卫」，
-> **不直接修改** [`MECHANICS.md`](MECHANICS.md) 或 [`plugin/prompt/system.md`](plugin/prompt/system.md)。
+> **不直接修改** [`MECHANICS.md`](MECHANICS.md) 或 [`plugin/dsh/prompt/system.md`](plugin/dsh/prompt/system.md)。
 > 等主人点头后再动手，改完按文末「操作清单」跑生成/校验脚本。
 
 ---
@@ -109,7 +109,7 @@
 
 ## 5. 为什么这些能过守卫（对照 `check-mechanics.mjs`）
 
-| 守卫规则（`plugin/scripts/check-mechanics.mjs`） | 本提案是否满足 |
+| 守卫规则（`plugin/dsh/scripts/check-mechanics.mjs`） | 本提案是否满足 |
 |---|---|
 | ① BRIEF ↔ `src/mechanics.ts` 逐字一致 | 改完 BRIEF 跑 `node scripts/render-mechanics.mjs` 重新生成即可 ✓ |
 | ② `prompt/system.md` ↔ `src/prompt-default.ts` 一致 | 本提案**不改 system.md**，只经 `{{MECHANICS}}` 带出 BRIEF，故不触发 ✓ |
@@ -138,10 +138,10 @@
 ## 7. 操作清单（等主人批准后，再执行）
 
 1. 编辑 [`MECHANICS.md`](MECHANICS.md)：按 §4.1 改 BRIEF 两处 + §4.2 加 5 处正文。
-2. `node plugin/scripts/render-mechanics.mjs` → 重新生成 `src/mechanics.ts`。
-3. `node plugin/scripts/check-mechanics.mjs` → 确认 5 关全绿。
-4. （可选）`node plugin/scripts/render-prompt.mjs` → 若 system.md 一字未动，此步可跳过；跑一下也无害。
-5. **不要**动 `plugin/prompt/system.md`、`plugin/src/prompt-default.ts`。
+2. `node plugin/dsh/scripts/render-mechanics.mjs` → 重新生成 `src/mechanics.ts`。
+3. `node plugin/dsh/scripts/check-mechanics.mjs` → 确认 5 关全绿。
+4. （可选）`node plugin/dsh/scripts/render-prompt.mjs` → 若 system.md 一字未动，此步可跳过；跑一下也无害。
+5. **不要**动 `plugin/dsh/prompt/system.md`、`plugin/dsh/src/prompt-default.ts`。
 
 ---
 

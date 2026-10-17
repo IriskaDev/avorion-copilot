@@ -20,9 +20,9 @@
 「同星系」只是它的一个**子集**（同星系必然满足），**不是**原版要求。
 
 > ✗矛盾（要记住）：本 mod 的**工具描述**里仍写着「HARD RULE: an escort must be in the SAME SECTOR」
-> （`plugin/src/tools.ts:216-217`、`:259-261`），而同一文件的执行体自己又写着正确判据
-> （`plugin/src/tools.ts:315-326`）、插件也**按原版判据**过滤候选
-> （`plugin/src/index.ts:1539-1594` ✓）。**以原版源码与 `index.ts` 的过滤逻辑为准**：
+> （`plugin/dsh/src/tools.ts:216-217`、`:259-261`），而同一文件的执行体自己又写着正确判据
+> （`plugin/dsh/src/tools.ts:315-326`）、插件也**按原版判据**过滤候选
+> （`plugin/dsh/src/index.ts:1539-1594` ✓）。**以原版源码与 `index.ts` 的过滤逻辑为准**：
 > 同星系不是必要条件。
 
 ## 2. 护航对**风险**的作用
@@ -50,15 +50,15 @@
   （`travelcommand.lua:482-512` ✓）。该检查**只在客户端**，服务端 `getErrors` 是空的 ✓`:448-449`
   → 经 RPC 下单时**可能不会被拒** ⚠未验证：太近的 Travel 实际会发生什么。
 - 所以"调护航"的成本 = **那艘船一次旅行的时间**（期间它不产出），且**本轮通常来不及**：
-  它到位后才会出现在**下一轮**的护航候选里（`plugin/prompt/system.md:53-54`）。
+  它到位后才会出现在**下一轮**的护航候选里（`plugin/dsh/prompt/system.md:53-54`）。
 
 ## 5. 我们这边怎么用护航（现状）
 
 | 项 | 事实 | 证据 |
 |---|---|---|
-| 候选怎么算 | 插件读 `what=fleet`，对每艘**不忙、非玩家在开**的船，按原版判据（同星系 → 直接收；否则比 `reach`、必要时比环侧）筛 | `plugin/src/index.ts:1548-1594` ✓ |
+| 候选怎么算 | 插件读 `what=fleet`，对每艘**不忙、非玩家在开**的船，按原版判据（同星系 → 直接收；否则比 `reach`、必要时比环侧）筛 | `plugin/dsh/src/index.ts:1548-1594` ✓ |
 | 判不准时怎么办 | `canPassRifts=false` 且拿不到环侧、或拿不到 `reach` → **保守退回"同星系"**（只会少收、不会错收），并在流水里列出"保守未收"的船 | `index.ts:1570-1585` ✓ |
-| 怎么真的把人叫来 | `fleet_escort(escort, target)` → 给护航下一单 Travel 到 target 所在星区（游戏拒绝就**逐字回报**，不重试） | `plugin/src/tools.ts:253-367` |
+| 怎么真的把人叫来 | `fleet_escort(escort, target)` → 给护航下一单 Travel 到 target 所在星区（游戏拒绝就**逐字回报**，不重试） | `plugin/dsh/src/tools.ts:253-367` |
 | 计划里怎么体现 | 候选列表里带"护航版"的数字（`attackChanceWithEscorts`、救援档），模型可比较 | `link_in.lua:1983-2040`、`:2186-2200` |
 | 环侧要精确到哪 | 需要 `Balancing_InsideRing`（**游戏侧**才有）；`card.lua` 已把它放在卡片的 `depth.insideCentreRing` | `data/scripts/lib/copilot/card.lua:327-337` ✓ |
 

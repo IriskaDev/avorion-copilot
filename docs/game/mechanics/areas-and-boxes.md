@@ -46,16 +46,16 @@
 | 粗扫步长 | `SCAN_STEP = 4`（默认最多 `SCAN_MAX_AREAS = 9` 个框 ≈ 船周围 3×3） | `data/scripts/net/link_in.lua:604-605` ✓ |
 | 细扫 | 在**最好的 `SCAN_FINE_PARENTS = 3`** 个粗扫框周围，用**步长 1**、`SCAN_FINE_WINDOW = 5` 的窗口密排 | `link_in.lua:770-772` ✓、`runTwoPhaseScan` `:881-960` ✓ |
 | 预算 | 粗扫默认 20 s（软预算，只在框与框之间检查）；细扫另有 3 s 切片 | `link_in.lua:606` ✓、`:772` ✓ |
-| 每条候选带什么 | **绝对星区坐标** `x`/`y`（= 框心 ✓）、`offset`（相对船的偏移 ✓）、`shape`/`sizeX`/`sizeY`、`origin`（粗扫 or 细扫） | `link_in.lua:1198` ✓、`plugin/src/index.ts:1711-1721` ✓（喂给模型的字段） |
+| 每条候选带什么 | **绝对星区坐标** `x`/`y`（= 框心 ✓）、`offset`（相对船的偏移 ✓）、`shape`/`sizeX`/`sizeY`、`origin`（粗扫 or 细扫） | `link_in.lua:1198` ✓、`plugin/dsh/src/index.ts:1711-1721` ✓（喂给模型的字段） |
 | 为什么要给绝对值 | 决策模型是**单次、无工具**的调用，不指望它做加法 | `MECHANICS.md` §1.1 |
 
 ★ **别自己加 offset**：候选里的 `x`/`y` 已经是算好的框心，直接抄
-（`plugin/prompt/system.md:18-19` 的原话；同一个口径也在 `link_in.lua:1881` 的 `orderHint` 里 ✓）。
+（`plugin/dsh/prompt/system.md:18-19` 的原话；同一个口径也在 `link_in.lua:1881` 的 `orderHint` 里 ✓）。
 
 ## 5. ⚠ 一个**未能验证**的缺口：Trade 的矩形能不能真的下回去
 
 - 计划候选**带** `sizeX`/`sizeY`（`link_in.lua:1706`、`:1955` ✓），工具描述也说"一起回传 → 框与候选完全一致"
-  （`plugin/src/tools.ts:189-196`）。
+  （`plugin/dsh/src/tools.ts:189-196`）。
 - 但本次实读的 **`onOrder` 只用 `data.size` 建框**（`link_in.lua:374-389` ✓），文件里**没有**读 `data.sizeX`
   的地方；同一文件里 `:613-614` 还写着「order 通道只接受 (x, y, size)（正方形），非正方形下不回去，
   要改 `onOrder` 才支持」✗矛盾，而 `:656-657` 的注释又声称 `onOrder` 已按 `sizeX/sizeY` 建框 ✗矛盾。
@@ -68,6 +68,6 @@
 - 表里的次序只是**某个评分器的排序**，不代表"唯一答案"。
 - 每行的数字都只对**那个框**成立；跨框、跨命令比较前先看标签：
   - 风险口径 `riskKind`：Sell 的 `sellAmbushChance`、Mine/Salvage 的 `jobAmbushChance`、
-    Trade 的 `tradeAmbushChance` —— **不是一回事**（`plugin/prompt/system.md:26-28`）。
+    Trade 的 `tradeAmbushChance` —— **不是一回事**（`plugin/dsh/prompt/system.md:26-28`）。
   - 超过风险闸门的候选**照样列出**并标 `acceptable=false` / `exceedsRiskLimit=true`，**不会被静默丢掉**
     （`MECHANICS.md` §10；`link_in.lua:599-601` ✓ 的 `riskWarning`）。

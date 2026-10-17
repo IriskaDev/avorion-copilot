@@ -122,9 +122,9 @@
 ### C.3 调用方要改（按依赖顺序）
 
 1. **`data/scripts/net/link_in.lua`**：新增 `what=predict` 与 `what=tradeRoutes` 分支——把 `scanOneArea`/`scanJobArea`/`fillPrediction`（`:1294`/`:2351`/`:1278`）里「单框→数字」的核心抽成可独立调用的函数，旧 plan 函数**改调它**（不重写口径）。`caps`/`PLAN_PARAMS` 补 `predict`/`tradeRoutes` 自声明（`card.lua:505/:521`）。
-2. **`plugin/src/tools.ts`**：`fleet_query` 的 `what` 枚举与参数说明加 `predict`/`tradeRoutes`；`fleet_order` 描述删「orderSchema first」。
-3. **`plugin/src/index.ts`**：单发/agent 决策的数据获取路径从「一次 `dossier`」改为「插件组合原子」（见 C.4）；`escortNeedOf`/`pickRendezvousEscort` 的输入改为读 `predict(Trade)` 的结果。
-4. **`plugin/src/dossier.ts`**：渲染输入从「游戏侧 dossier 的 6 个计划」改为「插件组合出的**少数框**预测结果」；`renderDossier` 那套字节预算裁剪顺序**不动**。
+2. **`plugin/dsh/src/tools.ts`**：`fleet_query` 的 `what` 枚举与参数说明加 `predict`/`tradeRoutes`；`fleet_order` 描述删「orderSchema first」。
+3. **`plugin/dsh/src/index.ts`**：单发/agent 决策的数据获取路径从「一次 `dossier`」改为「插件组合原子」（见 C.4）；`escortNeedOf`/`pickRendezvousEscort` 的输入改为读 `predict(Trade)` 的结果。
+4. **`plugin/dsh/src/dossier.ts`**：渲染输入从「游戏侧 dossier 的 6 个计划」改为「插件组合出的**少数框**预测结果」；`renderDossier` 那套字节预算裁剪顺序**不动**。
 5. **harness 自检**：新增 `native/harness/_predict_selftest.lua`、`_traderoutes_selftest.lua`（替身 `run`/`command` 照 `_trade_scan_selftest.lua` 的做法）；既有 `_trade_scan_selftest`/`_job_scan_selftest`/`_sell_scan_selftest`/`_scout_scan_selftest`/`_compact_dossier_selftest` **保留**（legacy 路径也要全绿）。
 6. **`docs/game/`**：`tools-cheatsheet.md` 工具表补 `predict`/`tradeRoutes`；本文件与 `README.md` 路由表已更新。
 

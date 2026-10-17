@@ -28,7 +28,7 @@
 | safeMode 规矩 ✓ | 「一般不要开」✓；★★ **比较口径写死**：判断"<10% 吗"用的**永远是不开 safeMode 时的普通档概率** ✓；开了之后被修正出的数（如 0.04）**绝不能当输入** ✗（那是**循环论证** ✓）。已进 `MECHANICS.md` + 提示词 ✓，守卫全绿 ✓ |
 | 无动作行 → 重试一次 ✓ | 首轮无动作行则重试一次（**同一批事实、不重取、只此一次** ✓），失败时错误里带两轮原因 ✓ |
 | 崩溃真凶 ✓ | 结算块 `?.orderHint` 遇 JSON `null` 返回 `null` ✗ 而 `!== undefined` 仍成立 ✗ → `hint.x` 抛 ✓。已改对象级判空 + 保留栈定位 ✓ |
-| 插件搬家 ✓ | 整个插件现在住在 `mods/copilot/plugin/` ✓（历史已并入 mod 仓库 ✓）；DSH profile 的 `link:` 已改 ✓；旧目录留作备份 ✓ |
+| 插件搬家 ✓ | 整个插件现在住在 `mods/copilot/plugin/dsh/` ✓（历史已并入 mod 仓库 ✓）；DSH profile 的 `link:` 已改 ✓；旧目录留作备份 ✓ |
 | 启动脚本 ✓ | `tools/launch-game.ps1` ✓ —— 7 段带时间戳/累计耗时 ✓，末行 `LAUNCH-OK roster=N` ✓，实测 42 秒 ✓，无 `-Force` 时不强杀正在跑的游戏 ✓ |
 
 ---
@@ -72,7 +72,7 @@
    响应形状向后兼容 ✓；**风险闸门与 `informOnly` 语义不变** ✓（超闸门候选照样列出并带判定 ✓）。
 2) ★★ **Trade 要跨"形状 × 位置"扫描** ✓：让 Trade 计划**真的呈现多种合法形状**的候选 ✓
    （而不是只有一个形状、且框心只在船身上 ✗）。同样受时间预算约束并报 scanMs ✓。
-3) ★ **机制文字**（进 `MECHANICS.md`，再 `node plugin/scripts/render-mechanics.mjs` 重新生成）：
+3) ★ **机制文字**（进 `MECHANICS.md`，再 `node plugin/dsh/scripts/render-mechanics.mjs` 重新生成）：
    * 每条用框的命令：**框的位置是自由选择**（只受该命令自身约束：Mine/Salvage/Sell/Scout 必须**含船**；
      Travel 1×1 无此要求 ✓）；同一艘船同一星区**允许多种框**，**风险/产出逐框不同** ✓；
    * ★ **Trade 的框形状也可变** ✓（列出合法形状 + file:line ✓）；
@@ -128,8 +128,8 @@ node test/actions-consistency.mjs / prompt-file.mjs /
 
 * `plugin` 侧：重试路径**缺一条驱动式断言**（假 LLM 首轮只回推理 → 断言恰好重试一次）✗；
 * 各 plan 的概率**没按命令/档位分别标注** ✗（Sell 的 0.27/0.14 与 Salvage 的 0.04 容易混比 ✓）；
-* 还剩同类的 null `.x` 洞：`plugin/src/index.ts` 旧 817 行附近（`targetSector.x` ✓）、
-  `plugin/src/tools.ts:426`（`sector !== undefined` 之后仍点 `sector.x` ✓）；
+* 还剩同类的 null `.x` 洞：`plugin/dsh/src/index.ts` 旧 817 行附近（`targetSector.x` ✓）、
+  `plugin/dsh/src/tools.ts:426`（`sector !== undefined` 之后仍点 `sector.x` ✓）；
 * 六个**尚未实现的后台命令**（pro 调研结论 ✓）：`Refine / Procure / Supply /
   **Expedition** / **Maintenance** / Escort` ✓ —— 价值最高的是 **Maintenance（修船补弹）**
   与 **Expedition（无人区被动收入）** ✓。资料库与插入提案见

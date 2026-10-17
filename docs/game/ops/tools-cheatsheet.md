@@ -45,7 +45,7 @@
 - ★ 计划里超过风险闸门的候选**照样列出**并标不达标（`riskWarning` / `acceptable=false`），**不会被静默丢掉**。
 - ⚠ 计划**只在船当前星区周围**扫（框心可在船周围 half 格内平移，但不会跑到别的星区）→ 想知道别处，
   用 `sectorFacts`，或先 Travel/Scout 过去（`link_in.lua:208-211` ✓）。
-- ⚠ **一次 `tradePlan` 很慢**（要跑完整的区域分析），插件给它 120 秒超时（`plugin/src/tools.ts:158-160`）；
+- ⚠ **一次 `tradePlan` 很慢**（要跑完整的区域分析），插件给它 120 秒超时（`plugin/dsh/src/tools.ts:158-160`）；
   一次别贪多。
 - ✗矛盾（小）：游戏侧的 `caps` 自声明**漏了 `scoutPlan`**（`data/scripts/lib/copilot/card.lua:436-444` ✓），
   但 `onQuery` 里**有**这条分支（`link_in.lua:115-119` ✓）。→ 以 `onQuery` 为准。
@@ -83,7 +83,7 @@
 `data/scripts/net/link_in.lua:254-264` ✓ 的 UUID 表实读了 6 个：**Mine / Salvage / Trade / Travel / Sell / Scout**。
 
 ✗矛盾（要记住）：工具描述与上一条错误文本只列了 4 个（Mine/Salvage/Trade/Travel）
-（`plugin/src/tools.ts:178-185`、`link_in.lua:360-361`）——
+（`plugin/dsh/src/tools.ts:178-185`、`link_in.lua:360-361`）——
 而那 4 个是**旧版**说法。**Sell 与 Scout 是能下的**（计划的 `orderHint` 也会给它们）。
 真拿不准时：以计划里的 `orderHint`/`action` 为准。
 
@@ -91,11 +91,11 @@
 
 | 工具 | 要点 |
 |---|---|
-| `fleet_recall(ship)` | 后台命令**能扛过游戏重启**（BGS 会恢复）→ **召回是唯一可靠的解绑方式**；召回后带着目标会马上下一次决策（`plugin/src/tools.ts:411-434`） |
+| `fleet_recall(ship)` | 后台命令**能扛过游戏重启**（BGS 会恢复）→ **召回是唯一可靠的解绑方式**；召回后带着目标会马上下一次决策（`plugin/dsh/src/tools.ts:411-434`） |
 | `fleet_goal(ship, text?, options?, clear?)` | 目标是**长期意图**：船每次空闲都会带着它再问一次（`tools.ts:375-401`） |
 | `fleet_escort(escort, target)` | 只做一件事：给 escort 下一单 **Travel** 到 target 的星区（目的地 **≥2 跳**，太近游戏会拒）；**游戏拒绝就逐字回报，不自动重试**（`tools.ts:253-367`） |
 | `fleet_decisions(ship?, limit?, verbose?)` | 读**历史决策**：目标、取到的事实、思维链、选的动作、下单回执 —— 纯本地，**游戏关着也能用**（`tools.ts:537-642`） |
-| `fleet_commander(...)` | 看/设/清"舰队决策任务投给哪条会话"；★ 输出里的 **`mode`** 很关键：`shadow` = **你答了也只被记录，实际下单用单发模型**；`live` = 你的答案算数（插件默认 **shadow**：`plugin/src/index.ts:1247`、`tools.ts:525-527`；而 `plugin/src/dispatch.ts:172-173` 的注释说默认 `live` ✗矛盾 —— **以 `fleet_commander` 的实际输出为准**） |
+| `fleet_commander(...)` | 看/设/清"舰队决策任务投给哪条会话"；★ 输出里的 **`mode`** 很关键：`shadow` = **你答了也只被记录，实际下单用单发模型**；`live` = 你的答案算数（插件默认 **shadow**：`plugin/dsh/src/index.ts:1247`、`tools.ts:525-527`；而 `plugin/dsh/src/dispatch.ts:172-173` 的注释说默认 `live` ✗矛盾 —— **以 `fleet_commander` 的实际输出为准**） |
 
 ## 6. ★ 拿不准先查，别硬猜（行为准则）
 
@@ -106,4 +106,4 @@
 3. **工具报错** → 把**它给的原因**当地事实（那是游戏/本 mod 的原话），别重试同一个错。
 4. **计划没取到**（空载荷/失败） → 那是**简报缺口**：`fleet_decisions` 里能看到原因；
    **不许**把"没取到"读成"没有候选"，也**不许**用 safeMode 顶替（见 [`../rules/owner-rules.md`](../rules/owner-rules.md)）。
-5. **不要靠截图**：`fleet_query` 才是正当的"看游戏"方式（`plugin/src/tools.ts:136-138`）。
+5. **不要靠截图**：`fleet_query` 才是正当的"看游戏"方式（`plugin/dsh/src/tools.ts:136-138`）。

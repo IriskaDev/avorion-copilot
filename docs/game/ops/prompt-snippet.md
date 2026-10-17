@@ -1,7 +1,7 @@
 # 提示词片段（待粘贴的入口指引 + 该删的旧段落清单）
 
 > 上一级：[`../README.md`](../README.md)（二级索引，决策者第一屏）·
-> **本文件是文档，不是改动** —— 提示词本体住在 `plugin/prompt/system.md`（代码侧），由代码 agent 负责落地。
+> **本文件是文档，不是改动** —— 提示词本体住在 `plugin/dsh/prompt/system.md`（代码侧），由代码 agent 负责落地。
 
 ## 1. 设计（为什么要这样改）
 
@@ -9,12 +9,12 @@
 
 | 层 | 内容 | 每轮都读？ |
 |---|---|---|
-| ① 提示词（`plugin/prompt/system.md`） | 身份 / **答案契约** / 硬规矩一句话 / **"不确定就去读 docs/game/README.md"** / 路径 | ✅ 每轮 |
+| ① 提示词（`plugin/dsh/prompt/system.md`） | 身份 / **答案契约** / 硬规矩一句话 / **"不确定就去读 docs/game/README.md"** / 路径 | ✅ 每轮 |
 | ② `docs/game/README.md` 二级索引 | 路由表 + 硬规矩细节 + 产出格式（决策者第一屏） | 需要时 |
 | ③ `docs/game/mechanics/*`、`docs/game/rules/*`、`docs/game/ops/*` | 全部机制、规则、工具细节 | 按需（逐级） |
 | ④ `MECHANICS.md`、`GAME-GOALS-AND-OPS.md`、`LLM-OPS.md` | 单一来源 / 资料库 / 调研 | 审计或深挖时 |
 
-**★ 尺寸目标**：改完后**整份 `plugin/prompt/system.md` 控制在 ~2000 字符以内**（现在约 9.4 KB / ≈3100 汉字，
+**★ 尺寸目标**：改完后**整份 `plugin/dsh/prompt/system.md` 控制在 ~2000 字符以内**（现在约 9.4 KB / ≈3100 汉字，
 其中机制段 `{{MECHANICS}}` 展开后约 2.5 千字）。理由很实在：提示词**每轮决策都读一次**，
 而机制/表格/卡片口径这些**只在需要时才用得上**，应当挪到 ②③ 后面。
 
@@ -29,12 +29,12 @@
 | 输出格式里每个字段的长解释 | 保留一行字段名；解释进 [`../ops/tools-cheatsheet.md`](../ops/tools-cheatsheet.md) §3 |
 
 ★ 不搬走、也不能删的：**「大目标」段**（主人钦定的目标）与**答案必须在第一行**（便于解析；
-实机事故：正文被 maxTokens 截断、动作行根本吐不出来 —— `plugin/src/index.ts:1197` 的记录）。
+实机事故：正文被 maxTokens 截断、动作行根本吐不出来 —— `plugin/dsh/src/index.ts:1197` 的记录）。
 
 ## 2. 待粘贴的提示词块（可直接粘贴）
 
 > ★ 下面围栏内的文字**本身就是粘贴内容**：它**不含任何反引号、也不含 `${`**，
-> 因为 `plugin/src/prompt-default.ts` 的 `SYSTEM_PROMPT_DEFAULT` 是**模板字符串**
+> 因为 `plugin/dsh/src/prompt-default.ts` 的 `SYSTEM_PROMPT_DEFAULT` 是**模板字符串**
 > —— 反引号会提前结束模板、`${` 会被当插值（`docs/dev/install-and-deploy.md` 记录过**两次**这类构建事故）。
 
 ```
@@ -60,7 +60,7 @@
 
 ## 3. 给代码 agent 的落地清单（**逐条删**，我不动代码）
 
-改动对象：`plugin/prompt/system.md`（及其生成物 `plugin/src/prompt-default.ts`）。当前该文件 96 行：
+改动对象：`plugin/dsh/prompt/system.md`（及其生成物 `plugin/dsh/src/prompt-default.ts`）。当前该文件 96 行：
 
 | # | 行范围（当前） | 动作 | 说明 |
 |---|---|---|---|
@@ -75,8 +75,8 @@
 **改完必跑**（本仓库的既有纪律）：
 
 ```
-node plugin/scripts/render-prompt.mjs     # 重新生成 src/prompt-default.ts（守卫②要求两者逐字一致）
-node plugin/scripts/check-mechanics.mjs   # 5 道守卫
+node plugin/dsh/scripts/render-prompt.mjs     # 重新生成 src/prompt-default.ts（守卫②要求两者逐字一致）
+node plugin/dsh/scripts/check-mechanics.mjs   # 5 道守卫
 ```
 
 **可能的守卫冲突（必须一起处理，否则会红）**：
@@ -90,13 +90,13 @@ node plugin/scripts/check-mechanics.mjs   # 5 道守卫
   也不要塞"当 X 就做 Y"的策略句（§2 的块已自查过）。
 - ★ 模板字符串里**不许出现反引号与 `${`**（`docs/dev/install-and-deploy.md` 记过两次构建事故）。
 
-**同一份契约还有第二处**：会话路径的任务块格式在 `plugin/src/task.ts:150-162`
+**同一份契约还有第二处**：会话路径的任务块格式在 `plugin/dsh/src/task.ts:150-162`
 （它当前提示的字段较少：`x/y/size/duration/reason`），而解析器 `task.ts:227-252` 认全套字段。
 落地时**两处别打架** —— 要么把任务块的提示行补齐，要么在 `docs/game/README.md` 写明"字段全集见工具速查"。
 
 ## 4. 落地后自检（人也能做）
 
-1. 打开 `plugin/prompt/system.md`：**≤ ~2000 字符**，且**不含**机制表格/候选表读法/参考策略正文。
+1. 打开 `plugin/dsh/prompt/system.md`：**≤ ~2000 字符**，且**不含**机制表格/候选表读法/参考策略正文。
 2. 提示词里能一眼看到 **`docs/game/README.md` 这个路径**与"不确定就先读它"的指令。
 3. `%APPDATA%\Avorion\mods\copilot\docs\game\README.md` 确实存在（目录联接），且其 §1 就是
    [`../README.md`](../README.md) 的「决策者第一屏」。

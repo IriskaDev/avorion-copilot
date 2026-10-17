@@ -116,7 +116,7 @@ export declare const PREV_RESULT_BUDGET_BYTES = 200;
  * | 期限提示 | 会话层有硬闸 ✓（超了 `cancel({kind:'hook'})` 并落单发 ✓）—— 写进任务头告知硬期限 ✓ |
  * | 答案行契约（**放最后**，且要"放最前"） | 实机事故：正文被 maxTokens 截断、一个动作行都没吐 ✓ → 契约必须显眼 ✓ |
  *
- * ★ 为什么结论行要求**放最前** ✗✓：`plugin/prompt/system.md` 与 `src/index.ts` 的重试路径
+ * ★ 为什么结论行要求**放最前** ✗✓：`plugin/dsh/prompt/system.md` 与 `src/index.ts` 的重试路径
  *   都记录了同一个事故 ✓ —— 把契约写清楚，最坏情况丢的是散文，不是结论 ✓。
  *
  * ★ 为什么**没有**"参考计划"段 ✗✓：那一段以前是 `planText`（`buildPrompt()` 的全文 ✓）——

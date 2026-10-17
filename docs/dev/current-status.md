@@ -33,7 +33,7 @@
   - 决策来源可以是 DSH 侧（见下），也可以先做规则版
   - 待办：先跑 `/copilot ops` 把 `ShipDatabaseEntry` 上**真正可用**的成员问出来
     （它的文档文件是 0 字节，且部分方法挂在实体上，混用会崩）
-- **DSH 桥接插件**：就住在本仓库的 `plugin/` ✓（布局见 [`install-and-deploy.md`](install-and-deploy.md) ✓）。
+- **DSH 桥接插件**：就住在本仓库的 `plugin/dsh/` ✓（布局见 [`install-and-deploy.md`](install-and-deploy.md) ✓）。
   ★ 2026-10-17 起它的角色是**游戏 RPC 接口提供者** ✓：把游戏暴露成工具 ✓ + 把空闲船的决策任务
   投进**主人自己那个会话** ✓ + 把结论交回游戏下单 ✓（范围与理由见 `plugin/AGENT-DESIGN.md`
   顶部的「2026-10-17 修订」✓；用法见 `plugin/README.md` ✓）。

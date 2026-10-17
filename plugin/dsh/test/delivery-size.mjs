@@ -16,7 +16,7 @@
  *   D. 裁剪顺序**确定性** ✓（同一份输入 → 同一份 dropped 序列与同样的字节数 ✓），
  *      且**逐条记录**裁了什么 ✓（绝不静默 ✗✓）。
  *
- * 跑法（仓库根或 plugin/ 下都行 ✓）：  node plugin/test/delivery-size.mjs
+ * 跑法（仓库根或 plugin/ 下都行 ✓）：  node plugin/dsh/test/delivery-size.mjs
  */
 
 import { renderTaskBlock } from '../lib/task.js'

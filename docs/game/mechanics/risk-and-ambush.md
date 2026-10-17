@@ -8,7 +8,7 @@
 | 事实 | 证据 |
 |---|---|
 | 它是**整段任务期间**"会被伏击"的概率（0~1），不是"每小时"也不是"损失概率" | `MECHANICS.md` §11；`simulationutility.lua:793-798` ✓ |
-| ★ **不同命令的概率不是一回事**（比较前先看 `riskKind` 标签）：Sell 的 `sellAmbushChance`、Mine/Salvage 的 `jobAmbushChance`（本框、本档）、Trade 的 `tradeAmbushChance` | `plugin/prompt/system.md:26-28`；本 mod 计划里的 `riskKind` 字段 |
+| ★ **不同命令的概率不是一回事**（比较前先看 `riskKind` 标签）：Sell 的 `sellAmbushChance`、Mine/Salvage 的 `jobAmbushChance`（本框、本档）、Trade 的 `tradeAmbushChance` | `plugin/dsh/prompt/system.md:26-28`；本 mod 计划里的 `riskKind` 字段 |
 | ⚠ 预测里**没有**"沉船/损失概率"字段 —— 被伏击的实际后果由星区里的实时战斗决定，`onAttacked` 基本是空实现 | `LLM-OPS.md` §3.4 末尾；`salvagecommand.lua:407-409` ✓（空） |
 | ⚠ `attackLocation`（"在哪被打"）**不可信**：走全局随机、每次调用重抽、服务端启动时还会重算 → **只信 `attackChance.value`** | `LLM-OPS.md` §2.2；原版注释 `minecommand.lua:850-852` ✓ |
 

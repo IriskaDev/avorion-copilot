@@ -11,7 +11,7 @@
 | 剩余空间用 `entry:getFreeCargoSpace()` | `minecommand.lua:598`（转引 `MECHANICS.md` §1.2） |
 | 本 mod 能力卡给的是**扁平字段**（不是 `hold{}` 块）：`cargoUsed` / `cargoKinds` / `cargoCapacity` / `cargoUsedPercent` / `freeCargoSpace` / `holdHasGoods` / `cargoState` / `cargoNote` | `data/scripts/lib/copilot/card.lua:204-248` ✓ |
 | `hold{}` 块（`used` / `capacity` / `free` / `usedPercent` / `isHoldFull` / `blocksTradeLoading`）出现在 **Sell 计划**里 | `data/scripts/net/link_in.lua:3044-3071` ✓ |
-| ✗矛盾（小）：提示词说"**卡片的** `hold{}` 块" | `plugin/prompt/system.md:49-51` —— 卡片实际没有 `hold{}`，只有上面那些扁平字段（`card.lua:204-248` ✓）。**读卡片时按扁平字段读**。 |
+| ✗矛盾（小）：提示词说"**卡片的** `hold{}` 块" | `plugin/dsh/prompt/system.md:49-51` —— 卡片实际没有 `hold{}`，只有上面那些扁平字段（`card.lua:204-248` ✓）。**读卡片时按扁平字段读**。 |
 
 ## 2. ★ 产出进哪里：全局资源 vs 货舱
 
@@ -50,7 +50,7 @@
 
 - Sell 计划给 `perGood`：每种货在**这个框**里的 `amount`（舱里多少）、`expectedRevenue`（预计卖多少）、
   `priceDeltaPercent`（相对正常价的涨跌幅 ±%）；`perGoodBest` 是**跨框**每种货期望收入最高的那个框
-  （`plugin/prompt/system.md:46-48`）。
+  （`plugin/dsh/prompt/system.md:46-48`）。
 - 这两个表都是**算好的数字** → 直接用，别自己乘。
 - 货舱状态也在同一份计划里（`hold{}`，见 §1）。
 

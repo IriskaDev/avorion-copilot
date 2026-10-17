@@ -15,7 +15,7 @@
 | 主人要的"投递到某个会话、由它决策、能实时看思维、闲时能聊天、现场能修"能实现吗？ | **能，机制全部存在**：插件可 `ctx.agents.get(sessionId)` 拿到活着的 Agent，用 `agent.followup(消息)` 投递一轮任务，用 `ctx.on('session/event')` 收答案。见 §1.1 / §2.2。 |
 | 插件能"投递到**任意已存在**的会话"吗？ | **能，但不区分所有权**：`ctx.agents.list()` / `ctx.agents.get(id)` 对插件是开放的（无租约校验）。所以"选哪个会话当指挥官"是**我们自己要做的**自律 + 可配置。见 §1.1。 |
 | 插件能"新建"一个会话吗？ | 能，但**不要用** `ctx.agents.create()`（见 §1.2 的坑）：推荐让**主人在 GUI 里自己开一个会话**，插件按 sessionId 认领它。 |
-| 模型有原生 tool calling 吗？ | **有，已实测 7/7 通过**（`plugin/test/agent-toolcall-probe.mjs`，真 API 两轮往返）。见 §1.4。 |
+| 模型有原生 tool calling 吗？ | **有，已实测 7/7 通过**（`plugin/dsh/test/agent-toolcall-probe.mjs`，真 API 两轮往返）。见 §1.4。 |
 | 她能带 cosplay 人格、连**思维链**都带人格吗？ | **能，而且是现成的**：dsh-cosplay 把人格注册进**全局**系统提示段，所有 agent 都会带上；`thinkingStyle: 'role'` 这一档专门让思维链也角色化。见 §1.5。 |
 | 那还需要手写循环吗？ | **需要，作为兜底**（会话忙/挂了/超时要照样决策）。手写循环的 system prompt 可以直接吃同一张角色卡的文本。见 §4。 |
 | 今天那条单发路径怎么办？ | **一行都不动**，作为阶梯的第二级。见 §3.4 迁移。 |
@@ -219,8 +219,8 @@ C:\Users\IriskaDev\.dsh\profiles\desktop\cordis.patch.yml                   ← 
 **实测证据**（本鱼写的探针，真 API 往返）：
 
 ```
-plugin/test/toolcall-wire-probe.mjs      → 7/7 passed，exit 0   ← 本鱼写的（直连 wire）
-plugin/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真适配器），但本机跑不动
+plugin/dsh/test/toolcall-wire-probe.mjs      → 7/7 passed，exit 0   ← 本鱼写的（直连 wire）
+plugin/dsh/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真适配器），但本机跑不动
 ```
 它证明三件事（都很关键）：
 1. 带上 `tools` 后模型**选择调用**工具（turn 1 finish_reason = `tool_calls`）；
@@ -238,7 +238,7 @@ plugin/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真�
 > （`:1291-1307`）、映射 finish 原因（`:1134`）—— 而这条路
 > （`ctx.llm.stream({ tools })`）与我们**今天已经在用**的 `ctx.llm.stream` 是同一个入口。
 >
-> ★**诚实说明 2**：仓库里还有一份 `plugin/test/agent-toolcall-probe.mjs`，是**另一个 agent
+> ★**诚实说明 2**：仓库里还有一份 `plugin/dsh/test/agent-toolcall-probe.mjs`，是**另一个 agent
 > 同期写的**（它已把那份提交进 `abe9940`）。本鱼先前也在同名文件上写过一版，发现撞名后
 > **已把它恢复成那位 agent 的提交版本**（工作树干净），本鱼的可用版本改名为
 > `toolcall-wire-probe.mjs`。两份不冲突，但**能跑的只有后者**。
@@ -283,7 +283,7 @@ plugin/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真�
   config: { enabled: true, thinkingStyle: neutral, activeRole: blue-fat-whale, ... }
 ```
 
-插件自己的默认（`plugin/src/index.ts:211-216`）：`provider: 'deepseek-official'`、
+插件自己的默认（`plugin/dsh/src/index.ts:211-216`）：`provider: 'deepseek-official'`、
 `model: 'deepseek-flash'`、`maxTokens: 8000`、`temperature: 0.2`。
 
 ⚠️ **两处 provider 名字不一样**：profile 写 `deepseek-account`，插件默认写 `deepseek-official`。
@@ -346,11 +346,11 @@ plugin/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真�
 
 ★关键取舍：**事实仍然由插件预取**，不是让会话自己去查。
 理由：
-- 游戏侧 RPC 有**同步开销**（`jobPlan` 会占住游戏主循环，`plugin/src/index.ts` 里对
+- 游戏侧 RPC 有**同步开销**（`jobPlan` 会占住游戏主循环，`plugin/dsh/src/index.ts` 里对
   minePlan/salvagePlan 特意加了 120s 超时与"两份时只扫 5 个区域"的收窄）——
   让模型自由地反复查计划会**反复占用游戏主循环**，这是实机风险。
 - 但我们**也要把工具给它**：`fleet_query` / `fleet_decisions` 已经注册给 DSH 了
-  （`plugin/src/tools.ts:88` `fleet_query`、`:406` `fleet_decisions`），
+  （`plugin/dsh/src/tools.ts:88` `fleet_query`、`:406` `fleet_decisions`），
   所以会话想自行核实（换个星区查 sectorFacts、看历史决策）时**能查**，成本由它自己承担。
   → 这就是"参考策略在提示词里 + 工具在手边"的正确组合。
 
@@ -372,7 +372,7 @@ plugin/test/agent-toolcall-probe.mjs     → ★另一个 agent 写的（走真�
 ② 主人在会话里聊天时，回复可能与任务交错 → **必须能对上号**。
 所以契约里要求回显 `task=<id>`；对不上就判 `TASK_MISMATCH` 并走阶梯（**绝不把别的船的答案用在这艘船上**）。
 
-任务块内容（与今天的 `buildPrompt` 同源，见 `plugin/src/index.ts:681` `buildPrompt`）：
+任务块内容（与今天的 `buildPrompt` 同源，见 `plugin/dsh/src/index.ts:681` `buildPrompt`）：
 
 ```
 <fleet_task id="t-7f3a" ship="Miner-00002" deadline_hint="20s">
@@ -392,13 +392,13 @@ reason=…
 </fleet_task>
 ```
 
-★"action 行放最前"这条是**踩过坑的**：`plugin/prompt/system.md` 与
-`plugin/src/index.ts:1382-1392`（重试一次那条路径）都记录了"她想太久、正文被 maxTokens 截断，
+★"action 行放最前"这条是**踩过坑的**：`plugin/dsh/prompt/system.md` 与
+`plugin/dsh/src/index.ts:1382-1392`（重试一次那条路径）都记录了"她想太久、正文被 maxTokens 截断，
 一个动作行都没吐"的实机事故。任务块沿用同一条规矩。
 
 ### 3.2 答案校验（契约机器可检，人格多花哨都不影响）
 
-沿用今天的解析器（`plugin/src/index.ts:289` `parseDecision`、`:789` `toAnswer`），
+沿用今天的解析器（`plugin/dsh/src/index.ts:289` `parseDecision`、`:789` `toAnswer`），
 并加两条**只在会话路径才有意义**的检查：
 
 | 判定 | 触发条件 | 阶梯动作 |
@@ -410,7 +410,7 @@ reason=…
 | `BAD_ACTION` | action 不在允许集合内 | 下一级 |
 | `TIMEOUT` | 超预算没跑完 | 掐掉这一轮 + 下一级 |
 
-校验通过后**还是走原来那条**：`order` RPC（`plugin/src/index.ts` 里 `ask(peer,'order',...)`），
+校验通过后**还是走原来那条**：`order` RPC（`plugin/dsh/src/index.ts` 里 `ask(peer,'order',...)`），
 游戏侧两段式 `startAreaAnalysis → startCommand`（`data/scripts/net/link_in.lua:346` `onOrder`）。
 **决策契约一个字都不变** —— 变量只多了一个 `source` 字段（`session` / `single-shot` / `asked-owner` / `none`）。
 
@@ -448,7 +448,7 @@ reason=…
 | 每轮只投一次 | — | 失败**不重投**（避免把同一艘船投两遍 → 两个矛盾命令，正是 TAKEOVER.md 的铁律） |
 | **舰队级串行** | 1 艘/轮 | 一个会话同一时刻只有一个 turn；多艘空闲船用队列，不要并发投递 |
 
-★已实测（离线原型 `plugin/test/commander-dispatch-proto.mjs`，**7/7 通过**）：
+★已实测（离线原型 `plugin/dsh/test/commander-dispatch-proto.mjs`，**7/7 通过**）：
 这条阶梯在四种失效模式下都保住了"舰队有决策"：
 会话正常 → 用会话的答案下单；主人在聊天 → 落到单发；会话挂死 → **20s（原型里压缩成 1.45s）
 后掐掉并落单发**；连单发也废 → `action=None` 且**总耗时不超过预算**。
@@ -508,14 +508,14 @@ for turn in 1..MAX_TURNS (建议 4):
 - **工具结果的缓存**：同一轮内 `(what,ship,x,y)` 的结果缓存（**防重复轰炸游戏侧 RPC**）。
   ★这一条很重要：`minePlan`/`salvagePlan`/`tradePlan` 在游戏侧是**同步重活**（
   `link_in.lua` 里它们是两阶段扫描），重复调用会拖住游戏主循环。
-- **人格**：`system` = 今天的系统提示（`plugin/prompt/system.md`，由 `loadSystemPrompt()` 读，
-  `plugin/src/index.ts:408`）+ **角色卡文本**（见 §4.2）。
-- ★和今天的关系：这**不是重写**，而是把 `askModel`（`plugin/src/index.ts:392`）从"跑一次"
+- **人格**：`system` = 今天的系统提示（`plugin/dsh/prompt/system.md`，由 `loadSystemPrompt()` 读，
+  `plugin/dsh/src/index.ts:408`）+ **角色卡文本**（见 §4.2）。
+- ★和今天的关系：这**不是重写**，而是把 `askModel`（`plugin/dsh/src/index.ts:392`）从"跑一次"
   扩成"跑有界多轮"。它天然保留了今天的全部解析/校验/下单路径。
 
 ### 4.2 人格文本放哪（主人要能自己改）
 
-两条来源，**按优先级**（沿用"文件优先、改完不重启"的既有口味，见 `plugin/src/promptfile.ts`）：
+两条来源，**按优先级**（沿用"文件优先、改完不重启"的既有口味，见 `plugin/dsh/src/promptfile.ts`）：
 
 1. `%AppData%\Avorion\moddata\copilot\persona\<name>.md`（用户覆盖，随时手改）
    —— 与 `system.md` 的覆盖目录同一套做法
@@ -548,12 +548,12 @@ for turn in 1..MAX_TURNS (建议 4):
 
 ## 5. 工具面清单（她手上的工具，读/写分明）
 
-插件**已经**把游戏能力注册成 DSH 工具（`plugin/src/tools.ts:81` `registerFleetTools`），
+插件**已经**把游戏能力注册成 DSH 工具（`plugin/dsh/src/tools.ts:81` `registerFleetTools`），
 所以**一个普通 DSH agent 天然就能用**（这正是主人说"她可以是你的分身"的意思）：
 
 | 工具 | 位置 | 读/写 | 说明 |
 |---|---|---|---|
-| `fleet_query` | `plugin/src/tools.ts:88` | **读** | `what=fleet`（全名单快照）、`ship`（能力卡）、`goal`、`orderSchema`、`sectorFacts` |
+| `fleet_query` | `plugin/dsh/src/tools.ts:88` | **读** | `what=fleet`（全名单快照）、`ship`（能力卡）、`goal`、`orderSchema`、`sectorFacts` |
 | `fleet_decisions` | `:406` | **读** | 历史决策 + 思维链（纯本地记忆，游戏关着也能查） |
 | `fleet_order` | `:136` | **写（动船）** | 下后台命令（Mine/Salvage/Trade/Travel…） |
 | `fleet_escort` | `:216` | **写（动船）** | 派护航去目标船所在星区（Travel） |
@@ -585,9 +585,9 @@ for turn in 1..MAX_TURNS (建议 4):
 
 | # | 测什么 | 怎么测 | 状态 |
 |---|---|---|---|
-| 1 | 原生 tool calling 真的存在 | `node plugin/test/toolcall-wire-probe.mjs`（真 API 两轮往返；无 key 自动 SKIP） | ✅ **7/7 通过**（本鱼已跑，exit 0） |
-| 2 | 投递阶梯在四种失效下都不卡舰队 | `node plugin/test/commander-dispatch-proto.mjs`（全离线，脚本化会话） | ✅ **7/7 通过**（本鱼已跑，压缩时间预算） |
-| 3 | 任务块格式 + 答案校验 | 扩 `plugin/test/harness.mjs`（已有假 ctx + llm 桩的做法，`test/llm-stub.mjs`）→ 加"工具轮"用例 | ⬜ 待做 |
+| 1 | 原生 tool calling 真的存在 | `node plugin/dsh/test/toolcall-wire-probe.mjs`（真 API 两轮往返；无 key 自动 SKIP） | ✅ **7/7 通过**（本鱼已跑，exit 0） |
+| 2 | 投递阶梯在四种失效下都不卡舰队 | `node plugin/dsh/test/commander-dispatch-proto.mjs`（全离线，脚本化会话） | ✅ **7/7 通过**（本鱼已跑，压缩时间预算） |
+| 3 | 任务块格式 + 答案校验 | 扩 `plugin/dsh/test/harness.mjs`（已有假 ctx + llm 桩的做法，`test/llm-stub.mjs`）→ 加"工具轮"用例 | ⬜ 待做 |
 | 4 | 真实会话能渲染人格段 | ★**必须人/agent 实机验**：开一个会话，看它的系统提示里有没有 `cosplay-persona`；再把 `thinkingStyle` 切 `role` 看思维链是否角色化 | ⬜ **上线第一件事** |
 | 5 | 端到端一轮真实决策 | 游戏里留一艘空闲船 + 指定指挥官 → 看 tasks 进会话、答案回插件、`order` 被接受（读 `decisions.log` 与 `decisions.live`） | ⬜ 需主人配合（会动游戏） |
 | 6 | 延迟/成本 | 在 #5 里量：`turn` 起止时间、token 用量（`assistant/message` 事件带 `usage`） | ⬜ |
@@ -601,7 +601,7 @@ for turn in 1..MAX_TURNS (建议 4):
 
 **Phase A：只加"选择与观测"，不接手决策**（零风险，可独立合并）
 1. 加 `fleet_commander { session?, clear? }` 与 `fleet_sessions`（只读列出候选）。
-2. 加 `commanderSessionId` 配置（`apply(ctx, config)` 里，`plugin/src/index.ts:1039`），默认空。
+2. 加 `commanderSessionId` 配置（`apply(ctx, config)` 里，`plugin/dsh/src/index.ts:1039`），默认空。
 3. 记录：指定了就会话里出现一行"已认领"，但**决策仍走单发**。
 4. 验收：主人能指定/清除；清除后行为与今天**逐字相同**。
 
@@ -621,7 +621,7 @@ for turn in 1..MAX_TURNS (建议 4):
 人格文本来源按 §4.2 定；`fleet_status` 支撑"待人类裁决"。
 
 **规矩**：
-- 每个 Phase 结束都要：`plugin/scripts/build.ps1` 编译 0 error → `node scripts/check-mechanics.mjs`
+- 每个 Phase 结束都要：`plugin/dsh/scripts/build.ps1` 编译 0 error → `node scripts/check-mechanics.mjs`
   → `test/*.mjs` → 才提交。
 - **不改** `net/*.lua`（改了必须重启游戏，见 AGENTS.md）；Phase A~D **全部只需要改插件 TypeScript**，
   游戏侧重启零成本。
@@ -633,27 +633,27 @@ for turn in 1..MAX_TURNS (建议 4):
 
 **核实过的（有证据）**：§1 全部（tool calling / agent 投递 / cosplay 人格 / 会话服务）。
 **实测过的**：
-- 真 API 的 tool calling 两轮往返 → **7/7**（`plugin/test/toolcall-wire-probe.mjs`）
-- 投递阶梯的四种失效模式 → **7/7**（`plugin/test/commander-dispatch-proto.mjs`）
+- 真 API 的 tool calling 两轮往返 → **7/7**（`plugin/dsh/test/toolcall-wire-probe.mjs`）
+- 投递阶梯的四种失效模式 → **7/7**（`plugin/dsh/test/commander-dispatch-proto.mjs`）
 **写下的**：本文（`plugin/AGENT-DESIGN.md`，UTF-8 / LF / 无 BOM）。
 **本鱼新增的文件**（都只**新增**，没改任何既有文件、没改任何 src、没改任何 Lua）：
 ```
 plugin/AGENT-DESIGN.md                  ← 本文
-plugin/test/toolcall-wire-probe.mjs     ← 真 API tool-calling 探针（7/7）
-plugin/test/commander-dispatch-proto.mjs← 投递阶梯离线原型（7/7）
+plugin/dsh/test/toolcall-wire-probe.mjs     ← 真 API tool-calling 探针（7/7）
+plugin/dsh/test/commander-dispatch-proto.mjs← 投递阶梯离线原型（7/7）
 ```
 **没做**（按任务要求 —— 这是设计 pass）：**没有改任何 `src/`**、**没有改游戏侧 Lua**、
 **没有重启 DSH 或游戏**、**没有提交**（工作树里有别的 agent 的未提交改动，见下）。
 
 **构建与既有测试现状（本鱼读了，不是本鱼弄坏的）**：
-- 插件 `src → lib` 编译：**exit 0，0 error**（本鱼跑过一次 `plugin/scripts/build.ps1` 验证环境是好的）。
+- 插件 `src → lib` 编译：**exit 0，0 error**（本鱼跑过一次 `plugin/dsh/scripts/build.ps1` 验证环境是好的）。
 - 既有测试：`prompt-file` ✅ / `actions-consistency` ✅ / `rendezvous` ✅ / `memory-demo` ✅；
   **`rendezvous-flow` ❌、`order-payload` ❌（exit 1）**。
   ⚠️ 这两个失败**与本鱼无关**：本鱼一个 src 文件都没动，只**新增**了两个独立的 `.mjs`
   （另有一次：本鱼写的探针与另一个 agent 同名，发现后**已把它恢复成对方的已提交版本**，
-  现在 `plugin/test/agent-toolcall-probe.mjs` 与 `abe9940` 逐字一致、工作树干净）。
-  而且当时 `git status` 显示**另一个 agent 正在同一时刻改** `plugin/src/*`、`plugin/lib/*`、
-  `link_in.lua`、`MECHANICS.md`、`plugin/test/order-payload.mjs`（工作树里全是它的未提交改动）。
+  现在 `plugin/dsh/test/agent-toolcall-probe.mjs` 与 `abe9940` 逐字一致、工作树干净）。
+  而且当时 `git status` 显示**另一个 agent 正在同一时刻改** `plugin/dsh/src/*`、`plugin/dsh/lib/*`、
+  `link_in.lua`、`MECHANICS.md`、`plugin/dsh/test/order-payload.mjs`（工作树里全是它的未提交改动）。
   → **这两个失败要由那轮改动的主人去解释**，本鱼不认领、也不擅自去修。
 
 **★未验证清单（一条都别当已知）**：
