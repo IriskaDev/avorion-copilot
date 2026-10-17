@@ -31,6 +31,10 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 
 ## 4. 原子接口作业规程（与代码一致）
 一次一件小事，**轻的先来**：一次只发一条查询 ✓；别指望一次查全 ✗；不满意可**补查一次** ✓。顺序：
+0. ★ **先判这船是干嘛的；判不出就问主人，别瞎派 ✗**（主人 2026-10-17 定的流程 ✓）
+   - 原版**没有**「船类型/角色」可读字段 ✗ —— 能读的"类型"只有**实体种类**（`getShipType`/`getEntityType` → `EntityType`，船恒 = Ship）；玩家能"设"的只有**名字**，所以「类型」的载体 = **名字**（原版自己也把 craft classification 写进名字）✓。
+   - 判定顺序：**① 装备/能力**（`captainClass` / `hasCaptain` / `turretCount` / `cargoCapacity`）→ **② 名字前缀**（可能无意义 ✗）→ **③ 判不出 → 停下来问主人**（不写 `action=` 行，直接问 ✓）。
+   - ⚠ 炮塔**种类**（采矿/打捞/武装）现在读不到：`card.lua` 读 `t.weaponType`，而原版字段是 `category`（`WeaponCategory.Mining/Salvaging/Armed`）→ 别把 `turretCount` 当"种类"✗。依据 [`docs/game/lessons/orders.md`](docs/game/lessons/orders.md) L19。
 1. `fleet_query {what:"list"}` → 只给名字/忙闲/船长/星区（索引级，~223B）→ **自己挑船**。
 2. `fleet_query {what:"ship", ship, brief:true}` → 只查这一艘。
 3. `fleet_query {what:"goal", ship}` → 这船目标/动作边界。
