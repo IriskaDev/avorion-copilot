@@ -156,6 +156,362 @@ function M.isBusy(player, name)
 end
 
 -- ---------------------------------------------------------------------------
+-- ★★★ 装备 / 武器事实（2026-10-17 加 ✓✓）—— 把「这艘船能不能打」变成可读事实 ✓
+-- ---------------------------------------------------------------------------
+--
+-- 为什么必须加 ✗→✓（主人在真机上看到的那句话 ✓）：
+--   「Your craft Combat-00001 has no turrets or combat fighters!」
+--   —— 这句话的**唯一来源**是原版 `checkArmed()`：
+--        data/scripts/lib/entity.lua:47-85
+--          :50-53   `local launcher = TorpedoLauncher(); if launcher.numTorpedoes > 0 then return true`
+--                   （★ 鱼雷**也算**武装 ✓）
+--          :58      `if entity:getNumArmedTurrets() > 0 then return true`   ← 判据①（**实体**口径 ✓）
+--          :63-71   `Hangar():getSquads()` + `hangar:getSquadMainWeaponCategory(index)`，
+--                   `category == WeaponCategory.Armed` 才算武装舰载机 ✓           ← 判据③
+--          :81      `recipient:sendChatMessage("", ChatMessageType.Error,
+--                   "Your craft %s has no turrets or combat fighters!")`        ← 就是那句文案 ✓
+--       触发它的指令（只有这些）：entity/orderchain.lua:1483（activateAggressive）
+--                 :1494（activatePatrol）:1520（activateAttackCraft）:1567（activateGuardPosition）
+--   ★ 而**能力卡当时只有 `turretCount`** ✗ —— 而且它恒等于 1 ✗（见下面「旧口径的病」✓），
+--     于是「炮没了」与「炮还在、只是那句话另有所指」**在卡片上长得一模一样** ✗✓。
+--
+-- ★ 旧口径的病（2026-10-17 真机取证 ✓✓）：
+--   旧代码是 `local okT, list = pcall(function() return { entry:getTurrets() } end)`，
+--   再 `card.turretCount = #list` ✗。
+--   但 `ShipDatabaseEntry:getTurrets()` 返回的是**一张表、一个值** ✓
+--   （Documentation/ShipDatabaseEntry [Server].html:877-890：
+--     `function pair<ScriptTurretTemplate, table_t>... getTurrets()`，
+--     "Returns the **currently equipped** turrets … the turrets are the **keys**" ✓），
+--   所以 `{ entry:getTurrets() }` 永远只有 **1 个元素**（那张表本身 ✓）→ `#list == 1` 恒成立 ✗✓。
+--   真机证据（本会话）：Raven（4 门炮）/ Combat-00001 / Trader-00001 的 `turretCount` **全是 1** ✓。
+--   → 正确数法：`pairs(那张表)` 数**键** ✓。
+--
+-- ★ 两种口径的区别（**都写在卡里**，不让模型猜 ✓）：
+--   · **已装**（本卡主体）：`ShipDatabaseEntry:getTurrets()` = 现在真装在船上的炮 ✓
+--     （原版后台采矿就是用它算采矿能力：simulation/minecommand.lua:552 ✓）
+--   · **蓝图槽位**：设计图上有几个炮位 ✗ —— 那是 `entry:getPlan()` 里的 TurretBase 块数 ✓，
+--     本卡**不读**它 ✗（要读整份 block plan，4617 块，太重 ✓）；所以别把 `turretCount` 当槽位 ✗✓
+--   · **实体口径**（原版 checkArmed 用的那个 ✓）：`Entity:getNumArmedTurrets()` ✓
+--     —— 语义 = **已装武装炮塔数**（不是槽位！铁证：lib/entitydbg.lua:4547-4568
+--        每装一门炮 `usedTurretSlots = ship:getNumArmedTurrets()` 就 +1 ✓✓）；
+--     船**正在本星区**时本卡顺带读它 → `liveArmedTurrets` ✓（跨星区读不到就**不写** ✗）
+--
+-- ★ 炮塔类别：`TurretTemplate.category` ✓（Documentation/TurretTemplate.html:361-363
+--   `property WeaponCategory category` [read-only]）；
+--   枚举值（Documentation/Enums.html:1623-1630）：Armed=0 / Mining=1 / Salvaging=2 / Heal=3 / None=4 ✓
+--   原版用法：entity/ai/mine.lua:15 `if weapons.category == WeaponCategory.Mining …` ✓
+--
+-- ★ 舰载机：`ShipDatabaseEntry:getLightweightHangar()`（:611-624，返回 2 值：
+--   squads 表 + hangar 信息；**轻量版**不返回 BlockPlan ✓ 所以便宜 ✓）
+--   → 每个 Squad 用 `squad:getFighters()`（Documentation/Squad.html:132-134，多返回值 ✓）
+--   → 每架 `FighterTemplate.category`（Documentation/FighterTemplate.html:328-330 ✓，
+--     另有 `property bool armed` :306 ✓ 作为退路 ✓）
+--
+-- ★ 舰船 DPS：`entry:getDPSValues()`（:439-452，返回 2 值：炮塔总 DPS + 舰载机总 DPS ✓）
+--   —— 这是第三个**独立**的证据面：`armedTurrets=0` 但 `turretDPS>0` = 口径打架 ✓
+--
+-- ★ 一律「取不到就不写 ✗ + known=false ✓」（与本文件其它字段同一规矩 ✓）：
+--   绝不把「读不到」写成 0 ✗ —— 那会让决策层以为"这船真没炮" ✓✓
+
+-- WeaponCategory 枚举（Documentation/Enums.html:1623-1630 的**顺序** ✓，硬表 ✓
+-- —— 不复用全局 `WeaponCategory` 表做反查 ✗：本文件早前实测过 `pairs(EntityType)` 在
+--    某些 VM 里拿不到东西 ✓，所以数字→名字用硬表，全局表只在末尾做**等价比较**的兜底 ✓）
+local WEAPON_CATEGORY_NAMES = {
+    [0] = "Armed", [1] = "Mining", [2] = "Salvaging", [3] = "Heal", [4] = "None",
+}
+local WEAPON_CATEGORY_ORDER = { "Armed", "Mining", "Salvaging", "Heal", "None" }
+
+-- 类别 → 名字（取不到返回 nil ✓，绝不猜 ✗）。
+-- 三条路，都包 pcall（userdata 上拼错成员名可能直接 AV ✗，见本文件 probe() 的注释 ✓）：
+--   ① `tonumber(category)`（原版枚举支持取数字 ✓，本文件 entityTypeId 就是这么拿的 ✓）
+--   ② `category.value`（Material 那种 userdata 的写法 ✓，mounts.lua 用过 ✓）
+--   ③ 与全局 `WeaponCategory.Armed/Mining/…` 逐个做 **==** 比较（原版就这么比 ✓）
+local function weaponCategoryName(category)
+    if category == nil then return nil end
+
+    local okNum, num = pcall(tonumber, category)
+    if okNum and num ~= nil then
+        local n = tonumber(num)
+        if n ~= nil then return WEAPON_CATEGORY_NAMES[math.floor(n + 0.5)] end
+    end
+
+    local okVal, val = pcall(function() return category.value end)
+    if okVal and val ~= nil then
+        local okNum2, num2 = pcall(tonumber, val)
+        if okNum2 and num2 ~= nil then
+            return WEAPON_CATEGORY_NAMES[math.floor(tonumber(num2) + 0.5)]
+        end
+    end
+
+    local okEnum, enum = pcall(function() return WeaponCategory end)
+    if okEnum and enum ~= nil then
+        for _, name in ipairs(WEAPON_CATEGORY_ORDER) do
+            local okMem, member = pcall(function() return enum[name] end)
+            if okMem and member ~= nil and category == member then return name end
+        end
+    end
+    return nil
+end
+
+M.weaponCategoryName = weaponCategoryName
+
+-- 往 `card` 上写装备事实；`probeNotes` 收"为什么没取到" ✓。
+-- ★ 公开导出（`M.equipmentFacts`）：`player/ai/ops.lua` 的单发小卡也调它 ✓
+--   —— 免得同一件事在两个地方各算一遍、各错一遍 ✗✓
+-- ★ 参数：`player` 只用于第 ⑤ 步的「实体口径」交叉核对 ✓（船不在本星区时它读不到，
+--   那份事实就**不写** ✗ —— 但 `player` 为 nil（离线自检）时也不能报错 ✓）
+function M.equipmentFacts(player, entry, card, probeNotes)
+    card = card or {}
+    probeNotes = probeNotes or {}
+
+    -- ① 已装炮塔 + 类别计数
+    local okT, list = pcall(function() return entry:getTurrets() end)
+    if not okT then
+        card.turretCountKnown = false
+        card.armedTurretsKnown = false
+        probeNotes.turrets = "entry:getTurrets() failed: " .. tostring(list)
+    elseif type(list) ~= "table" then
+        card.turretCountKnown = false
+        card.armedTurretsKnown = false
+        probeNotes.turrets = "entry:getTurrets() returned " .. type(list) ..
+            " (a table is expected -- docs: the turrets are the KEYS): " .. tostring(list)
+    else
+        local total, unknown = 0, 0
+        local cats, types = {}, {}
+        for turret, info in pairs(list) do
+            total = total + 1
+
+            -- 类别：先炮塔模板本身（TurretTemplate.category ✓），再退到值表的同名字段 ✓
+            local okCat, cat = pcall(function() return turret.category end)
+            local name = okCat and weaponCategoryName(cat) or nil
+            if name == nil and type(info) == "table" then
+                local okCat2, cat2 = pcall(function() return info.category end)
+                if okCat2 then name = weaponCategoryName(cat2) end
+            end
+            if name ~= nil then
+                cats[name] = (cats[name] or 0) + 1
+            else
+                unknown = unknown + 1
+            end
+
+            -- 旧的 `turretTypes`（weaponType 计数 ✓）保留 —— 有消费方在看它 ✓
+            local okW, wt = pcall(function() return turret.weaponType end)
+            if okW and wt ~= nil then
+                local k = tostring(wt)
+                types[k] = (types[k] or 0) + 1
+            end
+        end
+
+        card.turretCount = total             -- ★ 已装炮塔总数 ✓（不是槽位 ✗）
+        card.turretCountKnown = true
+        card.turretCategories = cats        -- 例如 { Armed = 4, Mining = 2 } ✓
+        if next(types) ~= nil then card.turretTypes = types end
+        if unknown > 0 then card.turretCategoryUnknown = unknown end
+
+        if unknown == 0 then
+            -- ★ 一个都读不到类别 → **不知道** ✗（不是 0 ✗）；全读到（含 total==0）→ 真值 ✓
+            card.armedTurrets = cats.Armed or 0
+            card.armedTurretsKnown = true
+        else
+            card.armedTurretsKnown = false
+            probeNotes.armedTurrets = "category unreadable on " .. tostring(unknown) ..
+                " of " .. tostring(total) .. " turrets -- refusing to report a number"
+        end
+    end
+
+    -- ② 舰载机（轻量 hangar ✓）
+    do
+        local okH, squads = pcall(function() return entry:getLightweightHangar() end)
+        if not okH then
+            card.fightersKnown = false
+            card.armedFightersKnown = false
+            probeNotes.fighters = "entry:getLightweightHangar() failed: " .. tostring(squads)
+        elseif type(squads) ~= "table" then
+            card.fightersKnown = false
+            card.armedFightersKnown = false
+            probeNotes.fighters = "entry:getLightweightHangar() returned " .. type(squads) ..
+                ": " .. tostring(squads)
+        else
+            local nSquads, total, unknown = 0, 0, 0
+            local cats = {}
+            for _, squad in pairs(squads) do
+                nSquads = nSquads + 1
+                local okF, fighters = pcall(function() return { squad:getFighters() } end)
+                if okF and type(fighters) == "table" then
+                    for _, fighter in ipairs(fighters) do
+                        total = total + 1
+                        local okCat, cat = pcall(function() return fighter.category end)
+                        local name = okCat and weaponCategoryName(cat) or nil
+                        if name == nil then
+                            -- 退路：FighterTemplate.armed（布尔 ✓）
+                            local okA, armed = pcall(function() return fighter.armed end)
+                            if okA and armed == true then name = "Armed"
+                            elseif okA and armed == false then name = "None" end
+                        end
+                        if name ~= nil then
+                            cats[name] = (cats[name] or 0) + 1
+                        else
+                            unknown = unknown + 1
+                        end
+                    end
+                else
+                    probeNotes.fighters = "squad:getFighters() failed: " .. tostring(fighters)
+                end
+            end
+
+            card.fighterSquads = nSquads
+            card.fighters = total
+            card.fightersKnown = true
+            if next(cats) ~= nil then card.fighterCategories = cats end
+            if unknown > 0 then card.fighterCategoryUnknown = unknown end
+            if unknown == 0 then
+                card.armedFighters = cats.Armed or 0
+                card.armedFightersKnown = true
+            else
+                card.armedFightersKnown = false
+                probeNotes.armedFighters = "category unreadable on " .. tostring(unknown) ..
+                    " fighter(s) -- refusing to report a number"
+            end
+        end
+    end
+
+    -- ③ 鱼雷（原版 checkArmed 的判据 ⓪ ✓ —— `launcher.numTorpedoes > 0` 就算武装 ✓）
+    --
+    -- ★ 2026-10-17 真机纠正 ✗→✓：`TorpedoShaft` **没有** `numTorpedoes` 字段 ✗
+    --   （Documentation/TorpedoShaft.html:84-120 只有 index / space / occupiedSpace /
+    --     freeSpace / enabled / obstructed / automaticLoadingType ✓）——
+    --   第一版本鱼写 `shaft.numTorpedoes`，真机在 Combat-00001（11 个发射管）上
+    --   直接报 "numTorpedoes unreadable on 11 shaft(s)" ✓，于是 `canFight` 被迫 unknown ✗✓。
+    --   正确读法有两层 ✓：
+    --     ① `TorpedoShaft:getTorpedoes()` —— 文档 TorpedoShaft.html:126-128
+    --        `function TorpedoTemplate... getTorpedoes()`（多返回值 ✓）→ 数个数 ✓
+    --     ② `numTorpedoes` 是**活实体**上 `TorpedoLauncher()` 的属性
+    --        （Documentation/ReadOnlyTorpedoLauncher.html:131-137 `numShafts` / `numTorpedoes` ✓，
+    --         原版 entity.lua:50-53 用的就是它 ✓）—— entry 上没有 ✓
+    do
+        local okTp, shafts = pcall(function() return entry:getTorpedoes() end)
+        if not okTp then
+            card.torpedoesKnown = false
+            probeNotes.torpedoes = "entry:getTorpedoes() failed: " .. tostring(shafts)
+        elseif type(shafts) ~= "table" then
+            -- 没装发射器时引擎可能给 nil ✓ —— 这时"没有鱼雷"是**真值** ✓
+            card.torpedoes = 0
+            card.torpedoesKnown = true
+        else
+            local nShafts, rounds, readable = 0, 0, 0
+            for _, shaft in pairs(shafts) do
+                nShafts = nShafts + 1
+                -- ① 标准路径：`shaft:getTorpedoes()`（多返回值 ✓）
+                local okG, list = pcall(function() return { shaft:getTorpedoes() } end)
+                if okG and type(list) == "table" then
+                    rounds = rounds + #list
+                    readable = readable + 1
+                else
+                    -- ② 退路：别的版本若给数字字段就用它（本机实测**没有** ✗）
+                    local okN, tn = pcall(function() return shaft.numTorpedoes end)
+                    local v = okN and tonumber(tn) or nil
+                    if v ~= nil then
+                        rounds = rounds + v
+                        readable = readable + 1
+                    end
+                end
+            end
+            card.torpedoShafts = nShafts
+            if readable == nShafts then
+                card.torpedoes = rounds
+                card.torpedoesKnown = true
+            else
+                card.torpedoesKnown = false
+                probeNotes.torpedoes = "torpedo count unreadable on " ..
+                    tostring(nShafts - readable) .. " shaft(s)"
+            end
+        end
+    end
+
+    -- ④ 独立证据面：原版 `entry:getDPSValues()`（炮塔 DPS + 舰载机 DPS ✓）
+    do
+        local okD, turretDPS, fighterDPS = pcall(function() return entry:getDPSValues() end)
+        if okD then
+            card.dps = {
+                turret = tonumber(turretDPS),
+                fighter = tonumber(fighterDPS),
+            }
+        else
+            probeNotes.dps = "entry:getDPSValues() failed: " .. tostring(turretDPS)
+        end
+    end
+
+    -- ⑤ 实体口径（**只有船在本星区时才读得到** ✓）：原版 checkArmed 看的就是它 ✓
+    do
+        local entity = nil
+        local okCraft, craft = pcall(function() return player and player.craft end)
+        if okCraft and craft ~= nil then
+            local okN, craftName = pcall(function() return craft.name end)
+            if okN and craftName ~= nil and tostring(craftName) == tostring(card.name) then
+                entity = craft
+            end
+        end
+        if entity == nil then
+            local okSector, sector = pcall(function() return Sector() end)
+            if okSector and sector ~= nil then
+                local okType, shipType = pcall(function() return EntityType.Ship end)
+                if okType and shipType ~= nil then
+                    local okList, ships = pcall(function() return { sector:getEntitiesByType(shipType) } end)
+                    if okList then
+                        for _, e in ipairs(ships) do
+                            local okN, eName = pcall(function() return e.name end)
+                            if okN and eName ~= nil and tostring(eName) == tostring(card.name) then
+                                entity = e
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if entity ~= nil then
+            card.inThisSector = true
+            local okA, armed = pcall(function() return entity:getNumArmedTurrets() end)
+            local n = okA and tonumber(armed) or nil
+            if n ~= nil then card.liveArmedTurrets = n end
+            local okL, live = pcall(function() return select("#", entity:getTurrets()) end)
+            local m = okL and tonumber(live) or nil
+            if m ~= nil then card.liveTurretCount = m end
+        end
+    end
+
+    -- ⑥ 结论：照抄原版 `checkArmed()`（lib/entity.lua:47-85 ✓）
+    if card.armedTurretsKnown and card.armedFightersKnown and card.torpedoesKnown then
+        card.canFight = (card.torpedoes > 0) or (card.armedTurrets > 0) or (card.armedFighters > 0)
+        card.canFightKnown = true
+    else
+        card.canFightKnown = false
+        probeNotes.canFight = "one of torpedoes/armedTurrets/armedFighters is unknown"
+    end
+
+    -- ⑦ 口径说明（★ 让模型不用猜"这两个数为什么不一样" ✓）
+    card.equipmentNote =
+        "炮塔口径：`turretCount` = **已装**炮塔数（`ShipDatabaseEntry:getTurrets()`，" ..
+        "文档原话 'currently equipped turrets'，ShipDatabaseEntry [Server].html:877-890 ✓），" ..
+        "**不是蓝图槽位数** ✗；`turretCategories` / `armedTurrets` 来自每门炮的 " ..
+        "`TurretTemplate.category`（TurretTemplate.html:361-363；枚举 Enums.html:1623-1630 " ..
+        "Armed/Mining/Salvaging/Heal/None ✓）。" ..
+        "★ 旧版 `turretCount` **恒等于 1** ✗（把一张表当成多返回值去 `#` —— 2026-10-17 真机：" ..
+        "Raven / Combat-00001 / Trader-00001 全是 1 ✓），已修 ✓。" ..
+        "`liveArmedTurrets` = 原版 checkArmed 用的那个数（`Entity:getNumArmedTurrets()`，" ..
+        "**已装武装炮塔数** ✓，不是槽位：entitydbg.lua:4547-4568 每装一门就 +1 ✓）；" ..
+        "只有船在**本星区**时才读得到 ✓。" ..
+        "`canFight` 照抄原版 `checkArmed()`（lib/entity.lua:47-85）：鱼雷>0 ✓ 或 已装武装炮塔>0 ✓ " ..
+        "或 武装舰载机>0 ✓；那句『Your craft %s has no turrets or combat fighters!』在 " ..
+        "lib/entity.lua:81 ✓，只在**攻击/巡逻/攻击目标/守卫**指令里触发 " ..
+        "（orderchain.lua:1483/1494/1520/1567 ✓）。" ..
+        "★ 所以 `canFight=false` 只说明**武器判据不成立** ✓，不等于『这船没用』✓；" ..
+        "要判断炮到底在不在，看 `turretCount`（已装总数）与 `liveArmedTurrets`（实体口径）✓。"
+
+    return card
+end
+
+-- ---------------------------------------------------------------------------
 -- 单船快照（= 能力卡）
 -- ---------------------------------------------------------------------------
 
@@ -323,29 +679,17 @@ function M.shipCard(player, name)
     --   「缺少当前星区、可贸易路线及船长职业信息，无法安全指派贸易任务。」
     -- 它是对的 ✗ —— 之前的卡片只有 busy/captain/status，模型没法决策 ✓。
 
-    -- ★★ 装备构成 ✓✓（2026-10-16 补，为"没设目标时按装备派活"服务 ✓）
+    -- ★★ 装备构成（2026-10-16 起；★ 2026-10-17 **整体重写** ✓✓ —— 见文件上方
+    --   「装备 / 武器事实」那一节的完整注释 ✓）：
     --
-    -- 依据：原版采矿能力就是**从炮塔算出来的** ✓（minecommand.lua:545
-    --   `MineCommand:getMiningProperties` → `entry:getTurrets()` ✓）。
-    -- 而 `getNumMiningTurrets()` 这个名字**不存在** ✗（本 mod 早先实测过 ✓）。
-    -- 每个炮塔的字段名不确定 → 逐个 pcall ✓（读不到就跳过，绝不让卡片崩 ✗）。
-    do
-        local okT, list = pcall(function() return { entry:getTurrets() } end)
-        if okT and type(list) == "table" then
-            card.turretCount = #list
-            local kinds = {}
-            for _, t in ipairs(list) do
-                local okW, wt = pcall(function() return t.weaponType end)
-                if okW and wt ~= nil then
-                    local k = tostring(wt)
-                    kinds[k] = (kinds[k] or 0) + 1
-                end
-            end
-            if next(kinds) ~= nil then card.turretTypes = kinds end
-        else
-            probeNotes.turrets = tostring(list)
-        end
-    end
+    --   原版依据：后台采矿能力就是**从已装炮塔算出来的** ✓（minecommand.lua:545-552
+    --     `MineCommand:getMiningProperties` → `entry:getTurrets()` ✓）。
+    --   ★ 而旧这里的写法是错的 ✗→✓（2026-10-17 真机取证）：
+    --     `{ entry:getTurrets() }` 只装进**一张表**（getTurrets 返回一个值 ✓）→ `#list` **恒 1** ✗；
+    --     而且 `ipairs` 对它取不到东西（键在图里，不在数组部分 ✗）。
+    --   → 现在统一走 `M.equipmentFacts`（已装炮塔数 / 类别计数 / 武装炮塔 /
+    --     舰载机 / 鱼雷 / DPS / 实体口径交叉核对 / canFight ✓），**一处算、两处用** ✓。
+    M.equipmentFacts(player, entry, card, probeNotes)
 
     -- 货舱剩余空间 ✓（原版确认：`entry:getFreeCargoSpace()` 就是正确用法 ✓
     --   —— minecommand.lua:598 / salvagecommand.lua:679 / procurecommand.lua:374 ✓）
@@ -594,7 +938,8 @@ function M.shipBrief(player, name, card)
         name = card.name or name,
         brief = true,
         briefNote = "★ 这是**能力卡简报** ✓：只含「这艘船现在能做什么」必需的事实 ✓" ..
-            "（完整卡的 depth 采样 / 炮塔构成 / 逐动作长说明没搬过来 ✓）。",
+            "（完整卡的 depth 采样 / 逐动作长说明没搬过来 ✓；★ 装备/炮塔/舰载机那**整组**" ..
+            "与完整卡**口径相同** ✓，一个字段不少 ✗✓）。",
     }
     local keep = {
         -- ★ `captainClassId` 必须在这里 ✗→✓（2026-10-17 修）：
@@ -609,7 +954,18 @@ function M.shipBrief(player, name, card)
         "shipTitle", "shipTitleRaw", "shipTitleKnown", "shipTitleNote",
         "entityType", "entityTypeId",
         "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
-        "holdHasGoods", "cargoState", "turretCount", "hyperspace", "actionNames", "actions",
+        "holdHasGoods", "cargoState", "hyperspace", "actionNames", "actions",
+        -- ★★ 装备/武器事实（2026-10-17 加 ✓✓）：**全组搬过来** ✓ —— 与完整卡同源
+        --   （都在 shipCard → M.equipmentFacts 里赋值 ✓，简报**不重算** ✗）
+        --   为什么整组：`turretCount` 单独一个是**会骗人的**（旧版恒 1 ✗）——
+        --   要么连类别与 known 一起给，要么别给 ✓✓
+        "turretCount", "turretCountKnown", "turretCategories", "turretCategoryUnknown",
+        "turretTypes", "armedTurrets", "armedTurretsKnown",
+        "liveArmedTurrets", "liveTurretCount", "inThisSector",
+        "fighterSquads", "fighters", "fightersKnown", "fighterCategories",
+        "fighterCategoryUnknown", "armedFighters", "armedFightersKnown",
+        "torpedoes", "torpedoesKnown", "torpedoShafts", "dps",
+        "canFight", "canFightKnown", "equipmentNote",
         "scoutNote", "cargoNote", "probe",
     }
     for _, k in ipairs(keep) do
