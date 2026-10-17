@@ -1342,6 +1342,19 @@ end
 local function sampleVerify(player, rec)
     local st = shipStateOf(player, rec.ship)
     local pre = rec.pre or {}
+    -- ★ 位置类结论**显式布尔**（2026-10-17 修 ✗→✓）：
+    --   原来写 `(条件) and (比较) or nil` —— 比较结果为 **false** 时被 `or nil` 吞掉，
+    --   于是「船没动」被报成 `moved=nil`（=读不到）✗✓。真机实测就这么出现的。
+    --   规矩：**没动 = false**（读到了、确实没动）；**读不到 = nil**（positionKnown 缺失）。
+    local moved, atDestination = nil, nil
+    if st.positionKnown == true then
+        if pre.x ~= nil and pre.y ~= nil then
+            moved = (st.x ~= pre.x) or (st.y ~= pre.y)
+        end
+        if rec.destination ~= nil then
+            atDestination = (st.x == rec.destination.x and st.y == rec.destination.y)
+        end
+    end
     local v = {
         at = isoNow(),
         afterStartSec = (rec.startedAt ~= nil) and tonumber(string.format("%.1f", os.clock() - rec.startedAt)) or nil,
@@ -1353,7 +1366,7 @@ local function sampleVerify(player, rec)
         availability = st.availability,
         position = (st.positionKnown == true) and { x = st.x, y = st.y } or nil,
         positionBefore = (pre.x ~= nil) and { x = pre.x, y = pre.y } or nil,
-        moved = (st.positionKnown == true and pre.x ~= nil) and ((st.x ~= pre.x) or (st.y ~= pre.y)) or nil,
+        moved = moved,
         cargoUsed = st.cargoUsed,
         cargoUsedBefore = pre.cargoUsed,
         cargoUsedDelta = (st.cargoUsed ~= nil and pre.cargoUsed ~= nil) and (st.cargoUsed - pre.cargoUsed) or nil,
@@ -1361,11 +1374,9 @@ local function sampleVerify(player, rec)
         cargoKindsBefore = pre.cargoKinds,
         holdHasGoods = st.holdHasGoods,
         destination = rec.destination,
+        -- atDestination：只对 Travel 有意义（area.lower 就是目的地 ✓）
+        atDestination = atDestination,
     }
-    -- atDestination：只对 Travel 有意义（area.lower 就是目的地 ✓）
-    if rec.destination ~= nil and st.positionKnown == true then
-        v.atDestination = (st.x == rec.destination.x and st.y == rec.destination.y)
-    end
     local ok, evidence, note = verifyVerdict(rec, v)
     v.ok = ok
     v.evidence = evidence

@@ -438,6 +438,10 @@ check("P2 verify 里带 busy/位置/货舱字段 ✓",
     os2.verify.busy == true and type(os2.verify.position) == "table"
     and os2.verify.cargoUsed ~= nil and os2.verify.holdHasGoods == false,
     tostring(os2.verify.busy) .. "/" .. tostring(os2.verify.cargoUsed))
+check("P2 ★ moved 是**显式 false**（船在航程中坐标不动；不许退化成 nil ✗✓）",
+    os2.verify.moved == false, tostring(os2.verify.moved))
+check("P2 ★ atDestination=false（还没到 ✓）", os2.verify.atDestination == false,
+    tostring(os2.verify.atDestination))
 check("P2 trace 写了实测结论 ✓", traceHas("onOrder 实测") ~= nil, table.concat(TRACE, " | "))
 
 -- ===========================================================================
