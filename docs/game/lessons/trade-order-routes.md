@@ -1,31 +1,38 @@
-# 教训：Trade 的「框 → 路线清单」只有一个采样点（2026-10-18）
+# 教训：Trade 下单的「框」必须逐字用 evaluate 结果里的 sizeX/sizeY（2026-10-18）
 
 > 上一级：[`docs/game/README.md`](../README.md)。
-> 症状现场：`tradeEvaluate` 查到 `Electro Magnet` → 7 秒后 `order` 同一框同一货 → 回执
-> `risk.unknownReason = NO_ROUTE` → `verify.ok=false busy=false`（游戏什么都没干）。
+> 症状现场：`tradeEvaluate` 查到 `Electro Magnet`（1,123,470/小时、maxAvailable 3800、风险 0.05）
+> → 7 秒后 `order` → 回执 `risk.unknownReason = NO_ROUTE` → `verify.ok=false busy=false`，
+> 相隔 30 秒再下一次，**同一个 NO_ROUTE**。
 
-## 根因：不是"两套匹配"，是**三个采样点**
+## 真根因：`29x11` 和 `11x29` 写反了（**不是**市场波动，也**不是**两套查找逻辑）
 
-原版 `TradeCommand` 的路线清单是**实时经济的采样**，而且**只给前 4 条**：
+真机实测（2026-10-18 21:06Z，同一框心 `(-374,34)`，三种合法形状一起评）：
 
-* `onAreaAnalysisFinished` 从供需里挑 4 条（`tradecommand.lua:390-444`）；
-* 被「占用」的路线会被过滤：`onStart`/`update` 把路线标记 2 分钟
-  （`tradecommand.lua:104-107` / `:170-173`），`isRouteAvailable` 在读清单时就跳过它
-  （`:207-215` / `:374`）。
+| 形状 | 该框里的路线 |
+|---|---|
+| `17x17` | Electro Magnet / Liquor / Antigrav Generator / Display / … |
+| `29x11` | Electro Magnet / Antigrav Generator / Display / Cattle / … |
+| `11x29` | **只有** Display / Scrap Metal |
 
-于是「查到的清单」和「下单时用的清单」本来就可能不同。改之前本仓库有**三次**独立分析：
+`Electro Magnet` 的两个端点星区在 `17x17` / `29x11` 框内，**不在** `11x29` 框内 ——
+所以"同一个框心"不等于"同一个框"。当时的决策把结果里的 `sizeX=29, sizeY=11`
+抄成了 `sizeX=11, sizeY=29`（两个矩形形状是镜像，最容易抄反 ✗），于是原版在
+`initialize → calculatePrediction` 里找不到这条路线（`tradecommand.lua:762-765`
+"No route selected."），`startCommand` 静默 `sendChatMessage + return`
+（`simulation.lua:568-573`）→ 回执只剩 `verify.ok=false`。
 
-| 谁 | 位置 | 结果用途 |
-|---|---|---|
-| `tradeEvaluate` / `predict` | `tradeBoxRoutesOf` 之前各写一份 | 决策者看到的数字 |
-| `order` 的回执风险 | `orderRiskOf` → `predict` → `predictOneBox` → `run()` | `risk` 字段 |
-| 游戏侧 | `simulation.lua:837` 分析 → `:557` `getErrors` → `initialize` | 命令真能不能起来 |
+★ 对照证据：`predict` 与 `tradeEvaluate` 在**同一时刻、同一框**给出的数字**逐字相同**
+（实测 netProfitLow 263520 两边一致）—— 代码里也确实是同一个函数
+（`tradeBoxRoutesOf` / `tradePredictFromAnalysis`）。所以"两条路径查找逻辑不一致"这个
+假设是**错的**；真正的分歧只有一处：**框的形状**。
 
-第三处才是要命的：原版 `TradeCommand:getErrors` **不检查** goodName 在不在路线里
-（`tradecommand.lua:632-677`），真正的拒绝在 `initialize → calculatePrediction`
-（`:762-765` "No route selected."），而 `startCommand` 对它只是
-`sendChatMessage + return`（`simulation.lua:568-573`）—— 所以回执只会看到
-`accepted:true` + `verify.ok=false`，**看不出原因** ✗。
+## 次要风险（仍然存在，已收窄）：路线清单是实时采样
+
+原版路线清单只给前 4 条（`tradecommand.lua:390-444`），并过滤「120 秒内被占用」的路线
+（`onStart`/`update` 打标记 `:104-107` / `:170-173`，读清单时跳过 `:207-215` / `:374`）。
+所以哪怕框一模一样，隔几秒也可能变。这条**改变不了**（原版 `startAreaAnalysis → startCommand`
+之间它还会再采样一次），但至少要让它**看得见**。
 
 ## 修法（`data/scripts/net/link_in.lua`）
 
@@ -33,18 +40,17 @@
   `tradeEvaluate` / `predict(Trade)` / `order(Trade)` 全走它 ✓
 * `order` 在 `startAreaAnalysis` **之前**用同一份清单校验 goodName：
   * 不在 → `accepted=false` + `error="NO_ROUTE: …"` + `noRoute.candidates`（前 8 个）
-    + `didYouMean`（只做去首尾空格 / 大小写，**不猜单复数** —— 原版是逐字比较
+    + `didYouMean`（只吸收去首尾空格 / 大小写；**不猜单复数** —— 原版是逐字比较
     `tradecommand.lua:743`）→ **一个字节都不发** ✓
+  * ★★ 还会实测**同一框心的另外两种合法形状**（`noRoute.siblingBoxes` + `swapHint`）：
+    `hasGood=true` 就等于在说「货在那边，你给的形状不对」✓✓ —— 正好抓住这次的写反 ✗✓
   * 在 → `pfCtx.prePredict` 直接用这份分析算 risk（回执不再第三次采样 ✓）
-* `predict` 的 NO_ROUTE 也带 `candidates` / `routeCount` / `noRoute.box` ✓
-
-## 仍存在的窗口（原版固有，别当 bug）
-
-`startAreaAnalysis` → `startCommand` 之间（约 6 秒）游戏会**再采样一次**。它事后仍可能
-"静默拒绝"，但那时回执已经在下单前给过候选清单，决策者能立刻换一条 ✓。
 
 ## 作业规矩
 
-1. 想下单就**立刻**下单（清单会变），但**别**假设"刚查到就等于下单时还有"。
-2. 收到 `NO_ROUTE` 先看 `noRoute.candidates`：名字写错（看 `didYouMean`）还是路线真没了。
-3. 任何新的贸易入口都**必须**调 `tradeBoxRoutesOf`，不许自己 `run()` ✗。
+1. ★ 下单的 `x/y/sizeX/sizeY` **整组照抄** `tradeEvaluate` 结果里那一条的
+   `x/y/sizeX/sizeY`，不要自己重算、更不要"差不多"✗（`29x11 ≠ 11x29`）。
+2. 想下单就立刻下单（清单会变），但别假设"刚查到就等于下单时还有"。
+3. 收到 `NO_ROUTE` 先看 `noRoute`：`siblingBoxes.hasGood` → 框写错了；
+   `candidates` 里没有 → 路线真的没了；`didYouMean` → 名字写错了。
+4. 任何新的贸易入口都必须调 `tradeBoxRoutesOf`，不许自己 `run()` ✗。

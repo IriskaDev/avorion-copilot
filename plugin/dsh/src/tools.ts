@@ -429,10 +429,14 @@ export function registerFleetTools(
         'validated BEFORE ordering with the SAME implementation tradeEvaluate uses: if goodName is not ' +
         'one of that box\'s routes RIGHT NOW, the receipt is accepted:false with error starting ' +
         '"NO_ROUTE:" plus noRoute:{goodName, routeCount, candidates:[up to 8 route names], didYouMean, ' +
-        'box} -- and NOTHING was queued (no area analysis, no startCommand). Read noRoute.candidates and ' +
-        'order one of those instead: the vanilla route list is a live sample (top 4) and hides routes ' +
-        'occupied for 120 s, so a route you saw a few seconds ago can be gone. Matching is EXACT ' +
-        '(case/spacing/plural must match); didYouMean only suggests. ★★ The receipt now ALSO carries ' +
+        'box, siblingBoxes:[{sizeX,sizeY,hasGood,routeCount,candidates}], swapHint} -- and NOTHING was ' +
+        'queued (no area analysis, no startCommand). Read it BEFORE retrying: siblingBoxes.hasGood=true ' +
+        'means the good exists in the SAME centre with a DIFFERENT legal shape (29x11 and 11x29 are ' +
+        'mirror images and are easy to swap -- copy x/y/sizeX/sizeY verbatim from the tradeEvaluate ' +
+        'result row you chose); otherwise order one of noRoute.candidates. The vanilla route list is a ' +
+        'live sample (top 4) and hides routes occupied for 120 s, so a route you saw a few seconds ago ' +
+        'can be gone. Matching is EXACT (case/spacing/plural must match); didYouMean only suggests. ' +
+        '★★ The receipt now ALSO carries ' +
         'preflight:{ok, code, reason, checks, warnings, ...} (the game checked the vanilla ' +
         'preconditions BEFORE ordering -- preflight.ok=false means NOTHING was ordered: no area ' +
         'analysis, no startCommand) and verify:{ok, evidence, busy, moved, atDestination, cargoUsed, ' +
