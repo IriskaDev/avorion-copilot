@@ -835,6 +835,23 @@ local function buildAreaWH(cx, cy, width, height)
     }
 end
 
+-- ★★★ 这两个是**唯二**的贸易内核（2026-10-18 主人钦点 ✓✓）：
+--   · `tradeBoxRoutesOf`          —— 「一个框 → 这一框的路线清单」（**唯一实现** ✓✓）
+--   · `tradePredictFromAnalysis`  —— 「已分析的框 + 一件商品 + 一个本金 → 预测」
+--   实现写在文件后部（`@@TRADE_BOX_ROUTES@@` 一带 ✓），但 **`onOrder`（下面 :~1562）也要用** ✗ →
+--   Lua 的 local 是**词法作用域**，所以这里**先正向声明** ✓（赋值见后部，用 `= function` 而不是 `local function` ✗✓）。
+--
+--   为什么必须共用一份（真机血案 2026-10-18 12:53Z ✓）：`order` 的**回执风险**过去自己又跑了一次
+--   `run()`（orderRiskOf → predict → predictOneBox → run ✓），而决策者的 `tradeEvaluate` 也跑一次、
+--   游戏侧 `startCommand` 再跑一次 ✗ —— 原版路线清单是**实时采样的前 4 条**
+--   （tradecommand.lua:390-444 ✓）且会过滤「120 秒内被占用」的路线（:104-107 / :207-215 ✓），
+--   三次采样可以各不相同 → 决策者刚查到 Electro Magnet、几秒后下单就是 NO_ROUTE ✗，
+--   而且原版对"货不在当前清单"是**静默拒绝**（tradecommand.lua:762-765 "No route selected."
+--   + simulation.lua:568-573 sendChatMessage+return ✓）→ 回执只剩 `verify.ok=false` ✗。
+local tradeBoxRoutesOf
+local tradePredictFromAnalysis
+local tradeSuggestRouteName
+
 
 -- ★★★ 回执里的「**这一次下单**的伏击风险评估」（2026-10-17 主人钦点 ✓✓）
 --
@@ -1150,6 +1167,9 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
         end
     end
     pf.commandReadable = (command ~= nil)
+    -- ★ 把造好的命令实例**交回调用方** ✓（2026-10-18）：Trade 的路线下单前校验与回执风险
+    --   都直接用它跑 `calculatePrediction`，不必再造一个 ✓（口径一致、省一次构造 ✓）。
+    if command ~= nil then ctx.command = command end
 
     local needInside = nil
     if command ~= nil then
@@ -1855,6 +1875,133 @@ function CopilotLinkIn.onOrder(data)
     end
     for _, w in ipairs(pf.warnings or {}) do
         CopilotRpc.trace("  预检提示 " .. tostring(w.code) .. "：" .. tostring(w.detail))
+    end
+
+    -- ★★★ Trade：**下单前**的路线校验 + 回执风险 —— 与 tradeEvaluate / predict **同一份分析** ✓✓
+    --   （2026-10-18 主人钦点；真机血案见 tradeBoxRoutesOf 头上 ✓）
+    --
+    --   为什么必须放在 startAreaAnalysis **之前** ✗→✓：
+    --     原版 `TradeCommand:getErrors` **不检查** goodName 在不在路线清单里（tradecommand.lua:632-677 ✓）——
+    --     真正的拒绝发生在 `initialize → calculatePrediction`（:762-765 "No route selected." ✓），
+    --     而 startCommand 对它只是 `sendChatMessage + return`（simulation.lua:568-573 ✓）✗。
+    --     于是"接了却什么都没做"：回执只有 `verify.ok=false busy=false`，**看不出为什么** ✗✓。
+    --   ⇒ 现在：
+    --     · 货**不在**这个框此刻的路线清单里 → `accepted=false` + `noRoute.candidates`（前 8 个 ✓）
+    --       → **一个字节都不发**（不发起区域分析、不排 startCommand ✓）
+    --     · 货**在**清单里 → 用**这一份**分析算 risk（`pfCtx.prePredict` ✓）——
+    --       回执的 risk 不再另跑一次 `run()` ✓（以前 orderRiskOf 会跑第三次 ✗）
+    if ctype == COMMAND_TYPES.Trade then
+        local command = pfCtx.command
+        local goodsLib = nil
+        do
+            local okG, g = pcall(function() return include("goods") end)
+            if okG then goodsLib = g end
+        end
+        local w = area.upper.x - area.lower.x + 1
+        local h = area.upper.y - area.lower.y + 1
+        local trBox = {
+            x = area.lower.x + math.floor((w - 1) / 2),
+            y = area.lower.y + math.floor((h - 1) / 2),
+            sizeX = w, sizeY = h,
+            lower = { x = area.lower.x, y = area.lower.y },
+            upper = { x = area.upper.x, y = area.upper.y },
+            containsShip = sectorInside(area, (pf.state or {}).x, (pf.state or {}).y),
+        }
+
+        -- ★ 拒绝回执 = 与"预检不过"**同形** ✓（accepted=false executed=false + error + hint ✓）
+        local function tradeRefuse(code, reason, noRoute)
+            CopilotRpc.trace(string.format(
+                "onOrder Trade **路线校验不过** %s code=%s —— 没有下单 ✗（未发起区域分析、未排 startCommand ✓）",
+                ship, tostring(code)))
+            CopilotRpc.trace("  理由：" .. tostring(reason))
+            if type(noRoute) == "table" then
+                local cands = noRoute.candidates or {}
+                CopilotRpc.trace(string.format("  这一框此刻的路线（%d 条）：%s",
+                    tonumber(noRoute.routeCount) or #cands,
+                    (#cands > 0) and table.concat(cands, " | ") or "（空 —— 原版在这个框里没给出任何路线）"))
+                if noRoute.didYouMean ~= nil then
+                    CopilotRpc.trace("  是不是想写：" .. tostring(noRoute.didYouMean))
+                end
+            end
+            return true, {
+                accepted = false, executed = false,
+                ship = ship, action = action, area = area, config = config,
+                error = tostring(code) .. ": " .. tostring(reason),
+                preflight = pf,
+                noRoute = noRoute,
+                hint = "★ 这是**下单前**的路线校验（原子化 ✓：先校验、再下单 ✓）→ **什么都没下** ✗：" ..
+                    "既没发起区域分析，也没排 startCommand ✓（原版这时会在 startCommand 里静默拒：" ..
+                    "tradecommand.lua:762-765 / simulation.lua:568-573 ✓）。" ..
+                    "★ 看 noRoute.candidates —— 那是**这一刻**这个框里真实存在的路线（原版逐字比较，最多 4 条 ✓）；" ..
+                    "换一条 / 换框 / 改本金后再来一次 ✓",
+            }
+        end
+
+        if command == nil then
+            return tradeRefuse("NO_COMMAND",
+                "cannot create a TradeCommand instance — the trade analysis cannot run", nil)
+        end
+
+        local routesFact = tradeBoxRoutesOf(player, ship, area, trBox, goodsLib)
+        if routesFact.ok ~= true then
+            return tradeRefuse(routesFact.code or "ANALYSIS_FAILED",
+                routesFact.reason or "area analysis failed", {
+                    goodName = tostring(config.goodName),
+                    routeCount = 0, candidates = {}, box = trBox,
+                })
+        end
+
+        local wantGood = config.goodName
+        local found = false
+        for _, r in ipairs(routesFact.routes) do
+            if r.name == wantGood then found = true break end
+        end
+        if not found then
+            return tradeRefuse("NO_ROUTE",
+                "no route named '" .. tostring(wantGood) .. "' in this box (routeCount="
+                .. tostring(routesFact.routeCount) .. ")", {
+                    goodName = tostring(wantGood),
+                    routeCount = routesFact.routeCount,
+                    candidates = routesFact.candidates,
+                    didYouMean = tradeSuggestRouteName(routesFact.routes, wantGood),
+                    box = trBox,
+                    note = "★ candidates = 这个框**此刻**原版给出的全部路线（最多 4 条 ✓ "
+                        .. "tradecommand.lua:390-444）；原版**逐字**比较 `r.name == config.goodName`"
+                        .. "（tradecommand.lua:743 ✓）→ 大小写 / 首尾空格 / 单复数不同都算没这条 ✓。"
+                        .. "路线清单随实时经济变，并会过滤「120 秒内被占用」的路线"
+                        .. "（tradecommand.lua:104-107 / :207-215 ✓）—— 所以这份清单是**下单这一刻**的事实 ✓",
+                })
+        end
+
+        local pred = tradePredictFromAnalysis(command, player, ship, routesFact.area, routesFact.results,
+            trBox, wantGood, config.deposit, config.escorts, goodsLib)
+        if type(pred.risk) ~= "table" then
+            return tradeRefuse("PREDICTION_FAILED",
+                tostring(pred.error or pred.predictionFailed or "trade prediction failed"), {
+                    goodName = tostring(wantGood),
+                    routeCount = routesFact.routeCount,
+                    candidates = routesFact.candidates,
+                    box = trBox,
+                })
+        end
+        pfCtx.prePredict = pred       -- ★ 回执 risk 直接复用它 ✓（orderRiskOf 的 prePredict 分支 ✓）
+        pf.checks[#pf.checks + 1] = {
+            name = "TRADE_ROUTE", ok = true,
+            detail = string.format("'%s' IS a route in this box (routeCount=%d) — risk comes from the SAME analysis",
+                tostring(wantGood), routesFact.routeCount),
+        }
+        pf.trade = {
+            goodName = tostring(wantGood),
+            deposit = config.deposit,
+            routeCount = routesFact.routeCount,
+            candidates = routesFact.candidates,
+            box = trBox,
+            basis = "「框 → 路线清单」的唯一实现（tradeBoxRoutesOf ✓）—— 与 tradeEvaluate / predict 同一份 ✓；" ..
+                "回执 risk 也取自这一份（不再另跑一次分析 ✓）",
+        }
+        CopilotRpc.trace(string.format(
+            "onOrder Trade 路线校验 ✓ %s：'%s' 在这个框里（routeCount=%d）→ risk 取自同一份分析 ✓",
+            ship, tostring(wantGood), routesFact.routeCount))
     end
 
     -- ② 异步分析（参数已校验完 ✓）
@@ -6214,6 +6361,113 @@ end
 --          NO_ROUTE / HOLD_EMPTY / BAD_ACTION；预测失败 → 该框 predictionFailed（不中断整批 ✓）
 
 -- ---------------------------------------------------------------------------
+-- 候选路线名（前 N 个，缺省 8 ✓）—— 回执里"这个框现在到底有什么"全靠它 ✓✓
+local TRADE_ROUTE_CANDIDATE_LIMIT = 8
+local function tradeRouteCandidates(routes, limit)
+    local n = tonumber(limit) or TRADE_ROUTE_CANDIDATE_LIMIT
+    local names = {}
+    for _, r in ipairs(routes or {}) do
+        if #names >= n then break end
+        if type(r.name) == "string" and r.name ~= "" then names[#names + 1] = r.name end
+    end
+    return names
+end
+
+-- ★★★@@TRADE_BOX_ROUTES@@ 「一个框 → 这一框的路线清单」—— **唯一实现** ✓✓
+-- ---------------------------------------------------------------------------
+-- 谁在用（**全部** ✓，不许任何调用方自己再 `run()` 一次 ✗）：
+--   · `tradeEvaluate`（多框 × 全商品 × 多本金）
+--   · `predict` 的 Trade 分支（一个框 + 一件商品）
+--   · `onOrder` 的 Trade 分支（**下单前**的路线校验 + 回执风险 ✓）
+--
+-- 为什么必须只有一份（真机血案 2026-10-18 12:53Z ✓）：
+--   同一框同一货，`tradeEvaluate` 查到 `Electro Magnet`，7 秒后 `order` 的回执风险却是
+--   `NO_ROUTE`，然后 `verify.ok=false busy=false`（游戏什么都没干 ✗）。根因**不是**两套匹配逻辑 ✗，
+--   而是**三个采样点**各跑一次原版分析 ✗✓：
+--     ① tradeEvaluate 跑一次（决策者看到的清单）
+--     ② onOrder 的回执风险自己又跑一次（orderRiskOf → predict → predictOneBox → run）
+--     ③ 游戏侧 startAreaAnalysis/startCommand 再跑一次（simulation.lua:837 / :524-543）
+--   原版清单是**实时经济的前 4 条**（tradecommand.lua:390-444 ✓），还会过滤「120 秒内被占用」的
+--   路线（:104-107 / :207-215 ✓）→ 三次采样可以各不相同 ✗；而"货不在清单"在原版是**静默拒绝**
+--   （tradecommand.lua:762-765 + simulation.lua:568-573 ✓）→ 回执只剩一个 `verify.ok=false` ✗。
+--
+-- ⇒ 本函数把 ①② 合并成**一次**分析 ✓：回执风险也取自这一份（`pfCtx.prePredict` ✓），
+--   并且在**下单之前**用同一份清单校验 goodName（不在 → 带候选拒掉，一个字节都不发 ✓✓）。
+--   ⚠️ 剩下的一小段窗口是原版固有的（startAreaAnalysis → startCommand 之间它会再采样一次，
+--     约 6 秒 ✓），但现在是**唯一**的一次额外采样，而且失败时有候选清单可看 ✓。
+--
+-- 返回（**永远返回表**，不抛错 ✓）：
+--   { ok=true, area, results, routes, routeCount, candidates={名字…}, box }
+--   { ok=false, code, reason, box, routeCount=0, candidates={} }
+--     code ∈ ANALYSIS_FAILED / ANALYSIS_RETURNED_NOTHING / NO_ANALYSIS_RUN
+tradeBoxRoutesOf = function(player, ship, area, boxInfo, goodsLib)
+    local out = {
+        ok = false, box = boxInfo, area = area, results = nil,
+        routes = {}, routeCount = 0, candidates = {},
+    }
+    if type(run) ~= "function" then
+        out.code = "NO_ANALYSIS_RUN"
+        out.reason = "areaanalysis.lua did not define run()"
+        return out
+    end
+
+    -- ★ 一次性分析（贵的那一步 ✓）；失败**不抛**，交给调用方决定怎么说 ✓
+    local okRun, rShipName, _rType, rArea, rResults = pcall(function()
+        return run(player.index, ship, COMMAND_TYPES.Trade, area, player.index)
+    end)
+    if not okRun then
+        out.code = "ANALYSIS_FAILED"
+        out.reason = tostring(rShipName)
+        return out
+    end
+
+    local results = rResults or rArea          -- ★ 原口径（与改动前 predict / tradeEvaluate 逐字一致 ✓）
+    if type(rArea) == "table" then
+        area = rArea
+        out.area = rArea
+    end
+    if type(results) ~= "table" then
+        out.code = "ANALYSIS_RETURNED_NOTHING"
+        out.reason = "area analysis returned nothing"
+        return out
+    end
+
+    -- ★ 与 scanOneArea 同一道：把分析结果挂回 area（否则原版 calculatePrediction 报 analysis nil ✗）
+    area.analysis = results
+
+    local routes = (type(results.routes) == "table") and results.routes or {}
+    if goodsLib ~= nil then attachGoodsPrices(goodsLib, routes) end   -- 幂等 ✓
+
+    out.ok = true
+    out.results = results
+    out.routes = routes
+    out.routeCount = #routes
+    out.candidates = tradeRouteCandidates(routes)
+    return out
+end
+
+-- 名字没对上时给一句"是不是想写这个" ✓
+--   ★ 只**提示**，绝不替调用方改选 ✗✓；而且**不**做单复数猜测 ——
+--     原版是**逐字**比较 `r.name == config.goodName`（tradecommand.lua:743 ✓），
+--     我们若"聪明地"模糊匹配，就会把原版必拒的单放过去 ✗✓。
+--   这里只吸收**去首尾空格 + 大小写**两种纯书写差异（仍是同一个名字 ✓）。
+tradeSuggestRouteName = function(routes, want)
+    if type(want) ~= "string" then return nil end
+    local function norm(s)
+        s = string.lower(tostring(s))
+        s = string.gsub(s, "^%s+", "")
+        s = string.gsub(s, "%s+$", "")
+        return s
+    end
+    local w = norm(want)
+    for _, r in ipairs(routes or {}) do
+        if type(r.name) == "string" and norm(r.name) == w and r.name ~= want then
+            return r.name
+        end
+    end
+    return nil
+end
+
 -- ★★★ Trade 的「同一份预测」：一个**已分析**的框 + 一件商品 + 一个本金 → 预测结果
 -- ---------------------------------------------------------------------------
 --
@@ -6231,7 +6485,7 @@ end
 --
 -- ★ escorts 由调用方规整好传进来（predict 从 b.escorts 来、tradeEvaluate 从 data.escorts 来 ✓）：
 --   护航会**多跑一次** calculatePrediction 拿"带护航的伏击概率"（原版自带的数 ✓），口径见下 ✓。
-local function tradePredictFromAnalysis(command, player, ship, area, results, boxInfo, goodName, deposit, escorts, goodsLib)
+tradePredictFromAnalysis = function(command, player, ship, area, results, boxInfo, goodName, deposit, escorts, goodsLib)
     if type(goodName) ~= "string" or goodName == "" then
         return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs goodName (from tradeRoutes)" }
     end
@@ -6242,11 +6496,35 @@ local function tradePredictFromAnalysis(command, player, ship, area, results, bo
     if type(escorts) ~= "table" then escorts = {} end
 
     local routes = (type(results.routes) == "table") and results.routes or {}
-    attachGoodsPrices(goodsLib, routes)   -- 幂等 ✓（tradeEvaluate 已挂过，再挂一次只补字段 ✓）
+    attachGoodsPrices(goodsLib, routes)   -- 幂等 ✓（tradeBoxRoutesOf 已挂过，再挂一次只补字段 ✓）
     local route = nil
     for _, r in ipairs(routes) do if r.name == goodName then route = r break end end
     if route == nil then
-        return { box = boxInfo, error = "NO_ROUTE: no route named '" .. tostring(goodName) .. "' in this box" }
+        -- ★★★ NO_ROUTE 必须**带上这个框此刻的候选** ✓✓（2026-10-18 主人钦点）：
+        --   下次一眼就能分辨"名字写错了（看 didYouMean）"还是"路线真的没了（看 candidates）"✗✓。
+        local candidates = tradeRouteCandidates(routes)
+        local didYouMean = tradeSuggestRouteName(routes, goodName)
+        return {
+            box = boxInfo,
+            error = "NO_ROUTE: no route named '" .. tostring(goodName) .. "' in this box",
+            -- ★ 平铺字段（调用方直接读 `r.candidates` ✓）+ 结构化子表（回执 `noRoute` ✓）
+            routeCount = #routes,
+            candidates = candidates,
+            didYouMean = didYouMean,
+            noRoute = {
+                goodName = tostring(goodName),
+                routeCount = #routes,
+                candidates = candidates,
+                didYouMean = didYouMean,
+                box = boxInfo,
+                note = "★ candidates = 这个框**此刻**原版给出的全部路线（最多 4 条 ✓ "
+                    .. "tradecommand.lua:390-444）；原版是**逐字**比较 `r.name == config.goodName`"
+                    .. "（tradecommand.lua:743 ✓）→ 大小写 / 首尾空格 / 单复数不同都算没这条 ✓。"
+                    .. "路线清单会随实时经济变，还会过滤「120 秒内被占用」的路线"
+                    .. "（tradecommand.lua:104-107 / :207-215 ✓）。前 "
+                    .. tostring(TRADE_ROUTE_CANDIDATE_LIMIT) .. " 个 ✓",
+            },
+        }
     end
     local cand = {
         name = route.name, lowest = route.lowest, highest = route.highest,
@@ -6372,27 +6650,20 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
         if deposit == nil or deposit <= 0 then
             return { box = boxInfo, error = "BAD_REQUEST: Trade predict needs deposit > 0" }
         end
-        local okRun, rShipName, _rType, rArea, rResults = pcall(function()
-            return run(player.index, ship, ctype, area, player.index)
-        end)
-        if not okRun then
-            return { box = boxInfo, error = "area analysis failed: " .. tostring(rShipName) }
-        end
-        local results = rResults or rArea
-        if type(rArea) == "table" then area = rArea end
-        if type(results) ~= "table" then
-            return { box = boxInfo, error = "area analysis returned nothing" }
-        end
-        -- ★ 与 scanOneArea 同一道：把分析结果挂回 area（否则 calculatePrediction 报 analysis nil ✗）
-        area.analysis = results
         local escorts = {}
         if type(b.escorts) == "table" then
             for _, n in ipairs(b.escorts) do
                 if type(n) == "string" and n ~= "" then escorts[#escorts + 1] = n end
             end
         end
-        -- ★★ 计算本体 = tradePredictFromAnalysis（与 tradeEvaluate **同一份** ✓，不重写 ✗）
-        return tradePredictFromAnalysis(command, player, ship, area, results, boxInfo,
+        -- ★★ 「框 → 路线清单」= **唯一实现** ✓✓（tradeEvaluate / order 同一份 —— 这里**不许**再自己 run ✗）
+        local routesFact = tradeBoxRoutesOf(player, ship, area, boxInfo, goodsLib)
+        if routesFact.ok ~= true then
+            return { box = boxInfo, error = tostring(routesFact.code) .. ": " .. tostring(routesFact.reason),
+                     routeCount = 0, candidates = {} }
+        end
+        -- ★★ 计算本体 = tradePredictFromAnalysis（同一份 ✓，不重写 ✗）
+        return tradePredictFromAnalysis(command, player, ship, routesFact.area, routesFact.results, boxInfo,
             goodName, deposit, escorts, goodsLib)
 
     elseif action == "Mine" or action == "Salvage" then
@@ -7131,37 +7402,32 @@ function CopilotLinkIn.tradeEvaluate(player, data)
             entry.error = "SHIP_NOT_IN_AREA"
             entry.reason = "工作框不含船（原版 simulation.lua:546 要求框内含船 ✓）—— 这个框算不了 ✓"
         else
-            local okRun, rShipName, _rType, rArea, rResults = pcall(function()
-                return run(player.index, ship, COMMAND_TYPES.Trade, area, player.index)
-            end)
-            if not okRun then
-                entry.error = "ANALYSIS_FAILED"
-                entry.reason = tostring(rShipName)
+            -- ★★ 「框 → 路线清单」= **唯一实现** ✓✓（predict(Trade) / order(Trade) 同一份 ✓；
+            --    以前这里自己 pcall(run(...))、predictOneBox 也自己 pcall(run(...)) = 两份 ✗）
+            local routesFact = tradeBoxRoutesOf(player, ship, area, boxInfo, goodsLib)
+            if routesFact.ok ~= true then
+                entry.error = tostring(routesFact.code)
+                entry.reason = routesFact.reason
             else
-                local results = rResults or rArea
-                if type(rArea) == "table" then area = rArea end
-                if type(results) ~= "table" then
-                    entry.error = "ANALYSIS_RETURNED_NOTHING"
+                area = routesFact.area
+                local routes = routesFact.routes
+                local kept = {}
+                for _, r in ipairs(routes) do
+                    if goodsFilter == nil or goodsFilter[r.name] == true then kept[#kept + 1] = r end
+                end
+                entry.routeCount = routesFact.routeCount
+                -- ★ 0 条 / 全被 goodsFilter 滤掉时，**把这一框此刻的真实路线名露出来** ✓✓
+                entry.candidates = routesFact.candidates
+                entry.routeCountAfterGoodsFilter = #kept
+                if #routes == 0 then
+                    entry.error = "NO_ROUTE"
+                    entry.reason = "这个框里原版没给出任何贸易路线（routeCount=0）✓"
+                elseif #kept == 0 then
+                    entry.error = "GOODS_FILTER_MATCHED_NOTHING"
+                    entry.reason = "goodsFilter 里的商品在这个框里都没有路线 ✓"
                 else
-                    area.analysis = results
-                    local routes = (type(results.routes) == "table") and results.routes or {}
-                    if goodsLib ~= nil then attachGoodsPrices(goodsLib, routes) end
-                    local kept = {}
-                    for _, r in ipairs(routes) do
-                        if goodsFilter == nil or goodsFilter[r.name] == true then kept[#kept + 1] = r end
-                    end
-                    entry.routeCount = #routes
-                    entry.routeCountAfterGoodsFilter = #kept
-                    if #routes == 0 then
-                        entry.error = "NO_ROUTE"
-                        entry.reason = "这个框里原版没给出任何贸易路线（routeCount=0）✓"
-                    elseif #kept == 0 then
-                        entry.error = "GOODS_FILTER_MATCHED_NOTHING"
-                        entry.reason = "goodsFilter 里的商品在这个框里都没有路线 ✓"
-                    else
-                        fact.area, fact.results, fact.routes = area, results, kept
-                        totalCombos = totalCombos + #kept * #deposits
-                    end
+                    fact.area, fact.results, fact.routes = area, routesFact.results, kept
+                    totalCombos = totalCombos + #kept * #deposits
                 end
             end
         end
