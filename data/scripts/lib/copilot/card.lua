@@ -1073,6 +1073,25 @@ end
 --     equipped:[{name?,script?,rarity?,rarityValue?}], equippedCount,
 --     systemsKnown, systemsSource, systemsUnknownReason?,
 --     note, processingPowerNote }
+-- 从 `SystemUpgradeTemplate` 读可给的字段（读不到就不写 ✓；`equipped` 与逐槽共用同一套 ✓）
+local function readUpgradeFacts(template)
+    local item = {}
+    if template == nil then return item end
+    local okName, nm = pcall(function() return template.name end)
+    if okName and nm ~= nil then item.name = tostring(nm) end
+    local okScript, sc = pcall(function() return template.script end)
+    if okScript and sc ~= nil then item.script = tostring(sc) end
+    local okRar, rar = pcall(function() return template.rarity end)
+    if okRar and rar ~= nil then
+        local okRN, rn = pcall(function() return rar.name end)
+        if okRN and rn ~= nil then item.rarity = tostring(rn) end
+        local okRV, rv = pcall(function() return rar.value end)
+        local rvn = okRV and tonumber(rv) or nil
+        if rvn ~= nil then item.rarityValue = rvn end
+    end
+    return item
+end
+
 function M.systemsFacts(player, name)
     if type(name) ~= "string" or name == "" then
         return nil, "BAD_REQUEST", "query systemsFacts needs data.ship"
@@ -1128,26 +1147,52 @@ function M.systemsFacts(player, name)
     res.inThisSector = (entity ~= nil)
 
     -- ② 槽位（ShipSystem 需要实体 ✓）
+    --
+    -- ★ 2026-10-18 扩展（主人：「主要你得知道当前船的上限是多少，各个槽位是否空，缺了什么」）：
+    --   · sockets = {num, max, used, free} —— free 的定义**写死**为 num - used ✓
+    --   · slots 逐槽列空/满（②b）✓
+    --   · ppThresholds 原样值 + missing 推断（②c / ③b）✓
+    local ssHandle = nil
+    local socksNum, socksMax, socksUsed = nil, nil, nil
     if entity ~= nil then
         local okSS, ss = pcall(function() return ShipSystem(entity) end)
         if okSS and ss ~= nil then
+            ssHandle = ss
             local okN, nSockets = pcall(function() return ss.numSockets end)
             local numSockets = okN and tonumber(nSockets) or nil
-            if numSockets ~= nil then
-                res.numSockets = numSockets
-                res.socketsKnown = true
-                res.socketsSource = "ShipSystem(entity).numSockets (ShipSystem.html:123-125)"
-            else
-                res.socketsKnown = false
-                res.socketsUnknownReason =
-                    "ShipSystem(entity) created but numSockets unreadable: " .. tostring(nSockets)
-            end
             local okM, mSockets = pcall(function() return ss.maxSockets end)
             local maxSockets = okM and tonumber(mSockets) or nil
-            if maxSockets ~= nil then res.maxSockets = maxSockets end
             local okU, nUpgrades = pcall(function() return ss.numUpgrades end)
             local numUpgrades = okU and tonumber(nUpgrades) or nil
+
+            if numSockets ~= nil then res.numSockets = numSockets end
+            if maxSockets ~= nil then res.maxSockets = maxSockets end
             if numUpgrades ~= nil then res.numUpgrades = numUpgrades end
+
+            if numSockets ~= nil and maxSockets ~= nil and numUpgrades ~= nil then
+                socksNum, socksMax, socksUsed = numSockets, maxSockets, numUpgrades
+                res.socketsKnown = true
+                res.socketsSource = "ShipSystem(entity).numSockets (ShipSystem.html:123-125) + " ..
+                    "maxSockets (:117-119) + numUpgrades (:129-131)"
+                res.sockets = {
+                    num = numSockets,
+                    max = maxSockets,
+                    used = numUpgrades,
+                    free = numSockets - numUpgrades,   -- ★ free = num - used（定义见下 ✓）
+                    freeDefinition = "free = num - used ✓（used = ShipSystem.numUpgrades，" ..
+                        "ShipSystem.html:129-131；num = 当前槽位数 ✓）",
+                    maxSocketsSemanticsKnown = false,
+                    maxSocketsSemanticsNote = "maxSockets 是原版只读字段（ShipSystem.html:117-119），" ..
+                        "官方文档**没写语义** ✗ → 本 mod 不解释它是不是「本船上限」（只给原值 ✓）",
+                }
+            else
+                res.socketsKnown = false
+                res.socketsUnknownReason = string.format(
+                    "ShipSystem(entity) created but socket fields are partially unreadable: " ..
+                    "numSockets=%s (ok=%s), maxSockets=%s (ok=%s), numUpgrades=%s (ok=%s)",
+                    tostring(nSockets), tostring(okN), tostring(mSockets), tostring(okM),
+                    tostring(nUpgrades), tostring(okU))
+            end
         else
             res.socketsKnown = false
             res.socketsUnknownReason = "ShipSystem(entity) failed: " .. tostring(ss)
@@ -1159,6 +1204,154 @@ function M.systemsFacts(player, name)
             "'an id of an existing entity or the entity itself' (ShipSystem.html:86-93); " ..
             "ShipDatabaseEntry exposes no entity id (only faction/name/numBlocks*, " ..
             "ShipDatabaseEntry [Server].html:258-283)"
+    end
+
+    -- ②b 逐槽列空 / 满（★ 主人要的「各个槽位是否空」✓✓）
+    --
+    -- 索引基：原版 stationfounder.lua:982-989 与 derelictminefounder.lua:161-168
+    --   都用 `for i = 0, 20` 调 getUpgrade(i) / isPermanent(i) → **0 起扫是原版用法** ✓；
+    --   但文档没写「0 基还是 1 基」（getUpgrade 在 ShipSystem.html:172-181 只有签名 ✗）
+    --   → 这里用 numUpgrades **反向对齐**：分别数 0 基窗口与 1 基窗口的非 nil 槽，
+    --     取与已占用数相等的那个基 ✓；两边都对/都不对 → 默认 0 基并标 indexBaseKnown=false ✓✓。
+    local slotBase, slotBaseKnown, slotBothMatch = nil, false, false
+    if ssHandle == nil then
+        res.slotsKnown = false
+        res.slotsUnknownReason = res.socketsUnknownReason   -- 没实体 → 没有槽可列（不是 0 个 ✗）
+    elseif socksNum == nil then
+        res.slotsKnown = false
+        res.slotsUnknownReason = "numSockets is unreadable, so there is no known socket range to enumerate"
+    else
+        local function countOccupied(base)
+            local n = 0
+            for k = 0, socksNum - 1 do
+                local idx = base + k
+                local ok, tmpl = pcall(function() return ssHandle:getUpgrade(idx) end)
+                if not ok then return nil, tmpl end
+                if tmpl ~= nil and tmpl ~= false then n = n + 1 end
+            end
+            return n
+        end
+        local c0, e0 = countOccupied(0)
+        local c1, e1 = countOccupied(1)
+
+        if c0 ~= nil and c1 ~= nil and socksUsed ~= nil then
+            if c0 == socksUsed and c1 ~= socksUsed then
+                slotBase, slotBaseKnown = 0, true
+            elseif c1 == socksUsed and c0 ~= socksUsed then
+                slotBase, slotBaseKnown = 1, true
+            elseif c0 == socksUsed and c1 == socksUsed then
+                slotBase, slotBaseKnown, slotBothMatch = 0, true, true
+            else
+                slotBase, slotBaseKnown = 0, false
+            end
+        elseif c0 ~= nil then
+            slotBase = 0
+        elseif c1 ~= nil then
+            slotBase = 1
+        else
+            slotBase = 0
+        end
+
+        local baseOk = (slotBase == 0 and c0 ~= nil) or (slotBase == 1 and c1 ~= nil)
+        if not baseOk then
+            res.slotsKnown = false
+            res.slotsUnknownReason = "ShipSystem:getUpgrade(index) failed on every probed base: " ..
+                "base0=" .. tostring(e0) .. "; base1=" .. tostring(e1)
+        else
+            local slots, occupiedCount, slotErr = {}, 0, nil
+            for k = 0, socksNum - 1 do
+                local idx = slotBase + k
+                local ok, tmpl = pcall(function() return ssHandle:getUpgrade(idx) end)
+                if not ok then
+                    slotErr = string.format("socket %d -> %s", idx, tostring(tmpl))
+                    break
+                end
+                local slot = { index = idx, occupied = (tmpl ~= nil and tmpl ~= false) }
+                if slot.occupied then
+                    occupiedCount = occupiedCount + 1
+                    local facts = readUpgradeFacts(tmpl)
+                    if facts.name ~= nil then slot.subsystemName = facts.name end
+                    if facts.script ~= nil then slot.script = facts.script end
+                    if facts.rarity ~= nil then slot.rarity = facts.rarity end
+                    if facts.rarityValue ~= nil then slot.rarityValue = facts.rarityValue end
+                    local okP, perm = pcall(function() return ssHandle:isPermanent(idx) end)
+                    if okP and type(perm) == "boolean" then slot.permanent = perm end
+                end
+                slots[#slots + 1] = slot
+            end
+            if slotErr ~= nil then
+                res.slotsKnown = false
+                res.slotsUnknownReason = "ShipSystem:getUpgrade(index) failed: " .. slotErr
+            else
+                res.slots = slots
+                res.slotsKnown = true
+                res.slotsOccupiedCount = occupiedCount
+                res.slotsSource = "ShipSystem:getUpgrade(index) / isPermanent(index) " ..
+                    "(ShipSystem.html:172-201)；索引基按 numUpgrades 对齐（ShipSystem.html:129-131）"
+                res.slotIndexBase = slotBase
+                res.slotIndexBaseKnown = slotBaseKnown
+                res.slotsConsistentWithNumUpgrades = (socksUsed == nil) or (occupiedCount == socksUsed)
+                if slotBothMatch then
+                    res.slotsNote = "0 基与 1 基窗口都能对上 numUpgrades（两种读法都自洽）→ " ..
+                        "默认 0 基（原版扫描起点 0，stationfounder.lua:982-989）"
+                end
+            end
+        end
+    end
+
+    -- ②c 每个槽的 Processing Power 门槛（原样值 ✓ —— 语义**未验证**，不解释 ✗）
+    --
+    --   `ShipSystem:getProcessingPowerForSocket(unsigned int socket)`
+    --   （Documentation/ShipSystem.html:162-170）—— 官方文档**只有签名，没有任何说明**：
+    --   既没说它是「该槽消耗的 PP」也没说是「该槽所需的 PP 阈值」✗
+    --   → 返回带 `thresholdSemanticsKnown=false`，绝不替主人解释 ✓✓。
+    --   ★ 原版零用例：data/scripts 全库 grep `getProcessingPowerForSocket` = 0 命中 ✓
+    --     （所以连索引基都没法从原版用法取证 → 跟着逐槽的基走，并标 known ✓）。
+    local ppProbeBase = slotBase or 0
+    if ssHandle == nil then
+        res.ppThresholdsKnown = false
+        res.ppThresholdsUnknownReason = res.socketsUnknownReason
+        res.thresholdSemanticsKnown = false
+    else
+        local thresholds, ppErr = {}, nil
+        for k = 0, 19 do                 -- ★ 最多 20 个（任务书上限 ✓；原版扫描是 0..20 ✓）
+            local idx = ppProbeBase + k
+            local ok, v = pcall(function() return ssHandle:getProcessingPowerForSocket(idx) end)
+            local n = (ok and v ~= nil) and tonumber(v) or nil
+            if n == nil then
+                ppErr = string.format("socket %d -> %s (pcall ok=%s)", idx, tostring(v), tostring(ok))
+                break
+            end
+            thresholds[#thresholds + 1] = { socket = idx, requiredProcessingPower = n }
+        end
+        res.thresholdSemanticsKnown = false
+        if ppErr == nil and #thresholds == 20 then
+            res.ppThresholds = thresholds
+            res.ppThresholdsKnown = true
+            res.ppThresholdsSource = "ShipSystem:getProcessingPowerForSocket(socket) " ..
+                "(ShipSystem.html:162-170) —— 原样值，语义未验证 ✗"
+            res.ppThresholdSocketIndexBase = ppProbeBase
+            res.ppThresholdSocketIndexBaseKnown = false
+            res.ppThresholdSocketIndexBaseNote = "getProcessingPowerForSocket 的参数是 0 基还是 1 基，" ..
+                "文档也没写 ✗；这里跟着逐槽判定出的索引基走（原版扫描起点 0）✓"
+            res.thresholdSemanticsNote = "官方文档**没写** getProcessingPowerForSocket 的语义" ..
+                "（是「该槽消耗 PP」还是「该槽所需 PP 阈值」未知 ✗）→ 本 mod 只给原样值；" ..
+                "missing 段里的 nextSocket/missingPP 是**推断**（inferred=true），不是引擎结论 ✗✓"
+            -- 单调性只是**事实描述**（不是解释语义 ✓）
+            local nondecreasing, strict = true, true
+            for i = 2, #thresholds do
+                local a = thresholds[i - 1].requiredProcessingPower
+                local b = thresholds[i].requiredProcessingPower
+                if b < a then nondecreasing = false end
+                if b <= a then strict = false end
+            end
+            res.ppThresholdsNonDecreasing = nondecreasing
+            res.ppThresholdsStrictlyIncreasing = strict
+        else
+            res.ppThresholdsKnown = false
+            res.ppThresholdsUnknownReason = "getProcessingPowerForSocket failed before 20 values: " ..
+                tostring(ppErr or ("only " .. #thresholds .. " values"))
+        end
     end
 
     -- ③ 处理能力（BlockPlan.processingPower ✓；先走船档案，再退到 player:getShipPlan）
@@ -1210,25 +1403,61 @@ function M.systemsFacts(player, name)
         end
     end
 
+    -- ③b 「离下一个槽还差多少 PP」—— ★ 推断（inferred=true）✓
+    --
+    --   任务口径：找**第一个** threshold > currentPP 的槽 → 要开它需要多少 PP、还差多少；
+    --   若 currentPP 已不低于所有探测到的门槛 → missingPP = 0 ✓（合法 0，不是缺数据 ✗）。
+    --   ★ 但 threshold 的语义未验证（②c）→ 整个 missing 段标 inferred=true ✓✓；
+    --     读不到时**只写 known=false + 原因**，绝不把 missingPP 填 0 ✗。
+    if res.processingPowerKnown == true and res.ppThresholdsKnown == true then
+        local pp = res.processingPower
+        local first = nil
+        for _, t in ipairs(res.ppThresholds) do
+            if t.requiredProcessingPower > pp then first = t; break end
+        end
+        local m = {
+            known = true,
+            inferred = true,                  -- ★ 推断，不是引擎结论 ✓
+            currentPP = pp,
+            thresholdSemanticsKnown = false,
+            probedSockets = #res.ppThresholds,
+            socketIndexBase = slotBase or res.ppThresholdSocketIndexBase,
+            socketIndexBaseKnown = slotBaseKnown,
+        }
+        if first ~= nil then
+            m.nextSocket = first.socket
+            m.requiredPP = first.requiredProcessingPower
+            m.missingPP = first.requiredProcessingPower - pp
+            if socksNum ~= nil then
+                m.nextSocketAtOrBeyondCurrentSockets = (first.socket >= slotBase + socksNum)
+                if m.nextSocketAtOrBeyondCurrentSockets == false then
+                    m.note = "第一个高于 currentPP 的门槛落在当前已有槽位范围内 → 与「槽位数由 PP 决定」" ..
+                        "的百科说法不吻合；threshold 语义未验证，这里只照原值 + 推断列出 ✗✓"
+                end
+            end
+        else
+            m.missingPP = 0
+            m.probeExhausted = true
+            m.note = "currentPP 不低于本次探测的 " .. #res.ppThresholds ..
+                " 个门槛 → missingPP=0（只说明「探测范围内没有更高的门槛」，" ..
+                "不等于「永远不需要更多 PP」✗✓）"
+        end
+        res.missing = m
+        res.missingKnown = true
+    else
+        res.missingKnown = false
+        res.missingUnknownReason = "needs both processingPower (known=" ..
+            tostring(res.processingPowerKnown) .. ") and ppThresholds (known=" ..
+            tostring(res.ppThresholdsKnown) .. ") — one of them is unknown, so no inference is written"
+    end
+
     -- ④ 已装模块（跨星区可读 ✓✓）
     do
         local okSys, systems = pcall(function() return entry:getSystems() end)
         if okSys and type(systems) == "table" then
             local list = {}
             for template in pairs(systems) do
-                local item = {}
-                local okName, nm = pcall(function() return template.name end)
-                if okName and nm ~= nil then item.name = tostring(nm) end
-                local okScript, sc = pcall(function() return template.script end)
-                if okScript and sc ~= nil then item.script = tostring(sc) end
-                local okRar, rar = pcall(function() return template.rarity end)
-                if okRar and rar ~= nil then
-                    local okRN, rn = pcall(function() return rar.name end)
-                    if okRN and rn ~= nil then item.rarity = tostring(rn) end
-                    local okRV, rv = pcall(function() return rar.value end)
-                    local rvn = okRV and tonumber(rv) or nil
-                    if rvn ~= nil then item.rarityValue = rvn end
-                end
+                local item = readUpgradeFacts(template)
                 list[#list + 1] = item
             end
             -- `pairs` 顺序未定义 → **排序**让同一艘船每次都给出同一份答复 ✓
@@ -1248,11 +1477,16 @@ function M.systemsFacts(player, name)
     end
 
     res.note =
-        "`numSockets` = 当前槽位数 ✓；`maxSockets` = 上限（原版只读字段，文档没写语义 ✗，" ..
-        "本 mod 也不解释）；`numUpgrades` = **已占用**的槽位数（不是槽位总数 ✗✓）。" ..
+        "`sockets` = {num, max, used, free}，★ **free = num - used**（used = `numUpgrades`，" ..
+        "已占用数；不是槽位总数 ✗✓）。`slots` = **逐槽** {index, occupied, subsystemName?, script?}" ..
+        "（索引基 0/1 由 numUpgrades 反向对齐判定 → `slotIndexBase` + `slotIndexBaseKnown` ✓）。" ..
+        "`ppThresholds` = 每个槽的 `getProcessingPowerForSocket` **原样值**；" ..
+        "★ 语义未验证 → `thresholdSemanticsKnown=false`（本 mod 不解释 ✗）。" ..
+        "`missing` = 第一个高于 currentPP 的门槛 + 差额，**推断**（`inferred=true`）✓。" ..
+        "`numSockets` = 当前槽位数；`maxSockets` = 原版只读字段（文档没写语义 ✗，本 mod 不解释）；" ..
         "`equipped` = 已装子系统（`name/script/rarity/rarityValue` ✓）。" ..
-        "★ 远程船（不在当前星区）没有实体 → `socketsKnown=false` + `socketsUnknownReason`，" ..
-        "**不是 0 个槽** ✗✓；已装模块仍可读（`getSystems()` 是船档案）✓。"
+        "★ 远程船（不在当前星区）没有实体 → `socketsKnown/slotsKnown/ppThresholdsKnown/missingKnown=false` " ..
+        "+ 原因，**不是 0 个槽 / 0 个门槛** ✗✓；已装模块仍可读（`getSystems()` 是船档案）✓。"
     res.processingPowerNote =
         "处理能力（Processing Power）决定能装几个子系统 —— 原版百科：" ..
         "player/ui/encyclopedia/chapters/building.lua:201 " ..
@@ -1527,12 +1761,19 @@ M.RENAME_SHIP_PARAMS = {
 -- ★★ 系统槽位只读原子的参数（2026-10-18 加 ✓✓ —— 主人「升跃增系统栏位」）
 --   ★ **纯读**：没有 confirm 参数（也没有任何写路径）✗ —— 槽位/模块的写接口
 --     （setNumSockets / addUpgrade …）语义未验证，本原子**不提供** ✗✓。
---   ★ 两个 known 必须成对读：`socketsKnown=false` = **读不到**，不是 0 个槽 ✗✓。
+--   ★ 四个 known 必须成对读：`socketsKnown/slotsKnown/ppThresholdsKnown/missingKnown=false`
+--     = **读不到**，不是 0 个槽 / 0 个门槛 / 0 差额 ✗✓。
 M.SYSTEMS_FACTS_PARAMS = {
     ship = "string：必填 ✓（船名 ✓；本星区与远程船都可以 ✓）",
-    note = "**纯事实、绝不改船** ✓：numSockets / maxSockets / numUpgrades + socketsKnown + socketsSource + " ..
-        "processingPower + processingPowerKnown + equipped[{name,script,rarity,rarityValue}] + equippedCount + " ..
-        "systemsKnown。★ 远程船（不在本星区）没有实体 → socketsKnown=false + socketsUnknownReason" ..
+    note = "**纯事实、绝不改船** ✓：sockets{num,max,used,free}（★ free = num - used ✓）" ..
+        " + slots[{index,occupied,subsystemName?,script?,permanent?,rarity?}]（逐槽空/满 ✓）" ..
+        " + ppThresholds[{socket,requiredProcessingPower}]（**原样值**；最多 20 个）" ..
+        " + missing{nextSocket?,requiredPP?,currentPP,missingPP}（★ **推断** inferred=true）" ..
+        " + socketsKnown/slotsKnown/ppThresholdsKnown/missingKnown（读不到就 false + 原因 ✗）" ..
+        " + numSockets/maxSockets/numUpgrades + processingPower + equipped[{name,script,rarity,rarityValue}]" ..
+        " + equippedCount + systemsKnown。★ `thresholdSemanticsKnown=false`：官方文档没写 " ..
+        "getProcessingPowerForSocket 的语义（ShipSystem.html:162-170 只有签名），本 mod 不解释 ✗。" ..
+        "★ 远程船（不在本星区）没有实体 → socketsKnown/slotsKnown/ppThresholdsKnown/missingKnown=false" ..
         "（**不是 0** ✗✓）；equipped 走 entry:getSystems()，跨星区可读 ✓。" ..
         "★ numUpgrades = 已**占用**槽位数，不是槽位总数 ✗；没有 confirm（没有写路径）✗。",
 }
