@@ -80,6 +80,16 @@ function run(factionIndex, shipName, ctype, area, callingPlayer)
         sectors = 225, reachable = 220, unreachable = 5,
         biggestFactionInArea = 1, reachableCoordinates = {},
     }
+    -- ★ 2026-10-18：order 的 Trade 分支改成**下单前**用同一份分析校验路线 ✓
+    --   → 替身要像原版一样给出 routes（tradecommand.lua:390-444 ✓），否则一律 NO_ROUTE ✗
+    results.routes = {
+        { name = "Force Generator", lowest = -0.05, highest = 0.15, profitPerSize = 10,
+          from = { x = SHIP_X, y = SHIP_Y }, to = { x = SHIP_X + 2, y = SHIP_Y } },
+        { name = "Drill", lowest = -0.05, highest = 0.10, profitPerSize = 4,
+          from = { x = SHIP_X, y = SHIP_Y }, to = { x = SHIP_X + 3, y = SHIP_Y } },
+        { name = "Oxygen", lowest = -0.04, highest = 0.09, profitPerSize = 3,
+          from = { x = SHIP_X, y = SHIP_Y }, to = { x = SHIP_X + 4, y = SHIP_Y } },
+    }
     return shipName, ctype, area, results, callingPlayer
 end
 
@@ -92,6 +102,17 @@ end
 
 function FAKE_COMMAND:calculatePrediction(ownerIndex, shipName, area, config)
     nPred = nPred + 1
+    -- ★ Trade 的口径（tradecommand.lua:736-852 ✓）：fillPrediction 读这几个字段 ✓
+    if type(config) == "table" and type(config.goodName) == "string" then
+        return {
+            attackChance = { value = 0.05 },
+            profitPerFlight = { from = 100, to = 120 },
+            flights = { from = 2, to = 2 },
+            flightTime = { value = 600 },
+            maxAvailable = { value = 500 },
+            transportedPerFlight = 100,
+        }
+    end
     local key = (type(area.analysis) == "table") and area.analysis.probe or "?"
     local s = SPEC[key]
     if type(s) ~= "table" then

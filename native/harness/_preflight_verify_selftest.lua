@@ -124,6 +124,17 @@ function run(factionIndex, shipName, ctype, area, callingPlayer)
         results.travelTimeFactors = {}
         results.reachableCoordinates = {}
     end
+    -- ★ 2026-10-18：order 的 Trade 分支现在**下单前**用同一份分析校验路线 ✓
+    --   → 替身必须像原版一样给出 routes（tradecommand.lua:390-444 ✓，否则一律 NO_ROUTE ✗）
+    if COURSE_ACTION == "Trade" then
+        results.routes = {}
+        for name in pairs(GOODS) do
+            results.routes[#results.routes + 1] = {
+                name = name, lowest = -0.05, highest = 0.15, profitPerSize = 10,
+                from = { x = SHIP_X, y = SHIP_Y }, to = { x = SHIP_X + 2, y = SHIP_Y },
+            }
+        end
+    end
     return shipName, ctype, area, results, callingPlayer
 end
 
@@ -154,6 +165,17 @@ function FAKE_COMMAND:getConfigurableValues(ownerIndex, shipName)
 end
 
 function FAKE_COMMAND:calculatePrediction(ownerIndex, shipName, area, config)
+    -- ★ Trade 的口径（tradecommand.lua:736-852 ✓）：fillPrediction 读这几个字段 ✓
+    if type(config) == "table" and type(config.goodName) == "string" then
+        return {
+            attackChance = { value = 0.05 },
+            profitPerFlight = { from = 100, to = 120 },
+            flights = { from = 2, to = 2 },
+            flightTime = { value = 600 },
+            maxAvailable = { value = 500 },
+            transportedPerFlight = 100,
+        }
+    end
     return { attackChance = { value = 0.05 }, distance = 42, travelTime = 3600, duration = 3600, yields = {} }
 end
 
