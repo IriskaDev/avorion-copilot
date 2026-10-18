@@ -1104,6 +1104,7 @@ M.WHATS = {
     "blockQuote",       -- ★★ 原子：**某一种方块类型**材料升级只读报价（通用 ✓ 2026-10-18 加 ✓）
     "blockUpgrade",     -- ★★ 原子：**某一种方块类型**材料升级（只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "shipUpgrade",      -- ★★ 原子：**整船**材料升级（独立接口；只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
+    "renameShip",       -- ★★ 原子：**改船名**（原版唯一入口 ShipDatabaseEntry:setNewName ✓ 服务端 ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1246,6 +1247,23 @@ M.SHIP_UPGRADE_PARAMS = {
     note = "**整船**升级（与 blockUpgrade **分开的独立接口** ✓）：所有低于目标材料的块都升 ✓。" ..
         "★ 成本可能很大（整船几千块）→ 请先 shipQuote/本接口 confirm=false 拿报价 ✓；" ..
         "结果同 blockUpgrade 结构，但逐块 facts 超过 200 块会省略（blocksOmitted ✓）。",
+}
+-- ★★ 改船名的参数（2026-10-18 加 ✓✓ —— 主人「给正在开的船改个名字」）
+--   ★ 原版唯一入口 = `ShipDatabaseEntry:setNewName(string)`（**服务端**，
+--     Documentation/ShipDatabaseEntry [Server].html:1118 ✓）；
+--     名字是 `property string name`（:2155）→ **纯字符串**，不是 Format，不需要 translated() ✓。
+--   ★ **没有 confirm** ✗：改名是**可逆的小操作**（改回原名即 undo，不动钱/资源/方块 ✓），
+--     而且空/控制字符/超长/重名/忙船**全部在写入之前**被拒 ✓（理由见 lib/copilot/rename.lua 头 ✓）。
+M.RENAME_SHIP_PARAMS = {
+    ship = "string：必填 ✓（船**现在**的名字 ✓）",
+    name = "string：必填 ✓（新名字，纯字符串 ✓）—— 首尾空格会被削掉并回显 normalized=true ✓；" ..
+        "拒绝空 / 换行与控制字符 / 非法 UTF-8 / 含 `|` / 超过 **32 字符**（★ 32 是本 mod 的护栏，" ..
+        "不是原版常量 ✗ —— 原版没有 Lua 侧长度常量可抄）✓",
+    note = "**改的是船名（数据库主键）** ✓，不是称号（title 是另一个字段，`getTitle()` 返回 Format ✓，本原子不碰 ✗）。" ..
+        "返回 { ok, requestedShip, ship(=新名), oldName, newName, changed, databaseSynced, verified," ..
+        "normalized, piloted, busy, migrated{goalText, goalOptions, designated, config}, evidence{...} } ✓。" ..
+        "★ 忙船（InBackground）会被拒 SHIP_BUSY ⇒ 先 recall 再改 ✓（原版 simulation.lua:85-89 只拦「还有 yield」✓）。" ..
+        "★ 本 mod 自己的按名状态（目标 / 面板名单 / 每船配置）会在**同一次调用**里迁移 ✓，迁移明细见 migrated ✓。",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",

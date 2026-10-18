@@ -467,6 +467,21 @@ function CopilotLinkIn.onQuery(data)
         local Cli = include("copilot/cli")
         return true, Cli.shipUpgradeRpc(player, shipUpShip, shipUpTarget, data.confirm == true)
 
+    -- ------------------------------------------------------------------
+    -- ★★ 改名：`renameShip { ship, name }`（2026-10-18 加 ✓✓ —— 主人「给正在开的船改个名字」）
+    --
+    --   为什么是**写**操作却放在 query 里：与 `mountUpgrade` / `blockUpgrade` / `shipUpgrade`
+    --   同一个先例 ✓（query = 具名接口，写不写由参数/语义决定 ✓，不是"query 只读" ✗）。
+    --
+    --   ★ 原版入口**只有一个**：`ShipDatabaseEntry:setNewName(string)`（**服务端**，
+    --     `Documentation/ShipDatabaseEntry [Server].html:1118` ✓）；
+    --     `Entity:setName` / `ShipDatabaseEntry:setName` **都不存在** ✗（见 lib/copilot/rename.lua 文件头 ✓）。
+    --   ★ 名字是**纯字符串** `property string name`（`:2155`），**不是 Format** → 不需要 `translated()` ✓。
+    --   ★ 实现在 `lib/copilot/rename.lua` ✓（校验 / 忙船拒绝 / 重名拒绝 / 迁移本 mod 的按名状态 / 核验
+    --     全在那一个文件里 ✓ —— 这里只做参数解析与 JSON 化，**不写第二套逻辑** ✗✓）。
+    elseif what == "renameShip" then
+        return CopilotLinkIn.renameShip(player, data)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -477,7 +492,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS, renameShipParams = Card.RENAME_SHIP_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），
@@ -488,6 +503,45 @@ function CopilotLinkIn.onQuery(data)
     else
         return false, "UNSUPPORTED", "unknown what: " .. tostring(what)
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- renameShip：给一艘船改名（原版唯一入口 = `ShipDatabaseEntry:setNewName` ✓ 服务端 ✓）
+-- ---------------------------------------------------------------------------
+--
+-- 返回：{ ok, requestedShip, ship, oldName, newName, changed, databaseSynced, verified,
+--         normalized, piloted, busy, migrated{...}, evidence{...}, limits{...}, note?, warning? }
+--   ★ `ship` = **改完之后**的规范名 ✓（后续 `ship`/`predict`/`order` 都用它 ✓）；
+--     `requestedShip` / `oldName` = 调用时给的名字 ✓（回显旧名/新名 ✓）。
+--   ★ 错误码：BAD_REQUEST / NAME_NOT_STRING / NAME_EMPTY / NAME_BAD_CHARACTER / NAME_BAD_UTF8 /
+--     NAME_TOO_LONG / NO_SUCH_SHIP / SHIP_BUSY / NAME_TAKEN / NAME_CHECK_FAILED / RENAME_FAILED
+--   ★ **没有 confirm 参数** ✗ —— 可逆的小操作（改回原名即 undo），且所有失败都在写入之前拒 ✓；
+--     判断依据完整写在 lib/copilot/rename.lua 文件头 ✓（不是偷懒不确认 ✗）。
+function CopilotLinkIn.renameShip(player, data)
+    player = player or Player()
+    if player == nil then return false, "NO_PLAYER", "no player object" end
+    data = data or {}
+
+    local ship = data.ship
+    if type(ship) ~= "string" or ship == "" then
+        return false, "BAD_REQUEST", "query renameShip needs data.ship (the CURRENT name)"
+    end
+    local newName = data.name
+    if type(newName) ~= "string" then
+        return false, "BAD_REQUEST",
+            "query renameShip needs data.name (the NEW name; a plain string, not a Format)"
+    end
+
+    CopilotRpc.trace(string.format("renameShip ship=[%s] name=[%s]", ship, newName))
+    local Rename = include("copilot/rename")
+    local res, code, why = Rename.rename(player, ship, newName)
+    if res == nil then
+        return false, tostring(code or "RENAME_FAILED"), tostring(why or "unknown")
+    end
+    CopilotRpc.trace(string.format("renameShip → ok=%s db=%s verified=%s old=[%s] new=[%s]",
+        tostring(res.ok), tostring(res.databaseSynced), tostring(res.verified),
+        tostring(res.oldName), tostring(res.newName)))
+    return true, res
 end
 
 -- order：DSH 让游戏下单 —— **真正下单**（两段式异步 ✓）。
