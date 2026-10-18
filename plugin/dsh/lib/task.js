@@ -91,39 +91,35 @@ function listField(text, key) {
 export function renderTaskBlock(req) {
     const L = [];
     L.push(`<fleet_task id="${req.taskId}" ship="${req.ship}" deadline_hint="${req.deadlineHintSec}s">`);
-    L.push('★ 这是**插件**投递的**舰队决策请求** —— **不是主人在说话** ✗✓。');
+    L.push('★ 插件投递的舰队决策请求（不是主人在说话 ✗）。');
     L.push(`  ${req.ship} 现在**空闲**了，需要一个决策。`);
-    L.push('  ★ 只告知、不带数据 ✗ —— 需要什么**自己查** ✓（路由表如下）。');
+    L.push('  ★ 只告知、不带数据 ✗ —— 需要什么**自己查** ✓（路由如下）。');
     L.push('');
-    L.push('查证工具（原子接口，先 list 再按需查）：');
-    L.push('  · {what:"list"} → 有哪些船（名字/忙闲/船长/星区）');
+    L.push('查证工具（先 list 再查）：');
+    L.push('  · {what:"list"} → 船名单（名字/忙闲/船长/星区）');
     L.push(`  · {what:"ship", ship:"${req.ship}", brief:true} → 这艘船现状`);
+    L.push(`  · {what:"systemsFacts", ship:"${req.ship}"} → 槽位/模块/处理能力（只读）`);
     L.push(`  · {what:"goal", ship:"${req.ship}"} → 目标边界`);
     L.push('  · {what:"sectorFacts", x, y} → 星区事实');
-    L.push('  · {what:"tradeRoutes"} → 框内路线；{what:"tradeEvaluate", boxes, deposits} → 多框×商品×本金一次算完（单位时间净利降序 + rejected）');
+    L.push('  · {what:"tradeRoutes"} → 框内路线；{what:"tradeEvaluate", boxes, deposits} → 多框×商品×本金（净利/小时降序 + rejected）');
     L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测');
-    L.push('  · {what:"mountQuote", ship, material} → 炮塔底座材料升级**报价**（纯事实）；' +
-        '{what:"mountUpgrade", ship, material, confirm:true} → 真的执行（★ 先报价给主人看成本 ✓）');
-    L.push('  · {what:"shipQuote", ship, material} → **整船**材料升级**只读报价**' +
-        '（全船块数 + 每种材料几块 + 资源/信用点成本 + 缺口；一个字节都不改，没有 confirm ✓）');
-    L.push('  · {what:"blockQuote", ship, blockType, material} → **某一种方块类型**只读报价；' +
-        '{what:"blockUpgrade", …, confirm:true} → 真的升级那一种；' +
-        '{what:"shipUpgrade", ship, material, confirm:true} → 整船升级（独立接口，★ 先报价 ✓）');
+    L.push('  · 材料升级：mountQuote/shipQuote/blockQuote → 只读报价；' +
+        'mountUpgrade/blockUpgrade/shipUpgrade → 需 confirm:true（★ 先报价 ✓）');
     L.push('  · 侦察：predict{Scout, 21x21} → 未知/已知/总数 + revealsNothingNew');
     L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan');
     if (req.goalOptions.length > 0) {
-        L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（★ 只有这些 + None ✓）`);
+        L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（只有这些 + None）`);
     }
     L.push(`  · fleet_decisions {ship:"${req.ship}"} → 历史决策`);
     L.push('  ★ fleet_query；legacy 用 compact/top。');
     L.push('');
-    L.push('答复格式（★ **第一行**请直接写结论行 action=…（便于解析；之后再写理由 ✓））：');
+    L.push('答复格式（★ **第一行**请直接写结论行 action=…，之后写理由）：');
     L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | Refine | None>');
-    L.push(`  第 2 行 task=${req.taskId}  ← ★必须回显（认出"回给哪一单"的唯一凭据）；`);
-    L.push('    写错 → 判无效 ✗（绝不把别船的答案用在这艘船上 ✗）。');
+    L.push(`  第 2 行 task=${req.taskId}  ← ★必须回显（回显即唯一凭据）；`);
+    L.push('    写错 → 判无效（别船答案不许混用 ✗）。');
     L.push('  之后按需要：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=');
-    L.push('  需要主人拍板就直接把问题写出来 ✓（不写 action 行 → 记为"等主人裁决"，不替你编动作 ✓）。');
-    L.push('  这些行之后**照常**跟主人聊天、继续原来的话题都行 ✓（舰队只看上面这几行 ✓）。');
+    L.push('  需要主人拍板就写出来（不写 action 行 = 等主人裁决）。');
+    L.push('  任务行后照常**跟主人聊天 ✓（舰队只看上面几行）。');
     // ★ 上一单结果（2026-10-17 补 ✓）：决策者下一轮就能看到"上次成没成"，失败回投时也能看到"为什么失败" ✓。
     //   体积预算 ~200 字节：超了就当没加 ✗✓（调用方 index.ts 会先截断并在流水里说明 ✓）。
     if (typeof req.prevResult === 'string' && req.prevResult.trim() !== '') {
