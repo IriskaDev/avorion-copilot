@@ -178,7 +178,9 @@ export function renderTaskBatchBlock(batch) {
         if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES)
             L.push(line);
     }
-    const unanswered = items.reduce((n, it) => n + (typeof it.unansweredBefore === 'number' ? it.unansweredBefore : 0), 0);
+    // ★ 注意是 **max**，不是求和 ✗：每条 item 带的是**同一份**队列快照（同一个数 ✓），
+    //   求和会把"N 艘没答到"说成 N×N ✗✓。
+    const unanswered = items.reduce((n, it) => Math.max(n, typeof it.unansweredBefore === 'number' ? it.unansweredBefore : 0), 0);
     if (batch.retryRound === true || unanswered > 0) {
         L.push(`★ 上次未答：${Math.max(1, unanswered)} 艘（本轮是**重投** ✓ —— 请把每条都答到 ✓）`);
     }

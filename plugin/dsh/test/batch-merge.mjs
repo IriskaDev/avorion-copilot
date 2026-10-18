@@ -77,6 +77,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   check('A. 块里列出**全部 3 个**任务号 ✓',
     three.every((t) => b3.includes(t.taskId)), '')
   check('A. ★ 3 艘块仍然 < 2000 字节（2 KB 契约 ✓）', bytes3 < 2000, bytes3)
+  // ★ B 的可见性：块末尾一行「上次未答：X 艘」—— 3 条 item 带的是**同一份**快照，
+  //   所以必须是 **1 艘**（不是求和成 3 ✗✓）
+  {
+    const withUn = renderTaskBatchBlock({
+      items: three.map((t) => ({ ...t, unansweredBefore: 1 })),
+    })
+    const m = /上次未答：(\d+) 艘/.exec(withUn)
+    check('B. 块末尾一行「上次未答：X 艘」✓（3 条同一快照 → 仍是 1 艘 ✓）',
+      m !== null && Number(m[1]) === 1, m === null ? '（没有这一行）' : m[0])
+    check('B. 这一行让漏答**可见**（决策者每轮都看得到 ✓）', withUn.trimEnd().endsWith('</fleet_task>'), '')
+  }
   check('A. 块里**没有**船卡/计划数据（只告知 ✓）',
     !b3.includes('cargoCapacity') && !b3.includes('actionNames'), '')
   check('A. 块里写明"可以一次回多组" + 按 task= 对上号 ✓',
