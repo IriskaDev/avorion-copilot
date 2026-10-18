@@ -1957,19 +1957,72 @@ function CopilotLinkIn.onOrder(data)
             if r.name == wantGood then found = true break end
         end
         if not found then
+            -- ★★★ 同一框心的**其他合法形状**里有没有这件货 ✓✓（2026-10-18 真机血案的自证）
+            --
+            -- 血案现场（真机实测 ✓）：evaluate 的结果里明明是 `sizeX=29, sizeY=11`
+            -- （17x17 / 29x11 两个框里都有 Electro Magnet，1,123,470/小时、maxAvailable 3800、风险 0.05），
+            -- 下单时却写成了 `sizeX=11, sizeY=29` —— **两个矩形形状写反了** ✗✓。
+            -- 11x29 框里只有 Display / Scrap Metal → NO_ROUTE 两次、确定性复现 ✓。
+            -- ⇒ 被拒时把「三种合法形状里哪几个真的有这件货」照实报出来 ✓：
+            --   调用方一眼就能看出"不是市场波动，是我把框的形状写反了" ✓✓。
+            --   ★ 只在**失败**路径上多跑（最多 2 次 run()，≈2 秒 ✓；成功路径**零**额外开销 ✗✓）。
+            local siblings = {}
+            local shapes = { { 29, 11 }, { 17, 17 }, { 11, 29 } }   -- ★ 写反的那个（29x11↔11x29）排最前 ✓
+            for _, shape in ipairs(shapes) do
+                local sw, sh = shape[1], shape[2]
+                if not (sw == w and sh == h) then
+                    local sArea = buildAreaWH(trBox.x, trBox.y, sw, sh)
+                    local sBox = {
+                        x = trBox.x, y = trBox.y, sizeX = sw, sizeY = sh,
+                        lower = { x = sArea.lower.x, y = sArea.lower.y },
+                        upper = { x = sArea.upper.x, y = sArea.upper.y },
+                        containsShip = sectorInside(sArea, (pf.state or {}).x, (pf.state or {}).y),
+                    }
+                    local sFact = tradeBoxRoutesOf(player, ship, sArea, sBox, goodsLib)
+                    local has, names = false, {}
+                    if sFact.ok == true then
+                        for _, r in ipairs(sFact.routes) do
+                            if r.name == wantGood then has = true end
+                            if type(r.name) == "string" then names[#names + 1] = r.name end
+                        end
+                    end
+                    siblings[#siblings + 1] = {
+                        x = trBox.x, y = trBox.y, sizeX = sw, sizeY = sh,
+                        hasGood = has,
+                        routeCount = sFact.routeCount or 0,
+                        candidates = sFact.candidates or {},
+                        error = sFact.ok and nil or sFact.code,
+                    }
+                end
+            end
+            local altWhere = {}
+            for _, sb in ipairs(siblings) do
+                if sb.hasGood == true then altWhere[#altWhere + 1] = string.format("%dx%d", sb.sizeX, sb.sizeY) end
+            end
+            local swapHint = (#altWhere > 0)
+                and ("★ 这件货在**同一框心的 " .. table.concat(altWhere, " / ") .. " 框里存在** —— "
+                    .. "你给的是 " .. string.format("%dx%d", w, h)
+                    .. "（29x11 与 11x29 是**两种不同**的合法形状，很容易写反 ✗✓）")
+                or nil
             return tradeRefuse("NO_ROUTE",
                 "no route named '" .. tostring(wantGood) .. "' in this box (routeCount="
-                .. tostring(routesFact.routeCount) .. ")", {
+                .. tostring(routesFact.routeCount) .. ")"
+                .. ((swapHint ~= nil) and ("；" .. swapHint) or ""), {
                     goodName = tostring(wantGood),
                     routeCount = routesFact.routeCount,
                     candidates = routesFact.candidates,
                     didYouMean = tradeSuggestRouteName(routesFact.routes, wantGood),
                     box = trBox,
+                    -- ★ 同一框心的其他合法形状（各含 hasGood / routeCount / candidates ✓）
+                    siblingBoxes = siblings,
+                    swapHint = swapHint,
                     note = "★ candidates = 这个框**此刻**原版给出的全部路线（最多 4 条 ✓ "
                         .. "tradecommand.lua:390-444）；原版**逐字**比较 `r.name == config.goodName`"
                         .. "（tradecommand.lua:743 ✓）→ 大小写 / 首尾空格 / 单复数不同都算没这条 ✓。"
                         .. "路线清单随实时经济变，并会过滤「120 秒内被占用」的路线"
-                        .. "（tradecommand.lua:104-107 / :207-215 ✓）—— 所以这份清单是**下单这一刻**的事实 ✓",
+                        .. "（tradecommand.lua:104-107 / :207-215 ✓）—— 所以这份清单是**下单这一刻**的事实 ✓"
+                        .. "。★ siblingBoxes = 同一框心另两种合法形状的实测（hasGood=true 就是"
+                        .. "「货在那边、不在你给的形状里」✓）",
                 })
         end
 
