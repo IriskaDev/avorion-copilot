@@ -129,8 +129,130 @@ export function renderTaskBlock(req) {
         if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES)
             L.push(line);
     }
+    // ★★ B（2026-10-18）：漏答**必须可见** ✓ —— 上一轮没答到的船数写进块末尾一行 ✓✓
+    if (typeof req.unansweredBefore === 'number' && req.unansweredBefore > 0) {
+        L.push(`★ 上次未答：${req.unansweredBefore} 艘（它们会**稍后重投** ✓ —— 请把每条任务都答到 ✓）`);
+    }
     L.push('</fleet_task>');
     return L.join('\n');
+}
+/**
+ * 渲染一个**合并**任务块 ✓（1 条 = 与 `renderTaskBlock` 逐字相同 ✓）。
+ *
+ * 体积：工具指针段在合并块里**只写一遍**（generic，不带船名 ✓），
+ * 每艘船只占一行 ✓ —— 所以 3 艘也在 2 KB 目标内 ✓（`batch-merge.mjs` 钉住 ✓）。
+ */
+export function renderTaskBatchBlock(batch) {
+    const items = batch.items ?? [];
+    if (items.length === 0)
+        return '';
+    // ★ 1 条 = **逐字**走单船渲染器 ✓（向后兼容；不需要第二套措辞 ✓）
+    if (items.length === 1)
+        return renderTaskBlock(items[0]);
+    const ids = items.map((i) => i.taskId);
+    const names = items.map((i) => i.ship);
+    const deadline = Math.max(...items.map((i) => i.deadlineHintSec));
+    const L = [];
+    L.push(`<fleet_task id="${ids[0]}" count="${items.length}" ships="${names.join(',')}" deadline_hint="${deadline}s">`);
+    L.push(`★ 插件投递的舰队决策请求（不是主人在说话 ✗）—— **本轮 ${items.length} 艘船同时空闲** ✓。`);
+    L.push('  ★ 只告知、不带数据 ✗ —— 需要什么**自己查** ✓（路由见下）。');
+    L.push(`待决策 ${items.length} 条（每条 = 船名 + 任务号 ✓）：`);
+    for (const it of items) {
+        const lim = it.goalOptions.length > 0 ? `  限定动作: ${it.goalOptions.join(', ')}` : '';
+        L.push(`  · ${it.ship}   task=${it.taskId}${lim}`);
+    }
+    L.push('查证工具（先 list 再查；下面 `ship` 一律填**对应船名** ✓）：');
+    L.push('  · {what:"list"} → 船名单；{what:"ship", ship, brief:true} → 船现状');
+    L.push('  · {what:"systemsFacts", ship} → 槽位/模块；{what:"goal", ship} → 目标边界');
+    L.push('  · {what:"sectorFacts", x, y} → 星区事实；{what:"predict", ship, action, x, y, sizeX, sizeY} → 一框一动作');
+    L.push('  · {what:"tradeRoutes"} / {what:"tradeEvaluate", boxes, deposits} → 路线 / 多框矩阵');
+    L.push('  · 材料升级：mountQuote/shipQuote/blockQuote 只读；*Upgrade 需 confirm:true（★ 先报价 ✓）');
+    L.push('  · 侦察：predict{Scout, 21x21}；legacy 计划(扫67框)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan（compact/top）');
+    L.push('答复格式（★ **每艘一组**，可以一次回**多组** ✓ —— 靠 task= 对上号）：');
+    L.push('  每组：第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | Refine | None>，第 2 行 task=<该船的任务号>');
+    L.push('  例：action=Mine / task=' + ids[0] + ' / x=… y=… size=15');
+    L.push('  ★ 不判的那艘**就别写它的组** ✓（它会被稍后重投 ✓）；task= 写错 = 那组作废 ✗');
+    L.push('  之后照常**跟主人聊天 ✓（舰队只看上面这些组）。');
+    if (typeof items[0].prevResult === 'string' && items[0].prevResult.trim() !== '') {
+        const line = `★ 上一单的结果：${items[0].prevResult.trim()}`;
+        if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES)
+            L.push(line);
+    }
+    const unanswered = items.reduce((n, it) => n + (typeof it.unansweredBefore === 'number' ? it.unansweredBefore : 0), 0);
+    if (batch.retryRound === true || unanswered > 0) {
+        L.push(`★ 上次未答：${Math.max(1, unanswered)} 艘（本轮是**重投** ✓ —— 请把每条都答到 ✓）`);
+    }
+    L.push('</fleet_task>');
+    return L.join('\n');
+}
+/** 把一段文本按 `action=` 行切成组 ✓（每组从 action= 行起到下一组前 ✓） */
+export function splitAnswerGroups(text) {
+    const src = typeof text === 'string' ? text : '';
+    const re = /^[ \t]*[*-]?[ \t]*\**[ \t]*action[ \t]*[:=：]/gim;
+    const idx = [];
+    for (let m = re.exec(src); m !== null; m = re.exec(src))
+        idx.push(m.index);
+    if (idx.length === 0)
+        return [];
+    const out = [];
+    for (let i = 0; i < idx.length; i++) {
+        const end = i + 1 < idx.length ? idx[i + 1] : src.length;
+        out.push(src.slice(idx[i], end));
+    }
+    return out;
+}
+/**
+ * 校验**一次回多条**的答案 ✓（N == 1 时等价于 `validateAnswer` ✓）。
+ */
+export function validateAnswers(text, items) {
+    const verdicts = new Map();
+    const stray = [];
+    const groups = splitAnswerGroups(text);
+    if (items.length === 0)
+        return { verdicts, groups: groups.length, echoedGroups: 0, stray };
+    // ★ 向后兼容：一条船 → 完全走原来的单条校验器 ✓
+    if (items.length === 1) {
+        const only = items[0];
+        verdicts.set(only.taskId, validateAnswer(text, only.taskId, only.allowedActions));
+        return { verdicts, groups: groups.length, echoedGroups: 0, stray };
+    }
+    if (groups.length === 0) {
+        // 一个动作行都没有 → 每艘船都得到同一份结论（她在问主人 / 她没写动作行 ✓）
+        const single = validateAnswer(text, items[0].taskId, items[0].allowedActions);
+        for (const it of items) {
+            verdicts.set(it.taskId, !single.ok && single.code === 'ASKED_OWNER'
+                ? { ok: false, code: 'ASKED_OWNER', question: single.question }
+                : single);
+        }
+        return { verdicts, groups: 0, echoedGroups: 0, stray };
+    }
+    // ① 按回显配对 ✓
+    const unclaimed = [...items];
+    const noEcho = [];
+    let echoedGroups = 0;
+    for (const g of groups) {
+        const echo = field(g, 'task');
+        if (echo === undefined || echo === '') {
+            noEcho.push(g);
+            continue;
+        }
+        const at = unclaimed.findIndex((it) => it.taskId === echo);
+        if (at < 0) {
+            stray.push(echo);
+            continue;
+        }
+        const it = unclaimed.splice(at, 1)[0];
+        verdicts.set(it.taskId, validateAnswer(g, it.taskId, it.allowedActions));
+        echoedGroups += 1;
+    }
+    // ② 没回显的组：**组数与剩下的船数严格相等**才按顺序配（否则不猜 ✗）
+    if (noEcho.length > 0 && noEcho.length === unclaimed.length) {
+        for (let i = 0; i < noEcho.length; i++) {
+            const it = unclaimed[i];
+            verdicts.set(it.taskId, validateAnswer(noEcho[i], it.taskId, it.allowedActions));
+        }
+    }
+    return { verdicts, groups: groups.length, echoedGroups, stray };
 }
 /**
  * 校验会话的答案 ✓（**机器可检** —— 人格多花哨都不影响 ✓）。

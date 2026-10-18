@@ -62,6 +62,14 @@ export interface TaskRequest {
     /** 建议预算（秒）；写进任务头，告知会话层硬期限 ✓ */
     deadlineHintSec: number;
     /**
+     * ★★ B：**上一轮没答到的船数**（2026-10-18 主人点名要的"可见" ✓✓）。
+     *
+     * 为什么必须写进块里 ✗→✓：漏答以前是**静默**的 ✓ —— 决策者根本不知道
+     * 上一轮有船没被答到（`fallbackNone` 只落在插件自己的日志里 ✗）。
+     * 现在它渲染成块**末尾一行**「上次未答：X 艘」✓，她每一轮都看得见 ✓✓。
+     */
+    unansweredBefore?: number;
+    /**
      * ★ 上一单结果（2026-10-17 补 ✓）：渲染时附在块末尾的「你上一单的结果」一行 ✓。
      *   用途两个（同一字段 ✓）：
      *     · 正常轮：决策者下一轮就能看到"上次成没成"（不触发回投也看得见 ✓）；
@@ -123,6 +131,40 @@ export declare const PREV_RESULT_BUDGET_BYTES = 200;
  *   也就是 8.7 MB 的入口 ✓。现在她要计划就**自己查** ✓（`fleet_query`，缺省 compact ✓）。
  */
 export declare function renderTaskBlock(req: TaskRequest): string;
+/** 一条待决策任务（合并块里的一个条目 ✓ —— 只有船名 + 任务号 + 动作边界 ✓） */
+export interface TaskBatchRequest {
+    items: TaskRequest[];
+    /** ★ B：这一轮是「上一轮没答到」的重投（措辞不同、可见 ✓） */
+    retryRound?: boolean;
+}
+/**
+ * 渲染一个**合并**任务块 ✓（1 条 = 与 `renderTaskBlock` 逐字相同 ✓）。
+ *
+ * 体积：工具指针段在合并块里**只写一遍**（generic，不带船名 ✓），
+ * 每艘船只占一行 ✓ —— 所以 3 艘也在 2 KB 目标内 ✓（`batch-merge.mjs` 钉住 ✓）。
+ */
+export declare function renderTaskBatchBlock(batch: TaskBatchRequest): string;
+export interface AnswerGroupSpec {
+    taskId: string;
+    ship?: string;
+    allowedActions: string[];
+}
+export interface MultiAnswerVerdict {
+    /** 每条船自己的结论 ✓（**没有这个 key = 本轮没答到** ✓） */
+    verdicts: Map<string, AnswerVerdict>;
+    /** 这一轮里看到的 `action=` 组数 ✓ */
+    groups: number;
+    /** 靠 `task=` 回显对上的组数 ✓ */
+    echoedGroups: number;
+    /** 回了、但 task= 不属于本批的（别船的答案，**绝不采纳** ✗） */
+    stray: string[];
+}
+/** 把一段文本按 `action=` 行切成组 ✓（每组从 action= 行起到下一组前 ✓） */
+export declare function splitAnswerGroups(text: string): string[];
+/**
+ * 校验**一次回多条**的答案 ✓（N == 1 时等价于 `validateAnswer` ✓）。
+ */
+export declare function validateAnswers(text: string, items: AnswerGroupSpec[]): MultiAnswerVerdict;
 /**
  * 校验会话的答案 ✓（**机器可检** —— 人格多花哨都不影响 ✓）。
  *

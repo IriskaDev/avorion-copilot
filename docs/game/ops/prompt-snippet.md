@@ -45,6 +45,7 @@
 2. 第二行必须回显 task=（任务号）—— 舰队靠这一行认出"这是回给我的"；任务号写错，这一单会被判无效；
 3. 之后按需要写字段：x= / y= / sizeX= / sizeY= / duration= / goodName= / deposit= / safeMode= / escorts= / goodsToSell= / reason=；
 4. 如果你需要主人拍板，就直接把问题写出来、不写 action 行即可（本轮记为"等主人裁决"，不会替你编一个动作）。
+5. ★ 任务块里可能一次列出**多艘船**（合并块）：那就**每艘船写一组** action= + task=（可以一次回多组，顺序随意，靠 task= 对上号）；某艘你还不判，就**别写它的组**（它会被稍后重投，不会静默消失）。
 
 ★ 不确定该做什么时：先不要猜。去读 mod 的 docs/game/README.md（游戏二级索引），按它的指引逐级查阅文档与查询工具，然后再决策、再下单。
 
@@ -98,7 +99,7 @@ node plugin/dsh/scripts/check-mechanics.mjs   # 5 道守卫
 
 1. 打开 `plugin/dsh/prompt/system.md`：**≤ ~2000 字符**，且**不含**机制表格/候选表读法/参考策略正文。
 2. 提示词里能一眼看到 **`docs/game/README.md` 这个路径**与"不确定就先读它"的指令。
-3. `%APPDATA%\Avorion\mods\copilot\docs\game\README.md` 确实存在（目录联接），且其 §1 就是
+3. `%APPDATA%\Avorion\mods\copilot\docs\game\README.md` 确实存在（目录联接），且其 §2 就是
    [`../README.md`](../README.md) 的「决策者第一屏」。
 4. 在会话里问一句"我不知道该派哪艘船去哪" → 模型应当**先去读 `docs/game/README.md` / 查工具**，
    而不是直接编一个动作。
