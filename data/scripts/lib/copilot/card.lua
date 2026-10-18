@@ -767,12 +767,36 @@ function M.shipCard(player, name)
     --   → ★ 所以「护航必须同星系」是**错的** ✗✓ —— 同星系只是它的一个**子集** ✓：
     --     原版允许"在护航**自己一跳之内**"的船 ✓（+ 不能穿裂隙者须同环侧 ✓）。
     --   ⚠️ 全部走 pcall ✓：拿不到就只是缺字段，绝不崩 ✗✓
-    local okH, hReach, hRifts = pcall(function() return entry:getHyperspaceProperties() end)
+    -- ★★ 2026-10-18：原版返回 **4 个值**（`ShipDatabaseEntry [Server].html:582-596`）：
+    --   1 航程 reach · 2 能否穿裂隙 canPassRifts · 3 冷却秒数 cooldown · 4 是否被干扰 impaired
+    --   这里以前只接了前 2 个 ✗ → 现在 4 个都接 ✓。
+    --   ★ 读不到就不写 + `cooldownKnown/impairedKnown=false`（**绝不填 0/false 假装有值** ✗✓）：
+    --     4 个值来自同一个 varargs 返回，旧版本/异常时后面的会是 nil；`false` 是**合法真值**（impaired=false），
+    --     所以判据是 `~= nil`，不是 `if hImpaired then` ✗✓。
+    local okH, hReach, hRifts, hCooldown, hImpaired =
+        pcall(function() return entry:getHyperspaceProperties() end)
     if okH then
         card.hyperspace = {
             reach = tonumber(hReach),
             canPassRifts = hRifts,
         }
+        local cd = tonumber(hCooldown)
+        if cd ~= nil then
+            card.hyperspace.cooldown = cd
+            card.hyperspace.cooldownKnown = true
+        else
+            card.hyperspace.cooldownKnown = false
+            probeNotes.hyperspaceCooldown =
+                "getHyperspaceProperties() returned no cooldown (3rd value): " .. tostring(hCooldown)
+        end
+        if hImpaired ~= nil then
+            card.hyperspace.impaired = hImpaired
+            card.hyperspace.impairedKnown = true
+        else
+            card.hyperspace.impairedKnown = false
+            probeNotes.hyperspaceImpaired =
+                "getHyperspaceProperties() returned no impaired flag (4th value): " .. tostring(hImpaired)
+        end
     else
         probeNotes.hyperspace = "getHyperspaceProperties() failed: " .. tostring(hReach)
     end
@@ -1005,6 +1029,240 @@ function M.shipBrief(player, name, card)
 end
 
 -- ---------------------------------------------------------------------------
+-- ★★ 系统槽位 / 已装模块 / 处理能力 —— `systemsFacts`（2026-10-18 加 ✓✓，**只读**原子）
+-- ---------------------------------------------------------------------------
+--
+-- 主人问的「升跃增系统栏位」= 槽位数 + 升级模块（调研与结论见
+-- docs/game/mechanics/system-slots.md ✓）。本函数只回答「现在几个槽 / 装了什么 /
+-- 处理能力多少」，**一个字节都不写** ✗✓：
+--   · 不 addUpgrade / removeUpgrade / setUpgrade / setNumSockets（写接口，语义未验证 ✗）
+--   · 不 pay / 不 setMovePlan / 不写船档案 ✗
+--
+-- 字段来源（全部实读 Documentation ✓，不猜）：
+--   · numSockets / maxSockets / numUpgrades —— `ShipSystem.html:117-131`
+--       · `maxSockets` :117-119（static unsigned int, read-only；语义文档没写 → 不解释 ✗）
+--       · `numSockets` :123-125（static int, read-only；= 当前槽位数 ✓；原版用例
+--         player/ui/profile/playerprofile.lua:268 `ShipSystem(craft).numSockets` ✓）
+--       · `numUpgrades` :129-131（unsigned int, read-only；= **已占用**槽位数 ✓，不是槽位总数 ✗✓）
+--   · processingPower —— `entry:getPlan()` 返回 **BlockPlan**
+--       （ShipDatabaseEntry [Server].html:660-663）；BlockPlan.processingPower 在
+--       `BlockPlan.html:232-234`（double, read-only）；Plan.processingPower 同名
+--       （`Plan.html:279-281`）同一口径 ✓。
+--       ★ 任务书里写的 "BlockStatistics.html:199-201" 实读是 **hyperspacePower**
+--         （`:199-201` ✓）；processingPower 在 `BlockStatistics.html:241-243` ✓ ——
+--         按真行号核准，不照抄错位 ✗✓。
+--   · equipped —— `ShipDatabaseEntry:getSystems()`
+--       （ShipDatabaseEntry [Server].html:829-842）返回
+--       pair<ScriptSystemUpgradeTemplate, table_t>，**键 = 已装子系统**；
+--       原版后台命令就这么读**跨星区**的船（sellcommand.lua:534-542 /
+--       minecommand.lua:620-626 ✓）。键上可读 `name`（SystemUpgradeTemplate.html:126）/
+--       `script`（:150）/ `rarity`（:138）→ `rarity.name`（Rarity.html:87）/
+--       `rarity.value`（Rarity.html:105）✓。
+--
+-- ★ 远程船（不在本星区）：`ShipSystem(id)` 只收「已存在实体的 id 或实体本身」
+--   （ShipSystem.html:86-93），而 `ShipDatabaseEntry` **没有 entity id 字段**
+--   （属性只有 faction/name/numBlocks/numBlocksWhileMalusActive，`:258-283` ✓）
+--   → 远程船**读不到槽位** ✓ → `socketsKnown=false` + 原因，**绝不填 0** ✗✓。
+--   已装模块不受影响：`getSystems()` 是船档案读取，跨星区可读 ✓✓。
+--
+-- 返回形状（每个 known 都与值同进退 ✓；读不到就**不写**那个值 ✗）：
+--   { what, ship, readOnly,
+--     inThisSector,
+--     numSockets?, maxSockets?, numUpgrades?, socketsKnown, socketsSource, socketsUnknownReason?,
+--     processingPower?, processingPowerKnown, processingPowerSource, processingPowerUnknownReason?,
+--     equipped:[{name?,script?,rarity?,rarityValue?}], equippedCount,
+--     systemsKnown, systemsSource, systemsUnknownReason?,
+--     note, processingPowerNote }
+function M.systemsFacts(player, name)
+    if type(name) ~= "string" or name == "" then
+        return nil, "BAD_REQUEST", "query systemsFacts needs data.ship"
+    end
+    if player == nil then return nil, "NO_PLAYER", "no player object" end
+
+    local res = {
+        what = "systemsFacts",
+        ship = name,
+        readOnly = true,
+    }
+
+    local entry = nil
+    do
+        local okE, e = pcall(function() return ShipDatabaseEntry(player.index, name) end)
+        if okE and e ~= nil then entry = e end
+    end
+    if entry == nil then
+        return nil, "NO_SUCH_SHIP", "ShipDatabaseEntry is nil for '" .. tostring(name) .. "'"
+    end
+
+    -- ① 实体（只有**本星区**的船才有）—— 与设备事实 ⑤ 同一套解析 ✓
+    local entity = nil
+    do
+        local okCraft, craft = pcall(function() return player.craft end)
+        if okCraft and craft ~= nil then
+            local okN, craftName = pcall(function() return craft.name end)
+            if okN and craftName ~= nil and tostring(craftName) == name then
+                entity = craft
+            end
+        end
+        if entity == nil then
+            local okSector, sector = pcall(function() return Sector() end)
+            if okSector and sector ~= nil then
+                local okType, shipType = pcall(function() return EntityType.Ship end)
+                if okType and shipType ~= nil then
+                    local okList, ships = pcall(function()
+                        return { sector:getEntitiesByType(shipType) }
+                    end)
+                    if okList and type(ships) == "table" then
+                        for _, e in ipairs(ships) do
+                            local okEN, eName = pcall(function() return e.name end)
+                            if okEN and eName ~= nil and tostring(eName) == name then
+                                entity = e
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    res.inThisSector = (entity ~= nil)
+
+    -- ② 槽位（ShipSystem 需要实体 ✓）
+    if entity ~= nil then
+        local okSS, ss = pcall(function() return ShipSystem(entity) end)
+        if okSS and ss ~= nil then
+            local okN, nSockets = pcall(function() return ss.numSockets end)
+            local numSockets = okN and tonumber(nSockets) or nil
+            if numSockets ~= nil then
+                res.numSockets = numSockets
+                res.socketsKnown = true
+                res.socketsSource = "ShipSystem(entity).numSockets (ShipSystem.html:123-125)"
+            else
+                res.socketsKnown = false
+                res.socketsUnknownReason =
+                    "ShipSystem(entity) created but numSockets unreadable: " .. tostring(nSockets)
+            end
+            local okM, mSockets = pcall(function() return ss.maxSockets end)
+            local maxSockets = okM and tonumber(mSockets) or nil
+            if maxSockets ~= nil then res.maxSockets = maxSockets end
+            local okU, nUpgrades = pcall(function() return ss.numUpgrades end)
+            local numUpgrades = okU and tonumber(nUpgrades) or nil
+            if numUpgrades ~= nil then res.numUpgrades = numUpgrades end
+        else
+            res.socketsKnown = false
+            res.socketsUnknownReason = "ShipSystem(entity) failed: " .. tostring(ss)
+        end
+    else
+        res.socketsKnown = false
+        res.socketsUnknownReason =
+            "ship is not in this sector: there is no entity here, and ShipSystem(id) needs " ..
+            "'an id of an existing entity or the entity itself' (ShipSystem.html:86-93); " ..
+            "ShipDatabaseEntry exposes no entity id (only faction/name/numBlocks*, " ..
+            "ShipDatabaseEntry [Server].html:258-283)"
+    end
+
+    -- ③ 处理能力（BlockPlan.processingPower ✓；先走船档案，再退到 player:getShipPlan）
+    do
+        local pp, source, why = nil, nil, nil
+
+        local okPlan, plan = pcall(function() return entry:getPlan() end)
+        if okPlan and plan ~= nil then
+            local okPP, v = pcall(function() return plan.processingPower end)
+            local n = okPP and tonumber(v) or nil
+            if n ~= nil then
+                pp = n
+                source = "entry:getPlan().processingPower " ..
+                    "(ShipDatabaseEntry [Server].html:660-663 -> BlockPlan.html:232-234)"
+            else
+                why = "entry:getPlan().processingPower unreadable: " .. tostring(v)
+            end
+        else
+            why = "entry:getPlan() failed: " .. tostring(plan)
+        end
+
+        if pp == nil then
+            -- 退路：按船名取档案 plan（原版文档 Player [Server].html:1151-1154 getShipPlan）
+            local okPlan2, plan2 = pcall(function() return player:getShipPlan(name) end)
+            if okPlan2 and plan2 ~= nil then
+                local okPP2, v2 = pcall(function() return plan2.processingPower end)
+                local n2 = okPP2 and tonumber(v2) or nil
+                if n2 ~= nil then
+                    pp = n2
+                    source = "player:getShipPlan(name).processingPower " ..
+                        "(Player [Server].html:1151-1154)"
+                else
+                    why = (why and (why .. "; ") or "")
+                        .. "player:getShipPlan(...).processingPower unreadable: " .. tostring(v2)
+                end
+            else
+                why = (why and (why .. "; ") or "")
+                    .. "player:getShipPlan(...) failed: " .. tostring(plan2)
+            end
+        end
+
+        if pp ~= nil then
+            res.processingPower = pp
+            res.processingPowerKnown = true
+            res.processingPowerSource = source
+        else
+            res.processingPowerKnown = false
+            res.processingPowerUnknownReason = why
+        end
+    end
+
+    -- ④ 已装模块（跨星区可读 ✓✓）
+    do
+        local okSys, systems = pcall(function() return entry:getSystems() end)
+        if okSys and type(systems) == "table" then
+            local list = {}
+            for template in pairs(systems) do
+                local item = {}
+                local okName, nm = pcall(function() return template.name end)
+                if okName and nm ~= nil then item.name = tostring(nm) end
+                local okScript, sc = pcall(function() return template.script end)
+                if okScript and sc ~= nil then item.script = tostring(sc) end
+                local okRar, rar = pcall(function() return template.rarity end)
+                if okRar and rar ~= nil then
+                    local okRN, rn = pcall(function() return rar.name end)
+                    if okRN and rn ~= nil then item.rarity = tostring(rn) end
+                    local okRV, rv = pcall(function() return rar.value end)
+                    local rvn = okRV and tonumber(rv) or nil
+                    if rvn ~= nil then item.rarityValue = rvn end
+                end
+                list[#list + 1] = item
+            end
+            -- `pairs` 顺序未定义 → **排序**让同一艘船每次都给出同一份答复 ✓
+            table.sort(list, function(a, b)
+                local as, bs = tostring(a.script or ""), tostring(b.script or "")
+                if as ~= bs then return as < bs end
+                return tostring(a.name or "") < tostring(b.name or "")
+            end)
+            res.equipped = list
+            res.equippedCount = #list
+            res.systemsKnown = true
+            res.systemsSource = "entry:getSystems() (ShipDatabaseEntry [Server].html:829-842)"
+        else
+            res.systemsKnown = false
+            res.systemsUnknownReason = "entry:getSystems() failed: " .. tostring(systems)
+        end
+    end
+
+    res.note =
+        "`numSockets` = 当前槽位数 ✓；`maxSockets` = 上限（原版只读字段，文档没写语义 ✗，" ..
+        "本 mod 也不解释）；`numUpgrades` = **已占用**的槽位数（不是槽位总数 ✗✓）。" ..
+        "`equipped` = 已装子系统（`name/script/rarity/rarityValue` ✓）。" ..
+        "★ 远程船（不在当前星区）没有实体 → `socketsKnown=false` + `socketsUnknownReason`，" ..
+        "**不是 0 个槽** ✗✓；已装模块仍可读（`getSystems()` 是船档案）✓。"
+    res.processingPowerNote =
+        "处理能力（Processing Power）决定能装几个子系统 —— 原版百科：" ..
+        "player/ui/encyclopedia/chapters/building.lua:201 " ..
+        "'The Processing Power of a ship determines the amount of Subsystem Sockets it supports' ✓；" ..
+        "Computer Core 是提高处理能力的方块（resourcemanagement.lua:201）✓。" ..
+        "★ 这是**只读事实**，本原子不提供「升了就多几个槽」的报价 ✗（换算在引擎内，未验证）✓。"
+    return res
+end
+
+-- ---------------------------------------------------------------------------
 -- 舰队快照：只包含**名单里的船**，且**永不包含玩家自己开的那条** ✓
 -- ---------------------------------------------------------------------------
 
@@ -1105,6 +1363,7 @@ M.WHATS = {
     "blockUpgrade",     -- ★★ 原子：**某一种方块类型**材料升级（只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "shipUpgrade",      -- ★★ 原子：**整船**材料升级（独立接口；只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "renameShip",       -- ★★ 原子：**改船名**（原版唯一入口 ShipDatabaseEntry:setNewName ✓ 服务端 ✓ 2026-10-18 加 ✓）
+    "systemsFacts",     -- ★★ 原子：**只读**系统槽位/已装模块/处理能力（远程船 socketsKnown=false ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1264,6 +1523,18 @@ M.RENAME_SHIP_PARAMS = {
         "normalized, piloted, busy, migrated{goalText, goalOptions, designated, config}, evidence{...} } ✓。" ..
         "★ 忙船（InBackground）会被拒 SHIP_BUSY ⇒ 先 recall 再改 ✓（原版 simulation.lua:85-89 只拦「还有 yield」✓）。" ..
         "★ 本 mod 自己的按名状态（目标 / 面板名单 / 每船配置）会在**同一次调用**里迁移 ✓，迁移明细见 migrated ✓。",
+}
+-- ★★ 系统槽位只读原子的参数（2026-10-18 加 ✓✓ —— 主人「升跃增系统栏位」）
+--   ★ **纯读**：没有 confirm 参数（也没有任何写路径）✗ —— 槽位/模块的写接口
+--     （setNumSockets / addUpgrade …）语义未验证，本原子**不提供** ✗✓。
+--   ★ 两个 known 必须成对读：`socketsKnown=false` = **读不到**，不是 0 个槽 ✗✓。
+M.SYSTEMS_FACTS_PARAMS = {
+    ship = "string：必填 ✓（船名 ✓；本星区与远程船都可以 ✓）",
+    note = "**纯事实、绝不改船** ✓：numSockets / maxSockets / numUpgrades + socketsKnown + socketsSource + " ..
+        "processingPower + processingPowerKnown + equipped[{name,script,rarity,rarityValue}] + equippedCount + " ..
+        "systemsKnown。★ 远程船（不在本星区）没有实体 → socketsKnown=false + socketsUnknownReason" ..
+        "（**不是 0** ✗✓）；equipped 走 entry:getSystems()，跨星区可读 ✓。" ..
+        "★ numUpgrades = 已**占用**槽位数，不是槽位总数 ✗；没有 confirm（没有写路径）✗。",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",

@@ -176,6 +176,25 @@ function CopilotLinkIn.onQuery(data)
         end
         return true, card
 
+    elseif what == "systemsFacts" then
+        -- ★★ 原子：**只读**「系统槽位 / 已装模块 / 处理能力」（2026-10-18 加 ✓✓）
+        --
+        --   主人问的「升跃增系统栏位」→ 先要能**看见**现在几个槽、装了什么 ✓
+        --   （机制调研与方案比较见 docs/game/mechanics/system-slots.md ✓）。
+        --   ★ 纯读：没有任何 confirm / 写路径 ✗（写接口 setNumSockets / addUpgrade
+        --     语义未验证，不在本原子里 ✓）。
+        --   ★ 远程船：`socketsKnown=false` + 原因，**绝不填 0** ✗✓（见 card.lua 的
+        --     `M.systemsFacts` 头注释：ShipSystem 要实体，而船档案没有 entity id）。
+        local sfShip = data.ship
+        if type(sfShip) ~= "string" or sfShip == "" then
+            return false, "BAD_REQUEST", "query systemsFacts needs data.ship"
+        end
+        local res, code, why = Card.systemsFacts(player, sfShip)
+        if res == nil then
+            return false, tostring(code or "SYSTEMS_FACTS_FAILED"), tostring(why or "unknown")
+        end
+        return true, res
+
     -- ------------------------------------------------------------------
     -- ★★ 六个计划：**一个调度口**（2026-10-17 重构 ✓✓）
     --
@@ -492,7 +511,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS, renameShipParams = Card.RENAME_SHIP_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS, renameShipParams = Card.RENAME_SHIP_PARAMS, systemsFactsParams = Card.SYSTEMS_FACTS_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），
