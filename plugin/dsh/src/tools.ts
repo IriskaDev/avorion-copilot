@@ -194,7 +194,23 @@ export function registerFleetTools(
         'wrong/paid/shape{blocksBefore,blocksAfter,blocksKept,boundingBoxKept}/turrets{before,after,' +
         'designsRestored,designsDropped}/databaseSynced/lines[]. A piloted ship is ALLOWED (verified ' +
         'in-game, Raven) but the response carries piloted=true + warning (a very short stutter is possible ' +
-        'at the write-back instant). The old plan queries -- tradePlan | minePlan | ' +
+        'at the write-back instant). ★★ what=shipQuote is the PURE-FACT **whole-ship** material upgrade ' +
+        'quote: pass ship + material. It returns blockCount, distribution:[{material, materialValue, blocks}] ' +
+        '(how many blocks of each material), needUpgrade, the resource+credit cost (quote/costs), affordable, ' +
+        'shortfall[] (= what is missing), nothingToDo (everything is already at or above the target) and ' +
+        'read-only assertions. The cost is the vanilla repair-dock material-difference formula ' +
+        '(repairdock.lua:993-1017) applied to getUndamagedResourceValue/getUndamagedMoneyValue, NOT ' +
+        '"per-base quote x block count". It changes NOTHING -- no pay, no setMovePlan, no ship database ' +
+        'write. ★★ what=blockQuote / what=blockUpgrade are the GENERIC per-block-type atoms: pass ship + ' +
+        'blockType (a vanilla BlockType name such as Hull|Armor|CargoBay|Engine|TurretBase, or a number) + ' +
+        'material. blockQuote is a pure-fact quote for exactly that block type (blockCount for that type, ' +
+        'distribution, byType, needUpgrade, quote/costs, affordable, shortfall, nothingToDo, read-only ' +
+        'assertions). blockUpgrade EXECUTES it but ONLY when confirm=true; without confirm it is a preview ' +
+        'quote. ★★ what=shipUpgrade is the SEPARATE whole-ship execute atom: all blocks below the target are ' +
+        'upgraded, and it too ONLY executes when confirm=true. mountQuote/mountUpgrade remain the historical ' +
+        'shortcut for the four turret-base BlockTypes. Per-block facts are omitted above 200 selected blocks ' +
+        '(blocksOmitted). ' +
+        'The old plan queries -- tradePlan | minePlan | ' +
         'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
         '(list -> ship -> predict/tradeRoutes/tradeEvaluate) instead. what=dossier is the single-shot helper (no ' +
@@ -204,11 +220,11 @@ export function registerFleetTools(
         what: {
           type: 'string',
           required: true,
-          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | orderStatus | dossier | ' +
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | orderStatus | dossier | ' +
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
         orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
-        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/any plan' },
+        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/shipQuote/blockQuote/blockUpgrade/shipUpgrade/any plan' },
         x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1; Refine: must be 31; tradeEvaluate: put it inside each boxes[] entry' },
@@ -248,16 +264,24 @@ export function registerFleetTools(
         material: {
           type: 'string',
           description:
-            'mountQuote/mountUpgrade only: the TARGET turret-base material -- iron|titanium|naonite|' +
-            'trinium|xanion|ogonite|avorion or 0-6. It upgrades every turret base below that tier ' +
-            '(bases already at or above it are left alone).',
+            'mountQuote/mountUpgrade/shipQuote/blockQuote/blockUpgrade/shipUpgrade only: the TARGET ' +
+            'material -- iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6. The mount atoms ' +
+            'upgrade every turret base below that tier; shipQuote/shipUpgrade cover every block on the ' +
+            'whole ship; blockQuote/blockUpgrade cover exactly the selected blockType.',
+        },
+        blockType: {
+          type: 'string',
+          description:
+            'blockQuote/blockUpgrade only: a VANILLA BlockType name (Enums.html: Hull, Armor, CargoBay, ' +
+            'Engine, TurretBase, ...) or its numeric id. Case-insensitive. It selects exactly one block ' +
+            'type; use shipQuote/shipUpgrade for the whole ship (a separate interface).',
         },
         confirm: {
           type: 'boolean',
           description:
-            'mountUpgrade only: MUST be true to actually spend resources/credits and write the new plan. ' +
-            'Omitted or false = quote-only preview that changes NOTHING. Always call without confirm ' +
-            'first and show the owner the cost.',
+            'mountUpgrade/blockUpgrade/shipUpgrade only: MUST be true to actually spend resources/credits ' +
+            'and write the new plan. Omitted or false = quote-only preview that changes NOTHING. Always ' +
+            'call without confirm first and show the owner the cost.',
         },
       },
       output: {
@@ -270,7 +294,7 @@ export function registerFleetTools(
         deposits?: number[]; goodsFilter?: string[]; maxAttackChance?: number
         duration?: number; safeMode?: boolean; escorts?: string[]; goodsToSell?: unknown; boxes?: unknown[]
         compact?: boolean; top?: number; full?: boolean; brief?: boolean; action?: string
-        material?: string; confirm?: boolean
+        material?: string; confirm?: boolean; blockType?: string
         orderId?: number
       }) {
         // ★ sectorFacts 只需坐标 ✓；list 什么都不用 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
@@ -284,10 +308,17 @@ export function registerFleetTools(
         if (args.what === 'sectorFacts' && (args.x === undefined || args.y === undefined)) {
           return 'what=sectorFacts needs the x and y parameters'
         }
-        if ((args.what === 'mountQuote' || args.what === 'mountUpgrade')
+        if ((args.what === 'mountQuote' || args.what === 'mountUpgrade'
+          || args.what === 'shipQuote' || args.what === 'blockQuote'
+          || args.what === 'blockUpgrade' || args.what === 'shipUpgrade')
           && (args.material === undefined || args.material === '')) {
           return `what=${args.what} needs the material parameter ` +
             '(iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6)'
+        }
+        if ((args.what === 'blockQuote' || args.what === 'blockUpgrade')
+          && (args.blockType === undefined || args.blockType === '')) {
+          return `what=${args.what} needs the blockType parameter ` +
+            '(a vanilla BlockType name such as Hull/Armor/CargoBay/Engine/TurretBase, or a number)'
         }
         // ★ tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
         // which takes far longer than a plain query -- give it room (2026-10-16).
@@ -295,8 +326,13 @@ export function registerFleetTools(
         //   给 60 s 上限，避免"游戏算得完而 DSH 先超时"✗✓（2026-10-18 ✓）。
         // ★ mountQuote/mountUpgrade = 整船重建 plan（大船几千块）+ 快照，CLI 预览同一套代码 →
         //   同样给 60 s（RPC 是同步的，别让"游戏还在算"被 10 s 先掐断 ✗✓）。
+        // ★ shipQuote/blockQuote 更重一点（重建整船 plan）→ 同样 60 s ✓；
+        //   blockUpgrade/shipUpgrade 还要 pay + setMovePlan + 核验 → 也给 60 s ✓。
         const timeout = args.what === 'tradePlan' ? 120
-          : (args.what === 'tradeEvaluate' || args.what === 'mountQuote' || args.what === 'mountUpgrade') ? 60
+          : (args.what === 'tradeEvaluate' || args.what === 'mountQuote'
+            || args.what === 'mountUpgrade' || args.what === 'shipQuote'
+            || args.what === 'blockQuote' || args.what === 'blockUpgrade'
+            || args.what === 'shipUpgrade') ? 60
           : 10
         // ★★ 计划查询的**体积旋钮**（2026-10-17 ✓✓）：原样透传给游戏侧 ✓。
         //   ★ **一个都不默认** ✗ —— 缺省由**游戏侧**定（compact=true / top=4 ✓），
@@ -311,6 +347,7 @@ export function registerFleetTools(
           goodsToSell: args.goodsToSell, boxes: args.boxes,
           compact: args.compact, top: args.top, full: args.full, brief: args.brief,
           action: args.action, material: args.material, confirm: args.confirm,
+          blockType: args.blockType,
           orderId: args.orderId,
         }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`

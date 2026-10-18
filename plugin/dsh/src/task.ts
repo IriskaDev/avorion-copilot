@@ -178,6 +178,11 @@ export function renderTaskBlock(req: TaskRequest): string {
   L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测')
   L.push('  · {what:"mountQuote", ship, material} → 炮塔底座材料升级**报价**（纯事实）；' +
     '{what:"mountUpgrade", ship, material, confirm:true} → 真的执行（★ 先报价给主人看成本 ✓）')
+  L.push('  · {what:"shipQuote", ship, material} → **整船**材料升级**只读报价**' +
+    '（全船块数 + 每种材料几块 + 资源/信用点成本 + 缺口；一个字节都不改，没有 confirm ✓）')
+  L.push('  · {what:"blockQuote", ship, blockType, material} → **某一种方块类型**只读报价；' +
+    '{what:"blockUpgrade", …, confirm:true} → 真的升级那一种；' +
+    '{what:"shipUpgrade", ship, material, confirm:true} → 整船升级（独立接口，★ 先报价 ✓）')
   L.push('  · 侦察：predict{Scout, 21x21} → 未知/已知/总数 + revealsNothingNew')
   L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan')
   if (req.goalOptions.length > 0) {
