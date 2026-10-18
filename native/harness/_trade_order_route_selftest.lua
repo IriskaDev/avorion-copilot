@@ -32,6 +32,9 @@ end
 local SHIP, SHIP_X, SHIP_Y = "Trader-00001", -374, 34
 local nRun, nPred = 0, 0
 local CUR_ROUTES = {}
+-- ★ 按**框的形状**给不同清单（真机事实：同一框心 17x17/29x11 有 Electro Magnet，
+--   11x29 只有 Display/Scrap Metal ✓ —— 这就是"29x11 写成 11x29"血案的自证 ✓）
+local SHAPE_ROUTES = {}
 local TRACE = {}
 local INVOKE_CALLS = {}
 
@@ -57,15 +60,26 @@ local function defPred(name, chance, low, high, ff, ft, ftime, max)
     PRED[name] = { chance = chance, low = low, high = high, ff = ff, ft = ft, ftime = ftime, max = max }
 end
 
-local function setRoutes(names)
-    CUR_ROUTES = {}
+local function setRoutes(names, shapeKey)
+    local list = {}
     for i, nm in ipairs(names) do
-        CUR_ROUTES[i] = {
+        list[i] = {
             name = nm, lowest = -0.06, highest = 0.16, profitPerSize = 18,
             from = { x = SHIP_X + i, y = SHIP_Y },
             to = { x = SHIP_X + i + 3, y = SHIP_Y },
         }
     end
+    if shapeKey ~= nil then
+        SHAPE_ROUTES[shapeKey] = list
+    else
+        CUR_ROUTES = list
+    end
+end
+
+local function routesForShape(area)
+    local w = area.upper.x - area.lower.x + 1
+    local h = area.upper.y - area.lower.y + 1
+    return SHAPE_ROUTES[w .. "x" .. h] or CUR_ROUTES
 end
 
 -- ---------------------------------------------------------------------------
@@ -77,7 +91,7 @@ CopilotRpc = { trace = function(line) TRACE[#TRACE + 1] = tostring(line) end }
 function run(factionIndex, shipName, ctype, area, callingPlayer)
     nRun = nRun + 1
     return shipName, ctype, area, {
-        routes = CUR_ROUTES, sectors = 289, reachable = 280, unreachable = 9,
+        routes = routesForShape(area), sectors = 289, reachable = 280, unreachable = 9,
         biggestFactionInArea = 1, reachableCoordinates = {},
     }, callingPlayer
 end
@@ -262,8 +276,8 @@ check("T2 didYouMean 给单复数提示（但**不改写**单 ✗✓）",
     rN.noRoute.didYouMean == nil, rN.noRoute.didYouMean)   -- 单复数**不**猜 ✓（逐字口径）
 check("T2 **没有**发起区域分析 ✗✓", startedAnalysis() == false, table.concat(INVOKE_CALLS, ","))
 check("T2 **没有**排 startCommand ✗✓", #LinkIn.pendingOrders == 0, #LinkIn.pendingOrders)
-check("T2 一次 run()（为了给出候选 ✓），零次预测 ✓", nRun == 1 and nPred == 0,
-    string.format("run=%d pred=%d", nRun, nPred))
+check("T2 拒绝时为给候选跑了 1 次 run()、为兄弟框再跑 2 次（最多 3 次 ✓）、零次预测 ✓",
+    nRun == 3 and nPred == 0, string.format("run=%d pred=%d", nRun, nPred))
 check("T2 hint 指向候选清单 ✓",
     type(rN.hint) == "string" and string.find(rN.hint, "noRoute.candidates", 1, true) ~= nil, rN.hint)
 
@@ -367,6 +381,57 @@ check("T7 evaluate 的 netProfitLow 与 order 用的那份预测一致 ✓（同
 check("T7 order 的配置里 goodName/deposit 原样 ✓",
     rO7.config.goodName == "Antigrav Generator" and rO7.config.deposit == 1500000,
     tostring(rO7.config.goodName) .. "/" .. tostring(rO7.config.deposit))
+
+-- ===========================================================================
+-- T8：★ 真机血案本体 —— 「29x11 写成 11x29」→ NO_ROUTE + **兄弟框自证** ✓✓
+--     （实测：同一框心 17x17 / 29x11 里有 Electro Magnet，11x29 里只有 Display / Scrap Metal）
+-- ===========================================================================
+print("== T8: 29x11 写成 11x29 → 兄弟框自证（swapHint ✓✓）==")
+SHAPE_ROUTES = {}
+setRoutes({ "Electro Magnet", "Display" })                 -- 17x17 与 29x11 的清单 ✓
+setRoutes({ "Display", "Scrap Metal" }, "11x29")           -- 11x29 只有这两条 ✓
+defPred("Electro Magnet", 0.05, 249660, 277400, 2, 2, 780, 3800)
+reset()
+local okS, rS = LinkIn.onOrder(orderOf("Electro Magnet", { sizeX = 11, sizeY = 29 }))
+check("T8 accepted=false + NO_ROUTE ✓", type(rS) == "table" and rS.accepted == false
+    and string.sub(tostring(rS.error), 1, 8) == "NO_ROUTE", rS and rS.error)
+check("T8 noRoute.candidates = 11x29 框的真实清单（Display / Scrap Metal ✓）",
+    type(rS.noRoute) == "table" and #rS.noRoute.candidates == 2
+    and rS.noRoute.candidates[1] == "Display" and rS.noRoute.candidates[2] == "Scrap Metal",
+    rS.noRoute and table.concat(rS.noRoute.candidates or {}, ","))
+check("T8 siblingBoxes 有 3-1=2 个（另两种合法形状 ✓）",
+    type(rS.noRoute.siblingBoxes) == "table" and #rS.noRoute.siblingBoxes == 2,
+    rS.noRoute and #(rS.noRoute.siblingBoxes or {}))
+check("T8 siblingBoxes 里 29x11 的 hasGood=true ✓（货在那边 ✗ 不在你给的形状里 ✓）",
+    (function()
+        for _, sb in ipairs(rS.noRoute.siblingBoxes or {}) do
+            if sb.sizeX == 29 and sb.sizeY == 11 then return sb.hasGood == true end
+        end
+        return false
+    end)(), rS.noRoute and rS.noRoute.siblingBoxes)
+check("T8 siblingBoxes 里 17x17 的 hasGood=true ✓",
+    (function()
+        for _, sb in ipairs(rS.noRoute.siblingBoxes or {}) do
+            if sb.sizeX == 17 and sb.sizeY == 17 then return sb.hasGood == true end
+        end
+        return false
+    end)(), nil)
+check("T8 swapHint 点名 29x11 / 11x29 ✓（'很容易写反' ✓）",
+    type(rS.noRoute.swapHint) == "string"
+    and string.find(rS.noRoute.swapHint, "29x11", 1, true) ~= nil
+    and string.find(rS.noRoute.swapHint, "11x29", 1, true) ~= nil, rS.noRoute.swapHint)
+check("T8 swapHint 也进了 error 串 ✓（一眼就能看到）",
+    string.find(tostring(rS.error), "29x11", 1, true) ~= nil, rS.error)
+check("T8 被拒时多跑了 2 次 run()（兄弟框，最多 2 次 ✓）；**没发起分析、没排单** ✓",
+    nRun == 3 and startedAnalysis() == false and #LinkIn.pendingOrders == 0,
+    string.format("run=%d", nRun))
+check("T8 正向对照：同一个货换成 29x11 框 → 通过校验、算得出 risk ✓",
+    (function()
+        reset()
+        local okOk, rOk = LinkIn.onOrder(orderOf("Electro Magnet", { sizeX = 29, sizeY = 11 }))
+        return okOk == true and type(rOk) == "table" and rOk.accepted == true
+            and type(rOk.risk) == "table" and rOk.risk.known == true
+    end)(), nil)
 
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
 if failures == 0 then
