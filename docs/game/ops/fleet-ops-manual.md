@@ -40,7 +40,7 @@
 |---|---|---|---|---|---|
 | `query:list` | 名册快照（名字/忙闲/船长/星区） | — | 读 | 索引级，无货舱/风险；细节走 `ship` | [`tools-cheatsheet.md`](tools-cheatsheet.md) §2 |
 | `query:ship` | 一船能力卡（炮塔/船长/货舱/跳跃/depth） | `ship` | 读 | `brief:true` 更小；`turretCount`=已装炮塔数，不是槽位 | 同上 |
-| `query:systemsFacts` | 只读：系统槽位数/上限/已装子系统/处理能力 | `ship` | 读 | 远程船 `socketsKnown=false`（**不是 0**）；`numUpgrades`=已占用槽位；没有写路径 | [`../mechanics/system-slots.md`](../mechanics/system-slots.md) §11 |
+| `query:systemsFacts` | 只读：槽位数/上限/逐槽空满/PP 门槛/缺多少 PP/已装子系统/处理能力 | `ship` | 读 | 远程船四组 `known=false`（**不是 0**）；`free = num - used`；`numUpgrades`=已占用槽位；`thresholdSemanticsKnown=false`，`missing` 是推断（`inferred=true`）；没有写路径 | [`../mechanics/system-slots.md`](../mechanics/system-slots.md) §11 |
 | `query:goal` | 该船长期目标 / 动作边界 | `ship` | 读 | 只读意图 | 同上 |
 | `query:sectorFacts` | 任意星区事实（富饶/材料/阵营 `isFriendly`/`hasStations`） | `x`,`y` | 读 | 只给事实不给结论；商船靠 `isFriendly` 逐星核（见 R5） | 同上 |
 | `query:predict` | 一个框 + 一个动作 → 风险 + value | `ship`,`action`,`x`,`y`,`sizeX`,`sizeY`(+动作参数) | 读 | 框必须含船（Travel 例外）；`known=false` → `attackChance=nil` | [`atomic-rpc.md`](atomic-rpc.md) §B.2 |

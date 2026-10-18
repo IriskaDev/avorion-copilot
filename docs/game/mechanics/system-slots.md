@@ -18,6 +18,7 @@
 | **d. 跃迁** | 由 **`HyperspaceCore` 方块（`hyperspacePower`）+ 跃迁子系统** 决定；**船长加成里没有跃迁项**。读接口 = `ShipDatabaseEntry:getHyperspaceProperties()`（返回 **4 个值**，本 mod 只读了前 2 个 ✗） | `BlockStatistics.html:199-201`；`systems/hyperspacebooster.lua:98-102`；`captainshipbonuses.lua:63-88`；`ShipDatabaseEntry [Server].html:582-596` |
 
 **结论：** 主人想要的「升系统栏位」= **a**（槽位数）为主、**b** 为手段；**c 是误会**（没有这种方块）；**d 是另一套系统**。
+★ 2026-10-18 追加：槽位的**两层门槛**（船体 Processing Power / 玩家 Building Knowledge）与**科技+材料门槛**见 §2.1–§2.6；真机 `Miner-00001` 的 `6 / 15` 判读见 §2.4。
 现在 **没有原子能读槽位**，`blockQuote` 能报价 `ComputerCore` 的材料升级，但**升材料 ≠ 加槽位**（见 §6）。
 最小、最安全的补法是一个**只读** `systemsFacts`（§7 方案 A；**2026-10-18 已实现 ✓**，用法见 §11）。
 
@@ -54,7 +55,7 @@
 | 明确点名 Computer Core | 「To increase ship processing power, and with that the ability to install more subsystems, **Computer Cores** can be added.」`player/ui/encyclopedia/chapters/resourcemanagement.lua:201` ✓ |
 | 改整船尺寸会改槽位数 | 2.5.11 更新日志：「Added preview for new mass and **new number of subsystem sockets** when scaling ship in Build Mode」`release_notes/patchnotes2.5.11.txt:12`；「subsystem socket icons would not update correctly when changing ship size」`:37` ✓ |
 | 槽位门槛是**分段**的，不是线性 | 「Reduced amount of processing power required for **Subsystem Sockets 4 and up**」`release_notes/patchnotes2.0.txt:50` ✓（分段阈值本身引擎内，见 §8 #3） |
-| 玩家侧还有「能造多大」的上限（建筑知识） | Iron 4 / Titanium 5 / Naonite 6 / Trinium 8 / Xanion 10 / Ogonite 12 / Avorion 15：`lib/buildingknowledgeutility.lua:44-54` ✓（★ 这是**玩家可建造上限**，不是某艘船现有槽位数 ✗✓） |
+| 玩家侧还有「能造多大」的上限（建筑知识） | Iron 4 / Titanium 5 / Naonite 6 / Trinium 8 / Xanion 10 / Ogonite 12 / Avorion 15：`lib/buildingknowledgeutility.lua:44-55` ✓（★ 这是**玩家可建造上限**，不是某艘船现有槽位数 ✗✓；完整拆解见 §2.2） |
 | 建筑知识物品直接写这个上限 | `items/buildingknowledge.lua:95-98`（tooltip 行「Subsystem Sockets」）；`:173-175` 抬 `player.maxBuildableSockets` ✓ |
 | 子系统能「等价加槽位」 | `Stabilizing Mainframe Wiring`：`Socket Equivalent +1`、`Excess Processing Power +117.2k`、**需要 15 槽才生效**：`systems/excessvolumebooster.lua:46-63`（`onInstalled` 加 `StatsBonuses.ExcessProcessingPowerSteps`，`:14-19`）✓ |
 | 建筑知识解锁 = 材料 + 槽位号 | 「Building Knowledge grants … up to a certain material and **subsystem socket number (read: Processing Power)**」`release_notes/patchnotes2.0.txt:132` ✓ |
@@ -63,6 +64,169 @@
 - 不是**船体积**直接决定 —— 原版文字只认 processing power；体积只能经由「功能性方块的多少/大小」间接影响（★ 这是推论，未逐块验证）。
 - 不是**船长** —— 船长加成表只有炮塔/雷达/射速等，**没有** processing power / sockets：`entity/utility/captainshipbonuses.lua:63-88` ✓。
 - 不是**某种叫 System 的方块** —— 没有这种方块（§3）✗。
+
+### 2.1 槽位有「两层」门槛，别混成一层
+
+| 层 | 谁决定 | 管什么 | 证据 |
+|---|---|---|---|
+| **船体层** | Processing Power（处理能力，PP） | 这艘船**实际**有几个槽 `ShipSystem.numSockets` | 百科：「The Processing Power of a ship determines the amount of Subsystem Sockets it supports.」`player/ui/encyclopedia/chapters/building.lua:201` ✓；Computer Core 提高 PP：`resourcemanagement.lua:201` ✓ |
+| **玩家层** | Building Knowledge（建筑知识） | 玩家**能建**的最高槽位档 `player.maxBuildableSockets`（4→…→15）；同时限制**每艘船能建到的最大 PP** | 「higher-tier building knowledge also allows you to build ships that support more Processing Power and thus Subsystem Sockets」`building.lua:186` ✓；「You can increase the maximum processing power buildable per ship by unlocking higher-tier Building Knowledge.」`building.lua:206` ✓ |
+
+★ 这解释了一件容易搞混的事：**建筑知识管的是「你还能建多大的 PP（→ 多少槽）」，不是「给已造好的船发槽」**。
+依据不是推理而是**调用面**：原版 Lua 里改槽位数的唯一入口 `setNumSockets` 全库零用例（§4.2 ✓），
+所以「造好之后靠科技直接加槽」在原版里**没有这条路径** ✗✓；已存在船的 `numSockets` 只来自它自己的 PP（§2.4 真机）。
+
+### 2.2 那串 4 / 5 / 6 / 8 / 10 / 12 / 15 到底是什么
+
+`data/scripts/lib/buildingknowledgeutility.lua:44-55`（实读）：
+
+```lua
+function BuildingKnowledgeUT.getSockets(material)
+    local sockets = {}
+    sockets[0] = 4     -- Iron
+    sockets[1] = 5     -- Titanium
+    sockets[2] = 6     -- Naonite
+    sockets[3] = 8     -- Trinium
+    sockets[4] = 10    -- Xanion
+    sockets[5] = 12    -- Ogonite
+    sockets[6] = 15    -- Avorion
+
+    return sockets[material.value] or sockets[1]
+end
+```
+
+索引就是 `Material.value`（Iron=0 … Avorion=6，`Enums.html` 材料枚举 ✓）。这串数字的**唯一用途**是「玩家建筑知识档 → 可建槽位上限」，落在两处：
+
+* 物品 tooltip 的「Subsystem Sockets」那一行：`items/buildingknowledge.lua:52`（`local sockets = BuildingKnowledgeUT.getSockets(material)`）、`:62`（写进物品 `setValue("sockets", …)`）、`:95-102`（tooltip 显示；`settings.unlimitedProcessingPower` 时**不显示**这一行）；
+* 玩家激活物品时**抬高玩家上限**：`items/buildingknowledge.lua:173-176`（`player.maxBuildableSockets = unlockedSockets`，条件是「新值比旧值大」且旧值 > 0）。
+
+★ 所以：**它是玩家的建造上限，不是任何一艘船当前的槽位数** ✗✓。
+默认开局 = 4（`server/factions.lua:847`）；服务器开了 `unlimitedProcessingPower` / `fullBuildingUnlocked` 时 = **0，表示「不限」**（`galaxy/server.lua:101-103`、`server/factions.lua:844-848`；`GameSettings.html:490-492` 有该属性）。
+
+★ **档位不连续，6 之后直接是 8，没有 7** —— 这条是回答主人「想多开一个槽」的关键：一艘 6 槽的船要到 7 槽，科技侧**必须至少跳到 Trinium 档（8 槽上限）**，不能只加 1 档 ✓。
+
+### 2.3 科技怎么涨 / 价格与材料门槛（全部给 文件:行）
+
+| 途径 | 证据 | 门槛 / 代价 |
+|---|---|---|
+| **Shipyard 买**（本地材料区的船厂） | `entity/merchants/buildingknowledgemerchant.lua:12-13`（`interactionThreshold = 64500`、`shop.relationThreshold = 64500`）、`:18-28`（已有该知识则不显示） | **关系 ≥ 64500** |
+| **Resource Depot 用矿石买** | `entity/merchants/resourcedepotbuildingknowledgemerchant.lua:19-30`（`CheckFactionInteraction(playerIndex, 0)` → 无关系门槛）、`:40-44`（`item.price = round(price / 10 / material.costFactor / 1000) * 1000`） | **矿石**（★ 主人说的「大量材料」最直接对应这一条；原版任务文案写的就是 "Buy it for ores at a Resource Depot"，价格按材料 `costFactor` 折算 —— 折算后单位是**矿石量**还是 credits **未验证** ✗） |
+| **走私市场**（高价） | `entity/merchants/smugglerbuildingknowledgemerchant.lua:39-41`、`:60-61` | credits，价格离谱（原版任务文案原文见下） |
+| **清海盗区掉落** | `entity/utility/buildingknowledgeloot.lua:40-54`（按本地材料生成、只给**还没有**该知识的玩家） | 打一场 |
+| **任务** | `lib/buildingknowledgeutility.lua:139-167`（生成 `buildingknowledgemission`；`:147-149` **Iron/Titanium 不发任务**）；`player/missions/tutorials/buildingknowledgemission.lua:84`（判 `maxBuildableMaterial`） | 跟随任务指引 |
+| **钛知识邮件（白送）** | `lib/buildingknowledgeutility.lua:81-113` | 首次发现钛后自动收到 |
+
+物品**标价**（credits，`items/buildingknowledge.lua:34-45`）：
+
+| 档 | Iron | Titanium | Naonite | Trinium | Xanion | Ogonite | Avorion |
+|---|---|---|---|---|---|---|---|
+| 价格 | 50 000 | 250 000 | 750 000 | **1 500 000** | 3 000 000 | 5 000 000 | 10 000 000 |
+| 槽位上限 | 4 | 5 | 6 | **8** | 10 | 12 | 15 |
+
+★ **必须逐档解锁**：`items/buildingknowledge.lua:164-167` —— `unlockedMaterial.value - buildable.value >= 2` 时直接拒绝（聊天报「Requires building knowledge about %s.」）。
+即：想跳到 Trinium(8 槽) 档，必须先有 Naonite 知识，不能一步从 Titanium 跳过去 ✓。
+
+★ 原版任务文案自己写了四种来源（`player/missions/tutorials/buildingknowledgemission.lua:119-123`，逐字）：
+`(optional) Clear a pirate sector` / `(optional) Gain 65.000 reputation and buy it at a Shipyard` /
+`(optional) Buy it for ores at a Resource Depot` / `(optional) Buy it for a ridiculously high price at a Smuggler's Market` ✓。
+
+### 2.4 ★ 真机：`Miner-00001` 的 `6` 到底卡在哪（6 还是 15）
+
+真机（2026-10-18 · `defaultgalaxy` · Avorion 2.5.13 · 游戏开着）：
+
+`fleet_query { what:"systemsFacts", ship:"Miner-00001" }` 原文关键字段（逐字）：
+
+```json
+{
+  "inThisSector": true,
+  "processingPower": 3106.6750907898,
+  "numSockets": 6,
+  "maxSockets": 15,
+  "numUpgrades": 6,
+  "socketsKnown": true,
+  "equippedCount": 6,
+  "readOnly": true,
+  "what": "systemsFacts"
+}
+```
+
+`fleet_query { what:"blockQuote", ship:"Miner-00001", blockType:"ComputerCore", material:"naonite" }` 原文关键字段（逐字，★ 只报价、未升级）：
+
+```json
+{
+  "blockType": "ComputerCore",
+  "blockTypeId": 54,
+  "blockCount": 0,
+  "totalBlockCount": 1584,
+  "stage": "plan",
+  "ok": false,
+  "changed": 0,
+  "paid": false,
+  "wroteShip": false,
+  "readOnly": true,
+  "environmentOk": true,
+  "errors": [ "No blocks match this selection." ],
+  "lines": [ "No blocks match this selection." ]
+}
+```
+
+判读（先把能确定的钉死）：
+
+1. **`6` = `numSockets`**。百科只说 PP 决定它（`building.lua:201`）✓，且原版唯一用法就是读它（`player/ui/profile/playerprofile.lua:268`，用来解锁「造过 6 槽船」里程碑 `:271`）✓。→ **这艘船只有 6 槽，是因为它自己的 PP（3106.675）只换算到 6 档** ✓。
+2. **`15` = `maxSockets`**。`Documentation/ShipSystem.html:117-119`（static unsigned int, read-only），**文档没写语义**；`data/scripts` 全库 grep `maxSockets` **零命中** ✓（原版从不用它）→ 语义 **未验证**。
+   ★ 但可以排除一种解释：如果 `maxSockets` 是「本船 PP 换算出来的上限」，它就该等于 `numSockets`（6），不可能是 15 → **15 不是这艘船 PP 的上限** ✓（逻辑排除，非引擎取证）。
+3. **这船 0 块 Computer Core**（`blockCount: 0`，`totalBlockCount: 1584`）→ 它的 3106.675 PP 来自别的功能性方块（Generator / CargoBay / Hangar …）+ 整船尺寸，**不是** Computer Core 给的 ✓。所以「加 Computer Core」只是抬 PP 的一条路，不是唯一路。
+
+于是「6 是科技卡住还是处理能力不够」的**诚实分解**：
+
+| 问题 | 答案 | 状态 |
+|---|---|---|
+| 这艘船现在只有 6 槽，直接原因是？ | **PP 只换算到 6 档**（`numSockets=6`，百科唯一来源） | ✓ 确定 |
+| `maxSockets=15` 说明上限不是 6？ | 15 ≠ 6，且 15 不是 PP 换算值 → 上限字段另有来源 | ✓ 逻辑确定 |
+| 玩家科技档（`player.maxBuildableSockets`）现在是几档？ | **未验证** —— 本 mod **没有原子读它**（`Player [Server].html:600-608` 有属性，`mods/copilot` 全库 grep `maxBuildableSockets` 零命中 ✓）；也没法拿别的船对比反推：真机 `ship` 简报显示 `Miner-00001` 在 `(-300, -5)` 且是玩家驾驶船（`inThisSector: true`），`list` 里 `Scout-00001 (-298,110)` / `Trader-00001 (-389,70)` 都在别的星区 → 读不到它们的 `numSockets/maxSockets`（§11.3 `socketsKnown=false`） | **未验证** |
+| 若玩家科技 = 6（Naonite 档）会怎样？ | 建造模式里这船的 PP 上加不上去（每船可建最大 PP 被知识档压住，`building.lua:206`）→ 必须先把科技升到 Trinium 档（8），才有 7 槽的可能 | 机制推论（未真机验证） |
+| 若玩家科技已 ≥ 8 档会怎样？ | 科技不卡，只差 PP：在建造模式里给这船加功能性方块（如 Computer Core）把 PP 抬过 7 槽阈值即可 | 机制推论（未真机验证） |
+
+★ **一句话**：`6` 本身是**处理能力**给的（`numSockets`）；**科技卡不卡**取决于 `player.maxBuildableSockets` 的实值，而它当前**读不到** → 不猜 ✗。
+这也正是下面 §2.6 建议 `socketCap` 的原因：一条只读调用就能闭掉这个「未验证」。
+
+### 2.5 原版「想多开一个槽」到底要走什么
+
+1. **原版没有「手动升一个槽」的操作**：`setNumSockets` 是写接口（`ShipSystem.html:218-233`），但 `data/scripts` 全库 `setNumSockets(` **零命中**，没有正常玩法在用 ✓（§4.2、§7 方案 D）。
+2. 正路只有一条：**建造模式里把 PP 加上去**（加功能性方块），并保证玩家科技档位允许（`building.lua:202-206`）。
+3. **科技档是硬跳档**：6 → 8（§2.2），所以「6 槽船想 7 槽」= 先要 **Trinium 建筑知识**（1.5M credits；资源站可用矿石买；船厂要 64500 关系；或清海盗区掉落/任务），再在建造模式补 PP 过 7 槽阈值。
+4. **材料账**（分开算，别混）：
+   * 科技：credits 或**矿石**（`resourcedepotbuildingknowledgemerchant.lua:40-44`）—— 这是「大量材料」一说最真实的落点；
+   * 加 Computer Core 方块本身：吃**船材料**，但「一块给多少 PP」引擎内没有暴露（§2.6 做不到清单 #1）→ 只能加块后看结果 ✗✓；
+   * 已存在 Computer Core 的**材料升级**：`blockQuote` 能报价（§6.2），但**升材料 ≠ 加槽**，且本船 0 块 → 连价都报不出（`No blocks match this selection.` 真机原文见 §2.4）。
+   * ★ **「大量材料」的量级参考**（真机 2026-10-18，`shipQuote` 只读快照，**是整船材料升级、不是加槽成本** ✗）：
+     `fleet_query { what:"shipQuote", ship:"Miner-00001", material:"trinium" }` →
+     `1584 block(s), 1584 to upgrade -> 22146 Trinium + 47495 credits (NOT affordable)`；`shortfall` = 缺 22146 Trinium。
+     （原文：`lines` / `payArgs` `["22.146","Trinium"]` / `affordable:false`；`paid:false`、`wroteShip:false`、`readOnly:true` ✓）
+
+### 2.6 能不能做成只读接口：`socketCap`（建议，未实现）
+
+**能做（建议原子 `what:"socketCap"`，纯只读，零写）**，依据都在：
+
+| 字段 | 来源 | 备注 |
+|---|---|---|
+| `player.maxBuildableSockets` | `Documentation/Player [Server].html:606-608`（int，可读写属性） | **0 = 不限**（`galaxy/server.lua:101-103`）→ 必须原样给 0 + 说明，**不能**当成「0 个槽」✗ |
+| `player.maxBuildableMaterial` | `Player [Server].html:600-604` | `Material` 对象 → 给 name + value |
+| 科技档表 `{4,5,6,8,10,12,15}` | `lib/buildingknowledgeutility.lua:44-55` | ★ mod 是 Lua，可 `include("buildingknowledgeutility")` 调 `getSockets(material)` 读**静态表** ✓（该模块还 `include("missionutility")`，**干净性未验证**；备选是直接把这 7 个数字抄成常量，零依赖 ✓） |
+| 船的 `numSockets / maxSockets / numUpgrades` | `ShipSystem.html:117-131` | 只对本星区船可读（§11.3） |
+| 每槽 PP 阈值 `getProcessingPowerForSocket(i)` | `ShipSystem.html:162-170`（`double getProcessingPowerForSocket(unsigned int socket)`） | ★ 语义未验证（「该槽消耗 PP」还是「该槽所需阈值」文档没写）→ 返回值必须带 `thresholdSemanticsKnown=false` |
+
+**做不到 / 不做的**：
+
+| # | 事情 | 结论 |
+|---|---|---|
+| 1 | 每块 Computer Core → 多少 PP / 多少槽 | **引擎内，Lua 无表**：全 `data/scripts` grep `ProcessingPower` 只 6 处（`galaxy/server.lua:101`、`items/buildingknowledge.lua:95/120`、`encyclopedia/chapters/building.lua:194`、`server/factions.lua:844`、`systems/excessvolumebooster.lua:18`），**没有任何换算表** ✗✓ → 只能「先加块再看结果」 |
+| 2 | 「加 N 块 Computer Core 要多少材料」报价 | **没有原子能做**：`blockQuote` 只对**已存在块**报材料升级价；新增块要自己构造新 plan（`mounts.lua:752-888` 的 `rebuildPlan` 思路），属于写路径且几何合法性未验证 ✗ |
+| 3 | 直接读「玩家卡在哪一档」并替主人判断 | 不建议把 `socketLimitedBy` 结论化：`maxSockets` 语义未验证（§2.4），科技值与 PP 值都在，但「谁卡住」需要两值 + 档表才能判，且判据依赖未验证的 `maxSockets` 语义 → **只给原始值 + known 标记**，别下结论 ✗✓ |
+
+★ 优先级：`socketCap` 是**只读、零风险、能一次闭掉本页最大未验证**（§2.4 的「科技卡不卡」）→ 建议做；但**不是本任务范围**（本任务只查 + 写文档）✗。
+
+**另一个能立刻用的**：`blockQuote {blockType:"ComputerCore"}` + `systemsFacts` 已经能回答「这船现在几槽 / 有几块 Computer Core / 处理能力多少」（§2.4 真机原文）✓。
 
 ---
 
@@ -351,7 +515,7 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 |---|---|---|
 | 1 | 原版有 `BlockType.System` 方块 | **✗ 不存在**（170 项枚举无一项含 System） |
 | 2 | `Plan():getStats().systemSlots` | **✗ 没有这个字段**；只有 `processingPower` |
-| 3 | 「处理能力 → 槽位数」的阈值公式 | **未验证**（引擎内；只有 2.0 日志「4 槽以上所需处理能力下调」的定性证据） |
+| 3 | 「处理能力 → 槽位数」的阈值公式 | **Lua 层没有表** ✗✓：全 `data/scripts` grep `ProcessingPower` 只有 6 处、没有换算（见 §2.6 做不到 #1）。阈值在引擎内；唯一只读入口 `ShipSystem:getProcessingPowerForSocket(socket)`（`ShipSystem.html:162-170`，**语义未验证**）。定性证据：2.0 日志「4 槽以上所需处理能力下调」`release_notes/patchnotes2.0.txt:50` ✓、`patchnotes2.0.txt:132`「Building Knowledge grants … subsystem socket number (read: Processing Power)」✓ |
 | 4 | 升 `ComputerCore` 材料 = 加槽位 | **未验证**（材料是否影响每块 processingPower 未取证；且要过阈值） |
 | 5 | 远程船（无实体）读 `numSockets` | **未验证**（`ShipSystem` 文档只认实体/id；跨星区只确证 `getSystems()` 可读） |
 | 6 | 脚本装/卸子系统对活船合法 | **未验证**（接口存在，无正常玩法用例） |
@@ -364,9 +528,13 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 ## 9. 给主人的一句话
 
 - 主人说的「系统栏位」**大概率就是 a+b**（槽位 + 升级模块），**没有** c 那种方块 ✗；
+- **槽位数本身**：只由船的 **Processing Power** 换算（`building.lua:201` ✓），不是船体积、不是玩家等级；真机 `Miner-00001` = 6 槽 / PP 3106.675 / **0 块 Computer Core**（§2.4 原文）✓；
+- **那串 4/5/6/8/10/12/15**：是**玩家建筑知识档 → 能建的槽位上限**（`buildingknowledgeutility.lua:44-55` ✓），**不是**这艘船现有的槽数；档位不连续（6 之后是 8）✓；
+- **想多开一个槽**：原版**没有**「手动升一槽」的操作（`setNumSockets` 零用例 ✗）；正路是建造模式加功能性方块抬 PP，且科技至少到 **Trinium 档（8 槽上限）**；Trinium 建筑知识标价 **1.5M credits**，资源站可用**矿石**买（`resourcedepot…:40-44`），船厂要 **64500 关系**（`buildingknowledgemerchant.lua:12-13`）✓；
+- **6 卡在哪**：直接原因是 PP（`numSockets=6`）✓；**玩家科技档读不到**（`player.maxBuildableSockets` 本 mod 无原子，§2.4 表格）→ 标「未验证」，不猜 ✗；
 - **现在就能做的**：只读的 `systemsFacts`（看槽位/已装模块/处理能力）+ 把跃迁的 `cooldown/impaired` 补进能力卡；
-- **现在就能用的**：`blockQuote {blockType:"ComputerCore"}` 报价材料升级 ✓（但**别承诺**升了会加槽）；
-- **要动真格加栏位**（`setNumSockets` 或加方块）：先拿弃船做实验，验证前**不做原子** ✓✓。
+- **现在就能用的**：`blockQuote {blockType:"ComputerCore"}` 报价材料升级 ✓（但**别承诺**升了会加槽；本船 0 块连价都报不出）；
+- **要动真格加栏位**（`setNumSockets` 或加方块）：先拿弃船做实验，验证前**不做原子** ✓✓；**建议**加只读 `socketCap`（§2.6）把「科技卡不卡」一次读清 ✓。
 
 ---
 
@@ -377,7 +545,8 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 
 | what / 原子 | 用途 | 必填 | 副作用 | 一句话陷阱 | 权威来源 |
 |---|---|---|---|---|---|
-| `query:systemsFacts`（**已实现 ✓**） | 读槽位/上限/已装模块/处理能力 | `ship` | 读 | 远程船 `socketsKnown=false`，不是 0；别把 `numUpgrades` 当槽位 | 本页 §7 方案 A / §11 |
+| `query:systemsFacts`（**已实现 ✓**） | 读槽位/上限/逐槽空满/PP 门槛/缺多少 PP/已装模块/处理能力 | `ship` | 读 | 远程船四组 `known=false`，不是 0；`free = num - used`；`thresholdSemanticsKnown=false`（`missing` 是推断，`inferred=true`） | 本页 §7 方案 A / §11 |
+| `query:socketCap`（**拟**，只读） | 读**玩家科技档**（`maxBuildableSockets` / `maxBuildableMaterial`）+ 科技档表 `{4,5,6,8,10,12,15}` + 船侧槽位/PP | `ship`（可选） | 读 | `maxBuildableSockets=0` 是「不限」**不是 0 槽** ✗；`getProcessingPowerForSocket` 语义未验证 → 带 `thresholdSemanticsKnown=false` | 本页 §2.6 |
 | `query:systemSwap`（**拟**，写） | 装/卸/换子系统 | `ship`,`op`,`confirm` | 写 | 无 `confirm:true` 不执行；合法性**未验证** | 本页 §7 方案 E |
 
 ---
@@ -407,6 +576,13 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 | `numSockets` | int? | **当前槽位数**（能装几个子系统） | `ShipSystem(entity).numSockets`（`ShipSystem.html:123-125` ✓） |
 | `maxSockets` | int? | 槽位上限（原版只读字段；**文档没写语义** → 本 mod 不解释 ✗） | `ShipSystem.html:117-119` ✓ |
 | `numUpgrades` | int? | **已占用**的槽位数（不是槽位总数 ✗） | `ShipSystem.html:129-131` ✓ |
+| `sockets` | table? | `{num, max, used, free}`：★ **`free = num - used`**（`used` = `numUpgrades`）；带 `freeDefinition` 明写公式；`maxSocketsSemanticsKnown=false`（`maxSockets` 语义未验证 → 不解释 ✗） | `ShipSystem.numSockets/maxSockets/numUpgrades`（`ShipSystem.html:117-131` ✓） |
+| `slots` | array? | **逐槽** `{index, occupied, subsystemName?, script?, permanent?, rarity?, rarityValue?}`；空槽 = `occupied:false` | `ShipSystem:getUpgrade(index)` / `isPermanent(index)`（`ShipSystem.html:172-201` ✓） |
+| `slotsKnown` / `slotIndexBase` / `slotIndexBaseKnown` / `slotsOccupiedCount` / `slotsConsistentWithNumUpgrades` | bool / int / bool / int / bool | 逐槽读到没有；索引基 0/1 **由 `numUpgrades` 反向对齐判定**；占用数是否与 `numUpgrades` 自洽 | 本原子（原版 0 起扫：`stationfounder.lua:982-989` ✓） |
+| `ppThresholds` | array? | `[{socket, requiredProcessingPower}]` —— **最多 20 个原样值**（`getProcessingPowerForSocket(i)` 的返回值，不解释 ✓） | `ShipSystem:getProcessingPowerForSocket(socket)`（`ShipSystem.html:162-170` ✓；原版零用例） |
+| `ppThresholdsKnown` / `thresholdSemanticsKnown` / `thresholdSemanticsNote` / `ppThresholdsNonDecreasing` | bool / bool / string / bool | 门槛读到没有；★ **`thresholdSemanticsKnown` 恒 `false`**（文档没写「消耗」还是「阈值」✗）；非递减只是事实描述 | 本原子 + `ShipSystem.html:162-170`（文档只有签名 ✓） |
+| `missing` | table? | `{known, inferred=true, nextSocket?, requiredPP?, currentPP, missingPP, socketIndexBase, socketIndexBaseKnown, probedSockets, probeExhausted?}` —— **第一个** `threshold > currentPP` 的槽 + 差额；全部低于 currentPP 时 `missingPP=0` + `probeExhausted=true` | 本原子（**推断**，不是引擎结论 ✓） |
+| `missingKnown` / `missingUnknownReason` | bool / string? | 缺 PP 的推断能不能算（要 PP + 门槛两边都读到 ✓） | 本原子 |
 | `socketsKnown` | bool | 上面三个槽位字段到底读到没有 | 本原子 |
 | `socketsSource` / `socketsUnknownReason` | string? | 读到的来源 / 读不到的原因（二选一） | 本原子 |
 | `processingPower` | double? | 处理能力（决定能装几个子系统） | `entry:getPlan().processingPower`（`ShipDatabaseEntry [Server].html:660-663` → `BlockPlan.html:232-234` ✓；退路 `player:getShipPlan(name)`，`Player [Server].html:1151-1154` ✓） |
@@ -421,8 +597,9 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 ### 11.3 两个必须按 `known` 读的地方（★ 最要紧）
 
 1. **远程船的槽位是「未知」，不是 0** ✗✓
-   `socketsKnown=false` + `socketsUnknownReason`；`numSockets` / `maxSockets` / `numUpgrades`
-   那些字段**根本不写**（不是 0）
+   `socketsKnown` / `slotsKnown` / `ppThresholdsKnown` / `missingKnown` 全部 `false` + 各自原因；
+   `sockets` / `slots` / `ppThresholds` / `missing` 与 `numSockets` / `maxSockets` / `numUpgrades`
+   那些字段**根本不写**（不是 0、不是空表）
    —— 原因：`ShipSystem(id)` 只收「已存在实体的 id 或实体本身」（`ShipSystem.html:86-93` ✓），
    而 `ShipDatabaseEntry` 没有 entity id 字段（属性只有 `faction/name/numBlocks/numBlocksWhileMalusActive`，
    `ShipDatabaseEntry [Server].html:258-283` ✓）→ 没实体就读不到 ✓。
@@ -452,11 +629,77 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
 
 ### 11.6 自检与生效
 
-* 离线自检：`native\harness\_systemsfacts_selftest.lua`（54 项断言：只读前后资源/方块数不变 ✓、
-  远程船 `socketsKnown=false` ✓、两个 `known=false` 路径 ✓、完整卡与简报一致 ✓）。
-* 生效方式：改 **Lua** → **重载存档或重启游戏** ✓（`net/*` 与 `include` 缓存都不会热更新 ✗）；
-  改**插件** → **重启 DSH** ✓。
-* 真机样例：**待激活后补** ✓ —— 改 Lua 后跑着的游戏 VM 仍是旧代码（实测：`caps` 里没有
-  `systemsFacts`，`query systemsFacts` 回 `unknown what` ✓），本 mod 不强制杀游戏 ✗。
-  重载存档后跑 `fleet_query {what:"systemsFacts", ship:"<当前船>"}` 与一艘远程船，
-  把两份原文贴到本节即可 ✓。
+* 离线自检：`native\harness\_systemsfacts_selftest.lua`（**94 项断言 / 失败 0** ✓：逐槽空满 ✓、
+  `free = num - used` ✓、20 个 PP 门槛原样值 ✓、`missingPP = 20000 - 12345.6` ✓、
+  全部低于 currentPP → **合法 0** + `probeExhausted` ✓、PP 第 4 个读数炸 → `ppThresholdsKnown=false`
+  且**不写 0** ✓、getUpgrade 炸 → `slotsKnown=false` 且**不写空表** ✓、远程船四组全 `false` ✓、
+  只读前后资源/方块数一字不差 ✓）。
+* 生效方式：改 **Lua** → **重载存档或重启游戏** ✓（`net/*` 与 `include` 缓存都不会热更新 ✗；
+  `/copilot reload` 已退役 ✗）；改**插件** → **重启 DSH** ✓。★ 两者都由主人做，本 agent **不自行重载/重启** ✓。
+* 真机样例：见 §11.7（含 2026-10-18 重载前实测原文；四个新字段的真机原文**待主人重载后补** ✓）。
+
+### 11.7 2026-10-18 扩展：上限 / 逐槽空满 / 缺多少 PP
+
+主人原话：「主要你得知道当前船的上限是多少，各个槽位是否空，缺了什么」→ 只加**事实**、不做策略 ✓。
+
+实现位置（全部在**已有的** `systemsFacts` 里，没有新 `what` ✓）：
+* `sockets` 四元组：`card.lua:1149-1207`（②）；
+* 逐槽：`card.lua:1209-1300`（②b）；PP 门槛：`card.lua:1302-1404`（②c）；
+* `missing` 推断：`card.lua:1406-1452`（③b）；
+* 模板字段共用读取：`card.lua:1077-1093`（`readUpgradeFacts`，`equipped` 与逐槽**同源** ✓）；
+* 分发没变：`link_in.lua:179-196` ✓；参数声明：`card.lua:1766-1779` ✓。
+
+**索引基（0 还是 1）** —— 文档没写，但原版有调用面：
+`data/scripts/entity/stationfounder.lua:982-989` 与 `derelictminefounder.lua:161-168`
+都是 `for i = 0, 20 do local upgrade = ShipSystem():getUpgrade(i) … isPermanent(i)` ✓
+→ 0 起扫是原版用法；本原子再用 `numUpgrades` **反向对齐**（数 0 基 / 1 基窗口的非 nil 槽，
+取与已占用数相等的那个），两边都自洽时默认 0 基并给 `slotIndexBaseKnown` ✓。
+
+**语义诚实（★ 最要紧）**：
+`getProcessingPowerForSocket` 在 `ShipSystem.html:162-170` **只有签名**，没写是
+「该槽消耗 PP」还是「该槽所需阈值」✗；原版 `data/scripts` 全库 grep 这个名字 **0 命中** ✓
+（`stationfounder.lua` 那条 `for i = 0, 20` 循环只调 `getUpgrade/isPermanent`，**没有** PP 门槛 ✓）。
+→ 返回里恒 `thresholdSemanticsKnown=false` + `thresholdSemanticsNote`；
+`missing.nextSocket` / `missing.missingPP` 标 `inferred=true`，**不假装是引擎结论** ✗✓。
+20 个门槛的**原始值**照给（`ppThresholds`），推断值单独放 `missing` 里 ✓。
+
+**`missing` 的唯一口径**：
+1. 遍历 `ppThresholds`（最多 20 个，索引从 `slotIndexBase` 起）；
+2. 取**第一个** `requiredProcessingPower > currentPP` 的槽 → `nextSocket` / `requiredPP`，
+   `missingPP = requiredPP - currentPP`；
+3. 一个都没有 → `missingPP = 0` + `probeExhausted = true`（**合法 0**，不是缺数据 ✓）；
+4. 只要 PP 或门槛有一边读不到 → `missing` **整个不写** + `missingKnown=false` + 原因 ✗✓。
+
+**真机（2026-10-18 · 游戏开着 · 重载前）**：
+`list` 原文：`"piloted": "Miner-00001"`（现查，不凭记忆 ✓）。
+`fleet_query {what:"systemsFacts", ship:"Miner-00001"}` 关键字段（逐字）：
+
+```json
+{
+  "inThisSector": true,
+  "processingPower": 3106.6750907898,
+  "numSockets": 6,
+  "maxSockets": 15,
+  "numUpgrades": 6,
+  "socketsKnown": true,
+  "equippedCount": 6,
+  "socketsSource": "ShipSystem(entity).numSockets (ShipSystem.html:123-125)",
+  "readOnly": true,
+  "what": "systemsFacts"
+}
+```
+
+→ ★ **这份原文没有 `sockets` / `slots` / `ppThresholds` / `missing`**：游戏 VM 里仍是旧 Lua ✓
+（`socketsSource` 也还是旧字符串）→ **改 Lua 必须重载存档**；本 agent **不自行重载/重启** ✗。
+由同一份原文能**直接算出**的只有 `free = num - used = 6 - 6 = 0`（6 个已有槽全占，
+`equippedCount=6` 与 `numUpgrades=6` 互相印证 ✓）；逐槽明细与 PP 门槛要等重载后才有真机原文。
+
+远程对照（`fleet_query {what:"systemsFacts", ship:"Scout-00001"}`，逐字）：
+`"inThisSector": false, "socketsKnown": false, "equippedCount": 5`，且有 `"socketsUnknownReason"`；
+**没有** `numSockets` / `maxSockets` / `numUpgrades` ✓ → 「未知」不是 0 个槽 ✓。
+
+离线替身（**不是真机**，只证明代码路径 ✓；`native\harness\_systemsfacts_selftest.lua` 94 项断言）：
+`sockets={num:3,max:4,used:2,free:1}`；`slots` 3 个（索引 0 占 / 1 空 / 2 占）；
+`ppThresholds` 20 个（`socket:0→100`、`socket:3→20000`）；
+`missing={nextSocket:3, requiredPP:20000, currentPP:12345.6, missingPP:7654.4, inferred:true}`；
+PP 极高时 `missingPP:0` + `probeExhausted:true`；读不到时四个块全不写 + `known=false` ✓。
