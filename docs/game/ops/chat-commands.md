@@ -109,6 +109,14 @@
 { "what": "mountQuote", "ship": "Miner-00001", "material": "naonite" }
 // 执行：必须显式 confirm=true；没有它 = 与 CLI 预览一样只报价
 { "what": "mountUpgrade", "ship": "Miner-00001", "material": "naonite", "confirm": true }
+// ★ 整船只读报价（2026-10-18 加）：全船块数/材料分布/要多少资源与信用点/缺口；
+//   **不执行、没有 confirm** —— 主人只想"看看整船直升要多少钱"
+{ "what": "shipQuote", "ship": "Raven", "material": "naonite" }
+// ★ 通用：只升级/只报价某一种方块的类型（2026-10-18 加）
+{ "what": "blockQuote", "ship": "Raven", "blockType": "Hull", "material": "naonite" }
+{ "what": "blockUpgrade", "ship": "Raven", "blockType": "Hull", "material": "naonite", "confirm": true }
+// ★ 整船执行是**独立接口**（与 blockUpgrade 分开）
+{ "what": "shipUpgrade", "ship": "Raven", "material": "naonite", "confirm": true }
 ```
 
 * `mountQuote` 返回：每块底座 `bases[{index, material, materialValue, needsUpgrade}]`、目标材料、
@@ -120,10 +128,22 @@
   designsDropped} / databaseSynced / lines[]`；`executed` 只在 `stage="applied"` 时为 true。
 * ★ **驾驶中的船允许升级**（真机 `ddd792a` 验过 ✓），但响应会带 `piloted:true` +
   `warning`（写回瞬间可能有极短卡顿 ✓）—— 决策者应当先把报价给主人看，再决定要不要 confirm。
+* ★ `shipQuote`（2026-10-18 加）是**整船**只读报价：`blockCount` +
+  `distribution[{material, materialValue, blocks}]` + `needUpgrade` + `quote{resources[7], money}` +
+  `costs[]` + `affordable` + `shortfall[]` + `nothingToDo` + 只读断言；
+  **不 pay / 不 setMovePlan / 不写船档案** ✓，而且**没有 `confirm` 参数** ✗。
+* ★ `blockQuote/blockUpgrade`（2026-10-18 加）是**通用方块类型**接口：`blockType` 只认
+  **原版 BlockType 名/数字**（Hull/Armor/CargoBay/Engine/TurretBase/...）✓；
+  `blockQuote` 只读、`blockUpgrade` 必须 `confirm=true` ✓。
+* ★ `shipUpgrade` 是**独立的整船执行接口**（不与 `blockUpgrade` 混用 ✓）：所有低于目标的块都升，
+  必须 `confirm=true` ✓。整船执行前请先用 `shipQuote` 或 `shipUpgrade confirm=false` 看成本。
+  预算与依据见 [`mount-material-upgrade.md`](mount-material-upgrade.md)
+  与 [`atomic-rpc.md`](atomic-rpc.md) §B.7–B.8。
 
-> 生效方式：`mountQuote/mountUpgrade` 的分发在 `data/scripts/net/link_in.lua`（net VM）→
-> **必须重载存档或重启游戏**才出现 ✓（`/copilot reload` 只覆盖命令 VM，见 §0 第 2 条）。
-> 插件工具的参数（`material` / `confirm`）在 `plugin/dsh/src/tools.ts` → 插件重建后随 DSH 重启加载。
+> 生效方式：`mountQuote/mountUpgrade/shipQuote/blockQuote/blockUpgrade/shipUpgrade` 的分发在
+> `data/scripts/net/link_in.lua`（net VM）→ **必须重载存档或重启游戏**才出现 ✓
+> （`/copilot reload` 只覆盖命令 VM，见 §0 第 2 条）。
+> 插件工具的参数（`material` / `confirm` / `blockType`）在 `plugin/dsh/src/tools.ts` → 插件重建后随 DSH 重启加载。
 
 ## 3. 只读探针（排障用，别当功能用）
 

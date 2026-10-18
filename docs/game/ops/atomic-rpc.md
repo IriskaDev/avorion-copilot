@@ -168,6 +168,74 @@
 - **它不做策略** ✗：不替决策者选材料、不判断"该不该升"、不自动补足材料；
   报价与缺口全给事实，要不要确认由决策者（主人）定 ✓。
 
+### B.7 ★ 整船材料升级只读报价：`shipQuote`（2026-10-18 加 ✓✓）
+
+**为什么加**（主人原话：「能不能整船直升，你就看看行不行，不要动，整船太贵了」）：
+B.6 的 `mountQuote` 只数**炮塔底座**（Raven 24 块）；主人想知道**整船全部方块**
+都升到某材料要多少钱 —— 但**只看、不动** ✗✓。
+
+- **入参**：`{ what="shipQuote", ship, material }` —— **没有 `confirm` 参数** ✓
+  （只读报价；整船执行是**另一个独立原子** `shipUpgrade` ✓，见 §B.8）。
+- **出参（纯事实）**：
+  `{ ok, stage, ship, targetMaterial, targetMaterialName, blockCount,
+     distribution:[{material, materialValue, blocks}], unknownMaterialBlocks,
+     needUpgrade, quote:{resources[7], money, resourceUnits}, costs:[{materialIndex, material, amount}],
+     affordable, shortfall:[{kind, material, need, have, missing}], nothingToDo,
+     readOnly:true, changed:0, wroteShip:false, paid:false,
+     assertions:{sourcePlanUnchanged, blockCountKept, materialFingerprintKept,
+                 newPlanDistinct, upgradedCountMatched},
+     rebuild:{added, upgraded, failed, parentFallback}, errors[], lines[] }`
+  —— `distribution` 7 档全给（含 0 块的档 ✓）；`nothingToDo=true` 表示全船都已达目标或更高。
+- **成本口径**：原版修船坞的**材料差价 × 方块体积/价值** ✓ ——
+  `repairdock.lua:993-1017`（资源：`(template-craft + template*(1-dur))/2 * repairFactor`）与
+  `repairdock.lua:1019-1037`（信用点同式）；旧/新 plan 的
+  `getUndamagedResourceValue()`（`BlockPlan.html:534`）/`getUndamagedMoneyValue()`（`:523`）
+  都是**按材料分类的块体积/价值之和**。数值直接复用 `mounts.lua` 的
+  `diffResources/diffMoney/quote`（与 `mountQuote` 同一套函数 ✓），
+  **不是**"底座报价 × 块数" ✗✓。
+- **只读保证**：取 `ship:getFullPlanCopy()` 的副本；只在 `rebuildPlan{upgradeAll=true}`
+  新建的 plan 上改；返回前断言源 plan 的**快照 / 块数 / 材料指纹**逐项不变 ✓。
+  全程不 `pay` / 不 `setMovePlan` / 不写 `ShipDatabaseEntry` ✓。
+- **复用**：`mounts.materialDistribution` + `mounts.rebuildPlan(upgradeAll)` + `mounts.quote`
+  + `cli.mountsResolveShip/mountsCanPay/mountsShortfall` ✓；RPC 层只做参数解析与 JSON 化
+  （`link_in.lua` 的 `shipQuote` 分支 → `CopilotCli.shipQuoteRpc`）✓。
+- **它不做策略** ✗：不替决策者选材料、不判断"值不值得整船升"、不自动执行；
+  只把"多少钱 / 够不够 / 缺什么"给成事实 ✓。
+
+### B.8 ★ 通用方块类型接口：`blockQuote` / `blockUpgrade`；整船执行：`shipUpgrade`（2026-10-18 加 ✓✓）
+
+**为什么加**（主人原话：「我希望能够独立升级舰船内的某一种类型方块，需要把这套接口做成通用化。
+以及整船升级，这又应该是一个独立接口」）：
+B.6 的 `mountQuote/mountUpgrade` 只认**炮塔底座那 4 个 BlockType** ✗；主人要的是
+**任意原版 BlockType**（Hull / Armor / CargoBay / Engine / ...）都能单独报价/升级，
+而**整船**是另一个独立入口 —— 不要把两者混成一个"万能"参数 ✗。
+
+- **通用类型接口**：
+  - 入参：`{ what="blockQuote", ship, blockType, material }`（纯事实）；
+    `{ what="blockUpgrade", ship, blockType, material, confirm? }`（`confirm=true` 才执行 ✓）。
+  - `blockType` = **原版 BlockType 名 / 数字**（`Documentation/Enums.html` 的 BlockType 段；
+    大小写不敏感 ✓）。解析在 `mounts.lua` 的 `resolveBlockType` / `typeSet` ✓，
+    **只认原版枚举，不自己造类别** ✗✓。
+  - 出参（blockQuote）：`{ ok, stage, ship, blockType, blockTypeId, blockCount,
+    totalBlockCount, distribution:[{material, materialValue, blocks}],
+    byType:[{blockType, blockTypeId, blocks}], needUpgrade,
+    quote{resources[7], money, resourceUnits}, costs[], affordable, shortfall[],
+    nothingToDo, environmentOk, environmentMessage, readOnly:true, assertions{...} }`
+    —— `blockCount` = 选中类型几块；`totalBlockCount` = 全船几块 ✓。
+  - 出参（blockUpgrade）：与 `mountUpgrade` 同结构 ✓（`selectedCount/needCount/changed/verified/
+    wrong/paid/shape/turrets/databaseSynced/lines[]`）；逐块 facts 超过 200 块会省略
+    （`blocksOmitted:true` ✓）。
+- **整船执行接口**：`{ what="shipUpgrade", ship, material, confirm? }` ——
+  `selector.all=true`，**所有低于目标材料的块**都升 ✓；`confirm=true` 才 `pay` + `setMovePlan` ✓。
+  出参与 `blockUpgrade` 同结构，`scope="all"`、`selectedCount` = 全船块数 ✓。
+- **复用（没有第二套逻辑 ✓）**：三者与 `mountQuote/mountUpgrade` 共用
+  `cli.blocksPrepare` / `cli.blocksUpgrade`（mount 入口只是"炮塔底座 4 类型组"的包装 ✓）；
+  报价仍走 `mounts.quoteSelection` → `rebuildPlan` + `quote` ✓。
+- **★ 炮塔保命**：即使只升 Hull，`setMovePlan` 也会重建整船 plan →
+  执行器**仍然**用 `TurretBases:getDesigns` + 按 `box.center` 重映射 + `restoreTurrets` 保住炮塔 ✓。
+- **安全闸门**：`blockUpgrade/shipUpgrade` 的 `confirm=true`（缺省只报价 ✗✓）；
+  `blockQuote/shipQuote` 全程只读，且返回前断言源 plan 快照/块数/材料指纹不变 ✓。
+
 ### B.4 执行类（已达标，保持原子）
 
 | 原子 | 入参 | 出参 | 错误 |
