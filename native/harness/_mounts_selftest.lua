@@ -718,6 +718,113 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- (l) ★ 通用"某一种方块类型"接口 + 独立整船升级接口（2026-10-18 加 ✓✓）
+--   主人：「我希望能够独立升级舰船内的某一种类型方块，需要把这套接口做成通用化。
+--          以及整船升级，这又应该是一个独立接口」
+-- ---------------------------------------------------------------------------
+print("[mounts] block-type atoms (generic) + shipUpgrade")
+
+do
+    -- 解析：原名 / 大小写 / 数字 都要认；不存在的名字必须报错 ✓
+    local v1, n1 = Mounts.resolveBlockType("Hull", BlockType)
+    local v2, n2 = Mounts.resolveBlockType("hull", BlockType)
+    local v3, n3 = Mounts.resolveBlockType(tostring(BlockType.Hull), BlockType)
+    local v4, _, e4 = Mounts.resolveBlockType("NoSuchBlock", BlockType)
+    check("blockType 解析：Hull / hull / 数字 都 = Hull",
+        v1 == BlockType.Hull and v2 == BlockType.Hull and v3 == BlockType.Hull
+        and n1 == "Hull" and n2 == "Hull" and n3 == "Hull",
+        tostring(v1) .. "/" .. tostring(v2) .. "/" .. tostring(v3))
+    check("blockType 解析：不存在的类型必须报错", v4 == nil and e4 ~= nil, e4)
+
+    local ship = freshWorld()
+    local beforePlan = ship:getFullPlanCopy()
+    local beforeMoney = player.money
+
+    local q = Cli.blockQuoteRpc(player, "TestShip", "Hull", TARGET)
+    check("blockQuote：只数 Hull（2 块），不是整船 6 块",
+        q.ok == true and q.blockCount == 2 and q.totalBlockCount == 6,
+        tostring(q.blockCount) .. "/" .. tostring(q.totalBlockCount))
+    check("blockQuote：byType 只有 Hull ×2",
+        #(q.byType or {}) == 1 and q.byType[1].blockTypeId == BlockType.Hull
+        and q.byType[1].blocks == 2,
+        q.byType and q.byType[1] and (tostring(q.byType[1].blockType) .. "x" .. tostring(q.byType[1].blocks)))
+    check("blockQuote：材料分布只统计选中块（Iron 2）",
+        q.distribution[1].blocks == 2 and q.distribution[2].blocks == 0
+        and q.distribution[3].blocks == 0 and q.distribution[4].blocks == 0,
+        q.distribution[1].blocks)
+    check("blockQuote：要升 2 块、报价 = 原版差价公式",
+        q.needUpgrade == 2 and q.quote.resources[4] == 20 and q.quote.money == 150,
+        tostring(q.needUpgrade) .. "/" .. tostring(q.quote.resources[4]) .. "/" .. tostring(q.quote.money))
+    check("blockQuote：只读（pay/move=0，船和钱都没变）",
+        q.readOnly == true and player.payCalls == 0 and ship.moveCalls == 0
+        and player.money == beforeMoney
+        and ship:getFullPlanCopy():getBlock(0).material.value == beforePlan:getBlock(0).material.value,
+        tostring(player.payCalls) .. "/" .. tostring(ship.moveCalls))
+
+    local bad = Cli.blockQuoteRpc(player, "TestShip", "NoSuchBlock", TARGET)
+    check("blockQuote：未知 blockType → stage=blockType，不乱报价",
+        bad.ok == false and bad.stage == "blockType", tostring(bad.stage))
+end
+
+do
+    local ship = freshWorld()
+    local preview = Cli.blockUpgradeRpc(player, "TestShip", "Hull", TARGET, false)
+    check("blockUpgrade 无 confirm → preview，executed=false",
+        preview.stage == "preview" and preview.executed == false,
+        tostring(preview.stage) .. "/" .. tostring(preview.executed))
+    check("blockUpgrade 无 confirm → 不扣钱 / 不写船",
+        player.payCalls == 0 and ship.moveCalls == 0)
+
+    local result = Cli.blockUpgradeRpc(player, "TestShip", "Hull", TARGET, true)
+    check("blockUpgrade confirm=true → applied / verified=2 / wrong=0",
+        result.executed == true and result.ok == true
+        and result.verified == 2 and result.wrong == 0,
+        tostring(result.stage) .. "/" .. tostring(result.verified) .. "/" .. tostring(result.wrong))
+    check("blockUpgrade confirm=true → 扣一次钱 / 写回一次",
+        player.payCalls == 1 and ship.moveCalls == 1)
+    local after = ship:getFullPlanCopy()
+    check("blockUpgrade：Hull #0/#20 变成 Trinium",
+        after:getBlock(0).material.value == TARGET
+        and after:getBlock(20).material.value == TARGET)
+    check("blockUpgrade：炮塔底座材料一点没动",
+        after:getBlock(5).material.value == 1 and after:getBlock(9).material.value == 0
+        and after:getBlock(12).material.value == 4 and after:getBlock(31).material.value == 2)
+    check("blockUpgrade：形状/炮塔/档案字段都在",
+        result.shape ~= nil and result.shape.blocksKept == true
+        and result.turrets ~= nil and result.databaseSynced == true)
+end
+
+do
+    local ship = freshWorld()
+    local preview = Cli.shipUpgradeRpc(player, "TestShip", TARGET, false)
+    check("shipUpgrade 无 confirm → preview，不扣钱 / 不写船",
+        preview.stage == "preview" and preview.executed == false
+        and player.payCalls == 0 and ship.moveCalls == 0,
+        tostring(preview.stage))
+    check("shipUpgrade 无 confirm → note 明说没改",
+        preview.note ~= nil)
+
+    local result = Cli.shipUpgradeRpc(player, "TestShip", TARGET, true)
+    check("shipUpgrade confirm=true → applied / verified=5 / wrong=0",
+        result.executed == true and result.ok == true
+        and result.verified == 5 and result.wrong == 0,
+        tostring(result.stage) .. "/" .. tostring(result.verified) .. "/" .. tostring(result.wrong))
+    check("shipUpgrade confirm=true → 扣一次钱 / 写回一次",
+        player.payCalls == 1 and ship.moveCalls == 1)
+    local after = ship:getFullPlanCopy()
+    check("shipUpgrade：所有低于 Trinium 的块都升了（Xanion #12 不降级）",
+        after:getBlock(0).material.value == TARGET
+        and after:getBlock(5).material.value == TARGET
+        and after:getBlock(9).material.value == TARGET
+        and after:getBlock(20).material.value == TARGET
+        and after:getBlock(31).material.value == TARGET
+        and after:getBlock(12).material.value == 4)
+    check("shipUpgrade：scope=all / selectedCount 是全船",
+        result.scope == "all" and result.selectedCount == 6,
+        tostring(result.scope) .. "/" .. tostring(result.selectedCount))
+end
+
+-- ---------------------------------------------------------------------------
 
 print("")
 if failures == 0 then
