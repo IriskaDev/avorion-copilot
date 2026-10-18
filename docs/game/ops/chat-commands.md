@@ -1,27 +1,67 @@
-# `/copilot` 聊天命令速查（含炮塔底座材料升级）
+# `/copilot` 聊天命令速查（★ **已退役**，2026-10-18）
 
+> ## ★★★ 已退役：不要再用 `/copilot ...`
+>
+> **2026-10-18 起，聊天命令层整层退役** ✓✓（主人原话：「`/copilot` 那套我认为没必要维护了，
+> 我反正不用，你用起来也不方便」）：
+>
+> * 主人**不用**任何 `/copilot ...` 子命令 ✓；
+> * 决策者（DSH 侧）**敲不进游戏聊天** ✗ → 聊天层对双方都没有入口价值 ✗；
+> * 现在 `/copilot` **仍然注册着**（引擎要求那个文件存在 ✓），但任何子命令都只回一句
+>   「已退役，请用面板 / RPC」✓ —— 实现在 `data/scripts/lib/copilot/cli.lua` 末尾
+>   （`CopilotCli.execute` ✓）。
+>
+> **★ 别删底层能力**：`CopilotCli` 里被 **RPC**（`data/scripts/net/link_in.lua`）与
+> **面板**（`data/scripts/player/ui/panel.lua`）调用的函数**一个都没动** ✓✓
+> —— 退役的只是**聊天入口** ✓。
+>
+> **替代入口对照（旧命令 → 现在怎么做）**
+>
+> | 旧聊天命令 | 现在怎么做 |
+> |---|---|
+> | `on` / `off` | 面板的 Enable / Disable 按钮（`panel.lua:590` `setEnabled`） |
+> | `explore on|off` | 面板的自动跃迁勾选框（`panel.lua:608` `setExplore`） |
+> | `status` | 面板状态行（`panel.lua:520` `refresh`）+ `fleet_query {what:"list"}` / `{what:"ship"}` |
+> | `ops` | `fleet_query {what:"ship", ship}`（能力卡）+ `{what:"list"}`（名单快照） |
+> | `goal ...` | `fleet_query {what:"setGoal", ship, text?, options?}`（RPC，`link_in.lua:5608`） |
+> | `mounts ...` | 面板「Turret base materials...」按钮，或 RPC `mountQuote` / `mountUpgrade` / `shipQuote` / `blockQuote` / `blockUpgrade` / `shipUpgrade`（§2.6 ✓） |
+> | `mountprobe` / `mountsetter` / `mountrebuild` / `probe` | 开发探针：用 `native\harness\` 或重载存档，不再有聊天入口 |
+> | `reload` | ★ **没有替代** —— 改代码现在只能**重载存档或重启游戏**（见 §0 第 2 条） |
+> | `netstop` / `netstart` | ★ **保持停用**：2026-10-17 两次真机实测会把 net 链搞成「只发不收」✗ |
+>
+> 下面的正文是**历史留档**（2026-10-17/18 的真机用法与证据）✓ —— 里面的
+> `/copilot ...` 一律按"已退役"读，等价入口看上表 ✓。
+>
 > 上级索引：[`AGENTS.md`](../../../AGENTS.md) · 游戏侧主题表：[`../README.md`](../README.md)。
-> 全部子命令的**实现只有一个地方**：`data/scripts/lib/copilot/cli.lua`
-> （入口 `data/scripts/commands/copilot.lua` 是引擎要求的薄壳，改命令请改 cli.lua）。
-> 本文只写**怎么用**；每条结论的机制/证据见各自的调研文档（§7 有索引）。
+> 实现仍在 `data/scripts/lib/copilot/cli.lua`（聊天分发器已退役，`CopilotCli.*` 能力函数保留 ✓）；
+> 引擎薄壳 `data/scripts/commands/copilot.lua` 不可改名 ✓。
+> 本文只写**当时怎么用**；每条结论的机制/证据见各自的调研文档（§7 有索引）。
 
-## 0. 三条铁律（先看）
+## 0. 三条铁律（先看；第 2、3 条已按退役更新）
 
 1. **命令只在服务端执行**：`execute(sender, …)` 里 `Player(sender)` 拿到玩家对象；
    所以命令能碰 plan / 资源 / 船档案（`data/scripts/commands/copilot.lua:19-38`）。
-2. **改代码怎么生效**：`cli.lua` / `mounts.lua` 在 `RELOADABLE` 里 → `/copilot reload` 即生效；
-   **`net/*` 链在另一个 VM** → 改它**必须重载存档或重启游戏**（主菜单 → 继续 → 按空格 ✓）；
-   ★ **不要**用 `/copilot netstop` + `/copilot netstart` ✗（2026-10-17 真机两次实测：会变成"只发不收"，
-   详见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) §末 ✓）；
+2. **改代码怎么生效（2026-10-18 起）**：`/copilot reload` **也退役了** ✗ →
+   **重载存档或重启游戏** ✓（主菜单 → 继续 → 按空格 ✓）。
+   RPC 侧的 `reload` 只是个 stub（`link_in.lua:5642` 只置 `reloadRequested`，没有消费者 ✗），
+   别指望它 ✓。
+   ★ **不要**用 `/copilot netstop` + `/copilot netstart` ✗（已停用；2026-10-17 真机两次实测：
+   会变成"只发不收"，详见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) §末 ✓）。
    **客户端面板 UI**（`player/ui/panel.lua` 的界面部分）**不归 reload 管**，要重启一次游戏。
-3. **写操作只有两种**：`/copilot mounts … confirm`（扣资源/信用点）与 `on/off/explore/net*`（改状态）。
-   其余命令都是只读；没加 `confirm` 时 `mounts` **一个字节都不写**（有离线断言锁着）。
-   ★ 现在**还有第三个写入入口**：RPC 的 `fleet_query {what:"mountUpgrade", …, confirm:true}` ——
-   它和 `mounts … confirm` **共用同一套函数** ✓，没有 `confirm:true` 同样只报价（§2.6 ✓）。
+3. **写操作只有两种（现在都走 RPC / 面板）**：
+   面板的 Apply upgrade 按钮，或 RPC `mountUpgrade` / `blockUpgrade` / `shipUpgrade` 且
+   `confirm:true`（扣资源/信用点）；以及面板的开启/关闭/自动跃迁开关（改状态）。
+   其余查询都是只读；没有 `confirm` 时升级接口**一个字节都不写**（有离线断言锁着）。
+   ★ 它们与已退役的 `mounts … confirm` **共用同一套函数** ✓，不是另写一套（§2.6 ✓）。
 
-## 1. 总表
 
-| 子命令 | 作用 | 写？ | 例子 | 实现（cli.lua） |
+## 1. 总表（★ 历史：这些子命令**全部已退役** ✓）
+
+> ⚠️ 下表是退役前的形态，**不要再照着敲** ✗。最后一列的行号是 2026-10-17 的坐标，
+> 分发器退役后**已经漂移**，查实现请看 `cli.lua` 里对应的 `mountsQuoteRpc` / `mountsUpgradeRpc` /
+> `shipQuoteRpc` / `blockQuoteRpc` / `blockUpgradeRpc` / `shipUpgradeRpc` / `mountsPanelState` ✓。
+
+| 子命令 | 作用 | 写？ | 例子 | 实现（cli.lua，行号已过时） |
 |---|---|---|---|---|
 | `on` / `start` / `enable` | 把**正在开的船**交给 AI 自动驾驶 | 写（状态） | `/copilot on` | `:1261` |
 | `off` / `stop` / `disable` | 收回控制 | 写（状态） | `/copilot off` | `:1267` |
@@ -41,9 +81,9 @@
 > 省略船名 = **你正在开的那艘**；写船名 = **本星区里你自己的船**（跨星区没有实体，会报
 > `not in this sector`）。
 
-## 2. ★ 炮塔底座材料升级（`/copilot mounts`）
+## 2. ★ 炮塔底座材料升级（历史：`/copilot mounts` → 现在走 §2.6 的 RPC / §4 的面板）
 
-### 2.1 三条命令（先列表 → 再预览 → 再确认）
+### 2.1 三条命令（★ 已退役；这里只留作对照：列表 → 预览 → 确认）
 
 ```
 /copilot mounts list [船]                  # 只读：每个底座一行（索引 / 当前材料 / 方块类型）
@@ -142,12 +182,12 @@
 
 > 生效方式：`mountQuote/mountUpgrade/shipQuote/blockQuote/blockUpgrade/shipUpgrade` 的分发在
 > `data/scripts/net/link_in.lua`（net VM）→ **必须重载存档或重启游戏**才出现 ✓
-> （`/copilot reload` 只覆盖命令 VM，见 §0 第 2 条）。
+> （`/copilot reload` **已退役**，见 §0 第 2 条 ✗✓）。
 > 插件工具的参数（`material` / `confirm` / `blockType`）在 `plugin/dsh/src/tools.ts` → 插件重建后随 DSH 重启加载。
 
-## 3. 只读探针（排障用，别当功能用）
+## 3. 只读探针（历史：聊天入口已退役 ✗）
 
-| 命令 | 回答什么 | 会不会动船 |
+| 命令（已退役） | 回答什么 | 会不会动船 |
 |---|---|---|
 | `mountprobe [船]` | Q1 底座清单/类型；Q2 炮塔样式 key 是否对得上；Q3 在**副本**上写 `block.material` 是否回写；Q4 资源值增量；Q5 索引是否稳定 | **绝不**（只读副本） |
 | `mountsetter [船]` | 逐个试 `setBlockMaterial` / `setMaterialAt` / `block:setMaterial` … 哪些存在、哪些写进 plan | **绝不** |
@@ -155,6 +195,9 @@
 
 > 这三个探针就是 2026-10-17 把“路径 A（逐块改 material）”**证伪**、并验证“路径 B（整船重建）”
 > 的工具；原始输出见 [`mount-material-upgrade.md`](mount-material-upgrade.md) 附录 C。
+> ★ 2026-10-18 起它们没有聊天入口了 ✗ —— 函数还留在 `cli.lua` 里（未删 ✓），
+> 真要再跑只能在 `native\harness\` 里调，或者临时加回一行分发 ✓。
+
 
 ## 4. 面板（图形入口）
 
@@ -166,19 +209,22 @@
 ```
 
 * 面板里的选船/选料/报价全部由**服务端**算好写进 player value，客户端只负责显示。
-* ★ **面板代码属于客户端 UI**：装好/改好之后**要重启一次游戏**才会出现按钮；
-  命令层不受影响（`/copilot reload` 即可）。证据见 `mount-material-upgrade.md` 附录 C.5。
+* ★ **面板代码属于客户端 UI**：装好/改好之后**要重启一次游戏**才会出现按钮。
+  ★ 2026-10-18 起聊天命令层已退役，**没有"命令层"这条捷径了** —— 面板与 RPC 的改动都要
+  重载存档 / 重启游戏才生效 ✓（证据见 `mount-material-upgrade.md` 附录 C.5 ✓）。
 
-## 5. 给其他 agent 的实操顺序（照着做就行）
+## 5. ★ 给其他 agent 的实操顺序（2026-10-18 起：走 RPC，不要再敲聊天）
 
-1. `/copilot mounts list <船>` —— 先看底座现状 + 现有资源。
-2. `/copilot mounts <材料> <船>` —— 拿报价；**确认主人给的预算/材料够**。
-3. 把报价与“要花什么”报给主人，得到明确同意后：
-4. `/copilot mounts <材料> <船> confirm`。
-5. 读结果行：`Verified`（几块成功）/ `Shape`（块数与包围盒）/ `Turrets`（实物与样式）/
-   `Ship database plan synced`；任何一项不是 `0 not upgraded` / `unchanged` / `yes` 都要如实报告。
+1. `fleet_query {what:"mountQuote", ship, material}` 或 `{what:"shipQuote", ship, material}`
+   —— 先看底座/整船现状 + 成本 + `affordable` / `shortfall`（和已退役的 `mounts list` / `mounts <料>` 同源 ✓）。
+2. 把报价与“要花什么”报给主人；**确认主人给的预算/材料够**，并拿到明确同意。
+3. 得到同意后才 `fleet_query {what:"mountUpgrade", ship, material, confirm:true}`
+   （整船 = `shipUpgrade`，只升某类方块 = `blockUpgrade` + `blockType`）。
+4. 读结果字段：`verified` / `wrong`（几块成功）/ `shape{blocksBefore,blocksAfter,boundingBoxKept}` /
+   `turrets{before,after,designsRestored}` / `databaseSynced` /
+   `lines[]`；任何一项不是 `wrong=0` / `blockingBoxKept` / `databaseSynced=true` 都要如实报告。
 
-**不要**：不看报价直接 confirm；对不属于玩家的船执行（命令会拒绝）；把探针命令当功能用。
+**不要**：不看报价直接 `confirm`；对不属于玩家的船执行（接口会拒绝）；把已退役的聊天命令当功能用。
 
 ## 6. 常见问题
 
@@ -190,7 +236,8 @@
 | `You were damaged recently.` | 刚挨过打，等一会（原版 RecentlyDamaged） |
 | `Nothing to do: all N turret base(s) are already …` | 目标材料不比现状高；换更高的材料 |
 | `Not enough …` | 资源/信用点不够；先补 |
-| `/copilot` 打出中文乱码/没反应 | 游戏聊天框的输入法在拦 Enter（先切英文再敲）——这是操作环境问题，不是命令问题 |
+| 敲 `/copilot ...` 只回「已退役」 | **这是预期行为** ✓（2026-10-18 聊天命令层退役）；改用面板或 RPC，见顶部对照表 |
+| ~~`/copilot` 打出中文乱码/没反应~~ | 历史问题（输入法拦 Enter），**已无意义** —— 命令层退役了 |
 
 ## 7. 证据索引（每条都能追到 file:line）
 
@@ -201,4 +248,5 @@
 | 收费公式 / 执行条件 | 同上 §5 与 §2.3；`repairdock.lua:993-1041`、`Functions.html:903-906` |
 | 真机两次实测（Lady 空闲船 / Raven 驾驶中带炮塔） | 同上附录 C.4 / C.4b |
 | reload 边界（命令层 vs 客户端面板） | 同上附录 C.5；[`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) |
-| 离线断言（39 条） | [`native/harness/_mounts_selftest.lua`](../../../native/harness/_mounts_selftest.lua) |
+| ★ 聊天命令层退役（只留能力函数给 RPC/面板） | `data/scripts/lib/copilot/cli.lua` 末尾「聊天命令层已退役」一节 ✓；`data/scripts/commands/copilot.lua` 头注释 ✓ |
+| 离线断言（100 条） | [`native/harness/_mounts_selftest.lua`](../../../native/harness/_mounts_selftest.lua) |

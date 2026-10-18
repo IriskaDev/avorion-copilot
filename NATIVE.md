@@ -48,7 +48,8 @@ stage=2  lua_gettop(L)=3        ← 压入字符串后再读，+1，精确
 
 1. 编 DLL（见下），放到 `Avorion\bin\copilotprobe.dll`
 2. `moddata/copilot/abi_stage.txt` 写 `1`（只读）或 `2`（写栈）
-3. 游戏内跑 `/copilot probe`
+3. ★ 2026-10-18 起 `/copilot probe` **已退役** ✗（聊天命令层整层退役）——
+   要用 ABI 自检，在 `native\harness\` 里用 `lua.exe` 调，或在 `cli.lua` 里临时加回一行分发 ✓
 4. 读 `moddata/copilot/native_abi_proof.txt` 与客户端日志
 
 **若游戏大版本更新后失效**，先跑 stage 1：`gettop` 不再是 2 就说明 Lua 的构建配置变了。
@@ -294,7 +295,8 @@ $lsrc = "D:\...\mods\copilot\native\lua-src\lua-5.2.1\src"   # ★ 与宿主 exe
 ```
 
 若将来游戏升级 Lua，判断方法很直接：**建一张表、用整数键和字符串键各放一个值，
-看宿主能否读到**（`/copilot probe` 的 A0/A1 就是干这个的）。读不到就是布局又变了。
+看宿主能否读到**（原 `/copilot probe` 的 A0/A1 就是干这个的；聊天入口已退役 ✗，
+函数仍在 `lib/copilot/cli.lua` ✓）**。读不到就是布局又变了。
 
 **查历史版本结构体**：`native\lua-src\` 下已下载 5.2.0 / 5.2.1 / 5.2.2 / 5.2.3 / 5.2.4 的源码，
 直接对比 `src\lobject.h` 即可。
@@ -311,8 +313,9 @@ Lua 侧 API：`copilot.readfile(path) -> text | nil, err`
 static int l_readfile(lua_State *L) { ... fopen/fseek/fread ... lua_pushlstring ... }
 ```
 
-配合 `/copilot reload`（见 AGENTS.md），开发时改逻辑无需重启游戏。
-注意：**重编 DLL 本身仍然必须重启**——`keep_resident` 让 DLL 在进程里卸不掉。
+原设计配合 `/copilot reload`（2026-10-18 起该入口**已退役** ✗ → 现在改代码一律
+**重载存档 / 重启游戏** ✓，见 [`docs/dev/hot-reload-and-vm-boundaries.md`](docs/dev/hot-reload-and-vm-boundaries.md) 顶部）。
+`readfile` 本身仍是可复用的能力 ✓；注意：**重编 DLL 本身仍然必须重启**——`keep_resident` 让 DLL 在进程里卸不掉。
 ---
 
 ## ★★★ 原生模块不能碰 Lua 分配（2026-10-15 —— 第二次崩溃的根因）

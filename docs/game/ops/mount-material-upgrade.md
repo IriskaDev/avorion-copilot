@@ -1,5 +1,18 @@
 # 炮塔底座材料升级（可行性调研）
 
+> ## ★ 2026-10-18：`/copilot` 聊天命令层已退役 ✗
+>
+> 本文是 2026-10-17/18 的**调研 + 真机证据**，里面大量出现 `/copilot mounts ...` 的**当时用法** ✓
+> —— 那些命令**现在敲了只会回「已退役」** ✗。现在的入口只有两个：
+>
+> * **面板**：右上角 Copilot 圆按钮 → 主面板底部「Turret base materials...」（§10 的表 ✓）
+> * **RPC 原子**：`fleet_query {what:"mountQuote"|"mountUpgrade"|"shipQuote"|"blockQuote"|
+>   "blockUpgrade"|"shipUpgrade"}`（[`chat-commands.md`](chat-commands.md) §2.6 ✓）
+>   —— 与已退役的命令**共用同一套函数** ✓，不是另写一套。
+>
+> ★ 改代码现在一律**重载存档 / 重启游戏**才生效（`/copilot reload` 也退役了 ✗）。
+> 附录 C 里的探针原始输出、命令回显**保持原样** ✓（它们是证据，不是教程）。
+
 > 上一级：[`../README.md`](../README.md) · 引用约定见 [`../README.md`](../README.md) §4。
 > 原版根：`data/scripts/`；API 文档根：`Documentation/`。本文每条结论都带 `file:line`。
 > 调研日期：2026-10-18（Avorion 2.5.13，Documentation 页脚 `Work in Progress. Documentation of Avorion Version: 2.5.13 0417ab29738c`）。
@@ -242,14 +255,14 @@ mod 走的是**脚本层直接改 plan**，等价于"船坞改装"，但**不经
 → **确认判断：本功能不能做成"设计界面的一键按钮"** ✗。
 （建造模式的"应用设计/改装"入口在引擎里，Lua 只能通过 `Entity:setPlan` 事后改，不能在界面里插按钮。）
 
-### 6.2 现实落点：聊天命令 + 自绘 HUD 按钮（本项目已有先例 ✓✓）
+### 6.2 现实落点：聊天命令 + 自绘 HUD 按钮（本项目已有先例 ✓✓；★ 聊天命令 2026-10-18 已退役 ✗）
 
 | 落点 | 先例 / 依据 |
 |---|---|
-| **聊天命令** `/copilot mounts <材料>` | `data/scripts/commands/copilot.lua`（薄入口）+ `data/scripts/lib/copilot/cli.lua`（命令中枢全在这里，且在 `RELOADABLE` 里 `cli.lua:317`）→ 加子命令**不用重启游戏**，`/copilot reload` 即生效（`cli.lua:12`） |
+| ~~**聊天命令** `/copilot mounts <材料>`~~ | ★ **已退役** ✗ —— 但当年的实现仍在 `data/scripts/lib/copilot/cli.lua`（能力函数 ✓，被 RPC/面板复用 ✓）。**RPC**：`fleet_query {what:"mountQuote"/"mountUpgrade"}`（`cli.lua` 顶部那条注释 ✓） |
 | **自绘 HUD 圆按钮 / 面板** | `data/scripts/player/ui/panel.lua`（`Hud():createContainer` + `createRoundButton`，见 `lua-vfs-and-engine.md` §"本 mod 的做法"）；必须 `Hud():addMouseShowingWindow(窗口)`，原版用例 `data/scripts/player/missions/receivecaptainmission.lua:318` |
 
-**最小方案（命令层）**：
+**当时的"最小方案（命令层）"——已退役，保留作历史**：
 
 ```
 /copilot mounts list            -- 列出本船炮塔底座：方块索引 / 当前材料 / 是否装了炮塔
@@ -257,7 +270,7 @@ mod 走的是**脚本层直接改 plan**，等价于"船坞改装"，但**不经
 /copilot mounts <材料> confirm  -- 真正执行
 ```
 
-UI 层（后续）：面板里加一列"底座材料"，每个底座一行 + 一个材料下拉 + 一个"应用"按钮。
+UI 层 = 现在的**主入口** ✓：面板里选船 → 选材料（每档带价格）→ Apply 两次确认 ✓。
 
 ---
 
@@ -354,10 +367,11 @@ plan:addBlock(position, size, parentIndex, -1, color, Material(m), orientation, 
 **★ 2026-10-17 最新状态（实测之后）**：主人已经拍板（材料玩家选 / 收费 / 执行条件照抄原版修船坞 /
 **绝不自动** / 所有底座含空底座 / 面板按钮），并且**已实现**：
 
-| 入口 | 用法 |
+| 入口 | 用法（★ 聊天那行已退役 ✗，保留作历史） |
 |---|---|
-| 聊天 | `/copilot mounts list [船]` 列底座；`/copilot mounts <材料> [船]` **只报价**；加 `confirm` 才执行 |
-| 面板 | 右上角 Copilot 圆按钮 → 主面板底部「Turret base materials...」→ 选船 → 选材料（每档有价格）→ Apply **两次确认** |
+| 聊天（**已退役**） | `/copilot mounts list [船]` 列底座；`/copilot mounts <材料> [船]` **只报价**；加 `confirm` 才执行 → 现在等价于 `mountQuote` / `mountUpgrade` ✓ |
+| 面板（**主入口** ✓） | 右上角 Copilot 圆按钮 → 主面板底部「Turret base materials...」→ 选船 → 选材料（每档有价格）→ Apply **两次确认** |
+| RPC（决策者用 ✓） | `fleet_query {what:"mountQuote"\|"mountUpgrade"\|"shipQuote"\|"blockQuote"\|"blockUpgrade"\|"shipUpgrade"}`（[`chat-commands.md`](chat-commands.md) §2.6 ✓） |
 
 * 执行条件 = `canRepairInCurrentEnvironment(ship)`（`Functions.html:903-906`，原版修船坞
   `repairdock.lua:681-691` 用的同一个闸门：EnemiesNearby / UnderAttack / RecentlyDamaged）。
@@ -578,17 +592,19 @@ Ship database plan synced: yes
 
 
 
-### C.5 要不要重启游戏？—— 命令不用，**面板 UI 要一次**
+### C.5 要不要重启游戏？——（★ 2026-10-18 起）**两者都要了** ✗✓
 
-| 改什么 | 生效方式 |
-|---|---|
-| `lib/copilot/mounts.lua`、`lib/copilot/cli.lua`（命令层逻辑） | **`/copilot reload` 即可** ✓（实测 `Copilot reload: 9 ok, 0 failed`，随后命令立刻给出新报价） |
-| `player/ui/panel.lua` 的**客户端界面** | ✗ 要**重启一次游戏** |
+| 改什么 | 当年（有热重载） | 现在 |
+|---|---|---|
+| `lib/copilot/mounts.lua`、`lib/copilot/cli.lua`（逻辑） | **`/copilot reload` 即可** ✓（实测 `Copilot reload: 9 ok, 0 failed`） | `/copilot reload` **已退役** ✗ → **重载存档 / 重启游戏** ✓（`lib/` 被 `include` 缓存，`RPC` 在 net VM 里也一样 ✓） |
+| `player/ui/panel.lua` 的**客户端界面** | ✗ 要**重启一次游戏** | 同上 ✓ |
 
-实测依据：`/copilot reload` 之后主面板照常打开，但**没有**新增的
+实测依据（2026-10-17 的记录）：`/copilot reload` 之后主面板照常打开，但**没有**新增的
 「Turret base materials...」按钮 —— 命令脚本的 VM 与服务端玩家脚本的 VM 在服务端进程里，
 **客户端进程的 UI 代码不在它的覆盖范围**；而且面板是 `builtOnce` 只建一次的
 （`UIElement` 没有销毁 API，不能重建 ✗）。
+→ 结论没变，只是现在连"命令层那条捷径"也没了 ✓（见
+[`chat-commands.md`](chat-commands.md) 顶部「已退役」横幅 ✓）。
 
 顺带修掉的**既有问题**：`panel.lua` 顶层原来有 `"Idle"%_t` 这样的写法，`load()` 重执行时
 `%_t` 是**取模运算** → 每次 reload 都报

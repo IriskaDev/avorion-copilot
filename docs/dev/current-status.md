@@ -4,7 +4,9 @@
 
 ## 已实现
 
-- 实体级自动驾驶：`player/ai/autopilot.lua` 大脑 + `/copilot on|off|explore|status` 命令。
+- 实体级自动驾驶：`player/ai/autopilot.lua` 大脑 + **面板开关**（`/copilot on|off|explore|status`
+  聊天命令**已于 2026-10-18 退役** ✗ —— 现在只有面板按钮 / 勾选框 ✓；替代入口对照见
+  [`game/ops/chat-commands.md`](../game/ops/chat-commands.md) 顶部表 ✓）。
 - 自绘 HUD 按钮 + Copilot 面板（`player/ui/panel.lua`，经 `player/init.lua` 追加挂载）：
   显示开关状态与 AI 实时状态，可切换自动驾驶与自动跃迁；**并按勾选框列出全舰船，指定哪些船
   允许 AI 自动运营**（存在 `player:setValue("copilot_auto_ships", ...)`，换行分隔字符串）。
@@ -19,7 +21,11 @@
 - 决策层调研已完成，见 [`LLM-OPS.md`](../../LLM-OPS.md)（Mine/Salvage/Trade/Travel 的决策变量、
   `calculateAttackProbability` 风险模型、已知陷阱）。
 - 原生 TCP 通道（已打通并实测）：细节见 [`build-and-native.md`](build-and-native.md)。
-- 热重载：改逻辑不用重启游戏，`/copilot reload`（见 [`hot-reload-and-vm-boundaries.md`](hot-reload-and-vm-boundaries.md)）。
+- ~~热重载：改逻辑不用重启游戏，`/copilot reload`~~ → **2026-10-18 起入口退役** ✗：
+  改代码一律**重载存档 / 重启游戏**（见 [`hot-reload-and-vm-boundaries.md`](hot-reload-and-vm-boundaries.md) 顶部 ✓）。
+- **聊天命令层已退役**（2026-10-18 ✓）：`/copilot` 仍注册、但任何子命令只回「已退役，请用面板 / RPC」✓。
+  底层能力（`CopilotCli.*`）与 RPC / 面板入口**未动** ✓；历史用法见
+  [`game/ops/chat-commands.md`](../game/ops/chat-commands.md) ✓。
 
 ## 未完成
 
@@ -31,7 +37,8 @@
   只作用于**面板名单里的船**，绝不碰 `player.craft`。
   - 承载层用**原生 TCP**（`copilot.connect/send/recv_json`），不再走文件桥
   - 决策来源可以是 DSH 侧（见下），也可以先做规则版
-  - 待办：先跑 `/copilot ops` 把 `ShipDatabaseEntry` 上**真正可用**的成员问出来
+  - 待办：先用 `fleet_query {what:"ship", ship}` 的能力卡 + `{what:"sectorFacts"}`
+    把 `ShipDatabaseEntry` 上**真正可用**的成员问出来（原 `/copilot ops` 已退役 ✗）
     （它的文档文件是 0 字节，且部分方法挂在实体上，混用会崩）
 - **DSH 桥接插件**：就住在本仓库的 `plugin/dsh/` ✓（布局见 [`install-and-deploy.md`](install-and-deploy.md) ✓）。
   ★ 2026-10-17 起它的角色是**游戏 RPC 接口提供者** ✓：把游戏暴露成工具 ✓ + 把空闲船的决策任务
@@ -40,5 +47,6 @@
   ⚠️ **部署坑（实测）**见 [`install-and-deploy.md`](install-and-deploy.md)。
 - **面板体验**：底部提示文字还没说清「主开关只管玩家自己那条船、名单只管非玩家船」；
   每船的「目标」是点击行循环切换（`ListBoxEx` 放不下下拉框）。
-- **收尾**：临时诊断 `/copilot probe` 与 DLL 里的 `numprobe`/逐步日志待清理；
+- **收尾**：临时诊断（原 `/copilot probe`，聊天入口已退役 ✗；函数还在 `cli.lua` ✓）
+  与 DLL 里的 `numprobe`/逐步日志待清理；
   `native\` 下的实验残留（`copilotprobe.dll`、`abi_stage.txt` 等）待清理。

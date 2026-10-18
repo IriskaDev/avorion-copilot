@@ -115,8 +115,9 @@
    （卡片其余内容照旧 ✓，说明是**代码没生效**，不是字段读不到 ✗）；
 2. 退出到主菜单再进存档（或重启游戏）→ 同一查询就带上新字段 ✓✓。
 
-→ 规矩：**改 `net/*` 或它们 include 的 lib = 必须重开一局**；`/copilot reload` 只覆盖命令 VM
-（见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) ✓）。
+→ 规矩：**改 `net/*` 或它们 include 的 lib = 必须重开一局（重载存档 / 重启游戏）** ✓；
+`/copilot reload` 当年只覆盖命令 VM，而且**该命令已于 2026-10-18 退役** ✗
+（见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) 顶部 ✓）。
 
 ## 6. 想**写**类别怎么办（现在没做）
 

@@ -3,8 +3,10 @@
 > 上一级：[`index.md`](../mechanics/index.md) · 命令机制见 [`../mechanics/commands.md`](../mechanics/commands.md) ·
 > 引用约定见 [`../README.md`](../README.md) §4。
 > ★ 本文件只讲**怎么用工具拿事实**；怎么决策是你的事。
-> ★ 玩家侧的**聊天命令**（`/copilot mounts …`、`/copilot reload` 等）不看工具，看
-> [`chat-commands.md`](chat-commands.md)（含炮塔底座材料升级的完整用法与安全边界）。
+> ★ 玩家侧现在只有**面板**（`player/ui/panel.lua`）；决策者侧只有**本文的 RPC 工具**
+> （`fleet_query` / `fleet_order` / …）✓。
+> ★ **`/copilot` 聊天命令层已于 2026-10-18 退役** ✗ → 历史留档见 [`chat-commands.md`](chat-commands.md)
+> （含炮塔底座材料升级与安全边界；里面的命令一律按"已退役"读 ✓）。
 
 ## 1. 工具总表
 

@@ -2,21 +2,41 @@
 
 > 上一级：仓库根 [`AGENTS.md`](../../AGENTS.md)（工程入口索引）。
 
-## 热重载命令
+## ★★★ 2026-10-18：热重载**入口已退役** ✗✓
 
-改逻辑**不需要重启游戏**。游戏里执行：
+主人原话：「`/copilot` 那套我认为没必要维护了，我反正不用，你用起来也不方便」✓
+→ 聊天命令层整层退役（`data/scripts/lib/copilot/cli.lua` 末尾 ✓），**`/copilot reload` 也随之没有入口** ✗。
+
+| 想做的事 | 现在怎么做 |
+|---|---|
+| 改 `lib/copilot/*.lua`、`player/ai/*.lua`、`player/ui/panel.lua`、`commands/copilot.lua` | **重载存档**（主菜单 → 继续 → 按空格）或重启游戏 ✓ |
+| 改 `net/*.lua`（RPC 链） | 同上 ✓（本来就只能这样 ✓） |
+| 改 `bin\copilot.dll` | **必须重启游戏** ✓（`keep_resident` 故意卸不掉 ✓） |
+
+* RPC 那条 `reload` **不是替代品** ✗：`net/link_in.lua:5642` 只置 `self.reloadRequested = true`，
+  而全仓**没有任何消费者**读它（可 grep 验证）→ 它是个 stub ✓。
+* 实现代码**保留着没删** ✓：`cli.lua` 的 `RELOADABLE` / `copilotReloadOne` / `self.reload`
+  都还在（可逆 ✓）；要恢复热重载 = 在 `CopilotCli.execute` 里加回一个 `reload` 分支 ✓。
+
+> 下面几节是**历史机制记录**：说明它当年怎么工作、以及为什么 `net/*` 从来重载不了。
+> 「按名字查表 / 别写 `Xn = {}`」这两条**仍然有效** ✓（它们本来就是引擎约定，不是 reload 专属 ✓）。
+
+## 热重载命令（历史：曾经是这样）
+
+改逻辑**曾经**不需要重启游戏。游戏里执行：
 
 ```
-/copilot reload          重载全部逻辑脚本
-/copilot reload ops      只重载路径里含 "ops" 的
+/copilot reload          重载全部逻辑脚本      ← 2026-10-18 起已退役 ✗
+/copilot reload ops      只重载路径里含 "ops" 的  ← 同上 ✗
 ```
 
 能重载，是因为我们的脚本都是**命名空间脚本**：文件体只是定义
 （`CopilotUI = {}` + `function CopilotUI.xxx()`），而引擎调用时是**按名字查表**，
 不是抓函数指针。所以「重新执行一遍文件体」= 换掉全部函数实现，下次调用即生效。
 
-实现：`commands/copilot.lua` 里的 `copilotReload` → 用原生 `copilot.readfile` 读源码
+实现：`lib/copilot/cli.lua` 的 `self.reload` → 用原生 `copilot.readfile` 读源码
 （游戏侧 `io.open` 被限制在 `moddata/`，读不到 mod 目录）→ `load` → `pcall`。
+（旧文档写的是 `commands/copilot.lua` 里的 `copilotReload`，2026-10-16 重构后搬到了 cli.lua ✓）
 
 ## ⚠️ 新增命名空间脚本必须写 `Xn = Xn or {}`
 
@@ -28,12 +48,12 @@ CopilotUI = {}                 -- 错：重载即失忆，守卫和引用全丢
 写 `= {}` 会让重载后「只做一次」的守卫失效，于是**重复建面板、重复建 HUD 按钮、
 重复注册每帧回调**（`UIElement` 没有销毁 API，只有 show/hide，多出来的收不回去）。
 
-## 可重载范围
+## 可重载范围（历史；现在**全都不行**了 ✗ —— 一律重载存档 ✓）
 
-| 文件 | 可重载 |
+| 文件 | 当年可重载 |
 |---|---|
 | `player/ai/autopilot.lua`、`player/ai/ops.lua`、`player/ui/panel.lua`、`commands/copilot.lua` | ✅ |
-| ★ **`lib/copilot/cli.lua`**（命令中枢，2026-10-16 重构后逻辑在这里 ✓） | ✅ **必须在表里** ✗✓ |
+| ★ **`lib/copilot/cli.lua`**（2026-10-16 重构后逻辑在这里 ✓） | ✅ **必须在表里** ✗✓ |
 | `player/init.lua`（**入口**，VFS 追加到原版） | ❌ 只在玩家加载时执行一次 |
 | `bin\copilot.dll` | ❌ 重编后仍需重启（且 `keep_resident` 让它故意卸不掉） |
 
@@ -71,10 +91,12 @@ pcall(chunk)
 > **抓函数指针** ✗ —— 与「引擎按名字查表」相反，重载后会留下旧指针 ✓。
 > 现已改成 `bind(name)` 间接调用，**每次现场查表** ✓✓。
 
-## ★★★ `/copilot netstop` + `netstart` 并**不**可靠（2026-10-17 真机两次实测 ✗✓）
+## ★★★ `/copilot netstop` + `netstart` 并**不**可靠（2026-10-17 真机两次实测 ✗✓；2026-10-18 已停用）
 
 改 `net/*.lua` 之后，除了重启游戏，还有一种被文档推荐过的做法：
 `/copilot netstop` → `/copilot netstart`。**今晚实测它会把链搞成“只发不收”** ✗：
+（★ 这两个子命令**已经停用** ✗ —— `cli.lua` 的 `execute` 现在只回一句
+「保持停用，请重载存档」✓；下面留作证据。）
 
 | 步骤 | 真机现象（clientlog / rpc_trace.log） |
 |---|---|
@@ -90,7 +112,8 @@ pcall(chunk)
   `新连接到达 → 关掉旧连接` / `连接断开 ✗ 将自动重连` 反复 ✓（`rpc_dsh.log` 可见）。
 
 **结论（改口）**：
-* **改 `net/*.lua` 的唯一可靠生效方式 = 重新载入存档或重启游戏** ✓✓
+* **改任何 `*.lua` 的唯一可靠生效方式 = 重新载入存档或重启游戏** ✓✓
   （真机实测：主菜单 → 继续 → 按空格，链立刻恢复，`dispatch` 正常 ✓）。
-* `netstop/netstart` **不要再当常规手段** ✗ —— 只在“反正要重载存档/重启”的时候当清理用 ✓。
+* `netstop/netstart` **已停用** ✗ —— 2026-10-17 实测它会把链搞成"只发不收"，
+  而且它连自己的缓存清理都只作用在**命令 VM** 里（见上 ✓）。
 

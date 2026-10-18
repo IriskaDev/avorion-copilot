@@ -119,7 +119,8 @@ node test/actions-consistency.mjs / prompt-file.mjs /
      rendezvous.mjs / rendezvous-flow.mjs / memory-demo.mjs             → 全 exit 0
 ```
 
-**改到 `net/*.lua` → 必须重启游戏** ✓（`/copilot reload` 覆盖不到 ✓ VM 边界 ✓）；
+**改任何 `*.lua`（含 `net/*.lua`）→ 必须重载存档或重启游戏** ✓（`/copilot reload`
+已于 2026-10-18 退役 ✗ —— 现在没有热重载入口了 ✓）；
 **改到插件 → 必须重启 DSH** ✓。两者都由主人做 ✗ agent 不许自行重启 ✓。
 
 ---

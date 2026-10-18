@@ -150,9 +150,14 @@
 
 ---
 
-## 6. `/copilot mounts` 会不会把炮摘掉？（结论：不会留成 0）
+## 6. 炮塔底座材料升级会不会把炮摘掉？（结论：不会留成 0）
 
-`/copilot mounts`（炮塔底座材料升级）走 `setMovePlan`，**确实**会重建整船 plan
+> ★ 2026-10-18：`/copilot mounts` 聊天命令**已退役** ✗ —— 现在走面板的
+> 「Turret base materials...」按钮，或 RPC `mountUpgrade` / `blockUpgrade` / `shipUpgrade`
+> （**同一套函数** ✓，见 [`../ops/chat-commands.md`](../ops/chat-commands.md) 顶部对照表）。
+> 下面讲的写回/救炮逻辑对三者都成立 ✓。
+
+炮塔底座材料升级走 `setMovePlan`，**确实**会重建整船 plan
 （[`../ops/mount-material-upgrade.md`](../ops/mount-material-upgrade.md)）✓。它的补救链是：
 
 1. 升级前先存炮塔样式：`TurretBases(ship):getDesigns()`，退路
@@ -189,7 +194,8 @@
 * `turretCount=0`（且 `turretCountKnown=true`）→ 炮**真的**没了 ✗
 * `turretCount>0` 但 `canFight=false` → 只可能是鱼雷/舰载机口径未知（看 `probe`）✓
 
-> 改 `card.lua` **要重启游戏** ✗✓：它是 lib（`local M = {}` + `return M`），
-> `/copilot reload` 只重执行文件体、换不到已被 `include` 缓存的那个表 ✓；
-> `/copilot netstop` + `/copilot netstart` 会重挂整条 net 链（理论上是新 VM ✓），
-> 但**本会话没有在真机上验证成功**（盲打字没把命令送进聊天栏 ✗）→ 按**重启**算 ✓。
+> 改 `card.lua` **要重载存档或重启游戏** ✗✓：它是 lib（`local M = {}` + `return M`），
+> `include` 会缓存它 ✓；而 `/copilot reload`（2026-10-18 已退役 ✗）当年也只重执行文件体、
+> 换不到已被缓存的那个表 ✓。
+> `/copilot netstop` + `/copilot netstart` 同样**已停用** ✗（实测会把链搞成"只发不收"：
+> [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) §末 ✓）。

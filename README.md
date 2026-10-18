@@ -2,7 +2,7 @@
 
 陪你一起玩、帮你经营的 AI 副驾驶。分两层：
 
-1. **实体级自动驾驶**（已完成）：`/copilot on` 接管你当前开的船，在星区内自动接敌 / 采矿 / 打捞 / 跃迁。
+1. **实体级自动驾驶**（已完成）：面板上的开关接管你当前开的船，在星区内自动接敌 / 采矿 / 打捞 / 跃迁。
 2. **战略级运营**（规划中，见 `TODO.md`）：读全局数据做决策，自动经营舰队与经济，**不抢你正在开的船**。
 
 ## 它是怎么工作的（mod 机制）
@@ -12,7 +12,8 @@ Avorion 的 mod 是「虚拟文件系统（VFS）覆盖」：mod 放在 `%AppDat
 
 本 mod 主要是**新增**脚本：
 
-- `data/scripts/commands/copilot.lua` —— 自动注册为聊天命令 `/copilot`
+- `data/scripts/commands/copilot.lua` —— 注册聊天命令 `/copilot`（★ 2026-10-18 起**已退役**：
+  命令还在，但只回一句「已退役，请用面板 / RPC」，见下文「使用」）
 - `data/scripts/player/ai/autopilot.lua` —— 挂在玩家身上的 AI 大脑（服务端每 2 秒跑一次）
 - `data/scripts/player/ui/panel.lua` —— 右上角图标栏里的副驾驶面板
 
@@ -56,15 +57,12 @@ New-Item -ItemType Junction `
 
 游戏内右上角那排圆形按钮里有一个 **Copilot**（机器人图标），点开就是副驾驶面板：
 显示自动驾驶开关状态、AI 当前在做什么、以及「清空星区后自动跃迁」开关。
+炮塔底座材料升级也在面板里（主面板底部「Turret base materials...」）。
 
-也可以直接用聊天命令：
-
-```
-/copilot on          启动自动驾驶（接管你当前开的这艘船）
-/copilot off         关闭
-/copilot status      查看状态
-/copilot explore on  允许清空星区后自动跃迁（默认关闭）
-```
+★ **聊天命令 `/copilot ...` 已于 2026-10-18 退役** ✗ —— 敲它只会回一句
+「已退役，请用面板 / RPC」。开关、自动跃迁、炮塔底座升级全部在**面板**上；
+决策者（DSH 侧）走 **RPC 原子**（`fleet_query {what:"mountQuote"|"mountUpgrade"|...}`）。
+历史用法留档在 [docs/game/ops/chat-commands.md](docs/game/ops/chat-commands.md)（顶部有退役说明）。
 
 ## 行为与限制
 
@@ -88,13 +86,13 @@ mods/copilot/
     └── player/ui/panel.lua       # 右上角的 Copilot 面板
 ```
 
-## 开发用命令
+## 开发用（改代码怎么生效）
 
 ```
-/copilot reload          重载逻辑脚本（改代码后不用重启游戏）
-/copilot reload <名字>   只重载路径里含该名字的脚本
-/copilot ops             列出被指定为自动运营的船及其事实
+改 .lua 之后 → 重载存档（主菜单 → 继续 → 按空格）或重启游戏
+改 bin\copilot.dll → 必须重启游戏
 ```
 
-热重载的原理、可重载范围、以及**新增脚本必须写 `Xn = Xn or {}`** 这条约定，
-见 [docs/dev/hot-reload-and-vm-boundaries.md](docs/dev/hot-reload-and-vm-boundaries.md)。
+> ★ 原来的 `/copilot reload` 热重载**已随聊天命令层一起退役** ✗（2026-10-18）。
+> 机制与 VM 边界的完整记录见
+> [docs/dev/hot-reload-and-vm-boundaries.md](docs/dev/hot-reload-and-vm-boundaries.md)。
