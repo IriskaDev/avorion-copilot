@@ -159,6 +159,12 @@ opts = {}) {
             'verified, normalized, piloted, busy, migrated{goalText,goalOptions,designated,config}, evidence{...}}: ' +
             'this mod ALSO migrates its own name-keyed state (goal / panel roster / per-ship config) in the SAME ' +
             'call, so the ship does not silently lose its goal. After a rename, use the NEW name in every later call. ' +
+            '★★ what=systemsFacts is the PURE-FACT subsystem read (nothing is written): numSockets / maxSockets / ' +
+            'numUpgrades (vanilla ShipSystem fields; numUpgrades = OCCUPIED sockets, NOT the number of sockets), ' +
+            'processingPower (entry:getPlan().processingPower), equipped:[{name, script, rarity, rarityValue}] ' +
+            '(entry:getSystems(), readable for ships far away) plus the known flags socketsKnown / systemsKnown / ' +
+            'processingPowerKnown. ★ For a ship that is NOT in your current sector there is no entity, so ' +
+            'socketsKnown=false + socketsUnknownReason -- that is UNKNOWN, never 0 sockets; equipped is still read. ' +
             'The old plan queries -- tradePlan | minePlan | ' +
             'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
             'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
@@ -169,11 +175,11 @@ opts = {}) {
             what: {
                 type: 'string',
                 required: true,
-                description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | renameShip | orderStatus | dossier | ' +
+                description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | renameShip | systemsFacts | orderStatus | dossier | ' +
                     'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
             },
             orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
-            ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/shipQuote/blockQuote/blockUpgrade/shipUpgrade/renameShip (renameShip: the CURRENT name)/any plan' },
+            ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/shipQuote/blockQuote/blockUpgrade/shipUpgrade/renameShip (renameShip: the CURRENT name)/systemsFacts/any plan' },
             name: { type: 'string', description: 'renameShip only: the NEW ship name (a plain string, NOT a Format). Trimmed; must be non-empty, free of control characters and \'|\', valid UTF-8, and <= 32 characters (this mod\'s guard). No confirm needed -- it is a reversible one-field write.' },
             x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
             y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
