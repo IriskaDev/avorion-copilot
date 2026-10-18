@@ -239,6 +239,62 @@ B.6 的 `mountQuote/mountUpgrade` 只认**炮塔底座那 4 个 BlockType** ✗�
 - **安全闸门**：`blockUpgrade/shipUpgrade` 的 `confirm=true`（缺省只报价 ✗✓）；
   `blockQuote/shipQuote` 全程只读，且返回前断言源 plan 快照/块数/材料指纹不变 ✓。
 
+### B.9 ★ 改船名：`renameShip { ship, name }`（2026-10-18 加 ✓✓）
+
+**为什么加**（主人原话：「给正在开的船改个名字 —— 来，直接改下」✓）：
+本 mod 原来**没有改名原子** ✗（`list`/`ship`/`predict`… 全是只读 ✓）→ 连"改个名字"都做不到 ✗✓。
+
+- **原版 API 的确切用法（实读 `Documentation/`，不猜 ✓）**：
+  - **唯一入口 = `ShipDatabaseEntry:setNewName(string newName)`** ✓ ——
+    `Documentation/ShipDatabaseEntry [Server].html:1118`。
+    类头注释（`:240`）原话：「Changing the name … of the instance will make the instance point to another
+    faction/ship … **It will not change the … name of the ship.** If you want to change the ship's name,
+    use the **setNewName()** function.」→ **不许**写 `entry.name = "..."` ✗（那只是让句柄指向另一条记录 ✓）。
+  - **只在服务端** ✓：[Client] 版成员表里没有 `setNewName` ✗（`ShipDatabaseEntry [Client].html:162`
+    只在注释里提到它 ✓）。RPC 泵本身就是服务端脚本（`net/net.lua:92 updateServer` ✓）。
+  - **`setName` 不存在** ✗：`Entity` 上只有 `setTitle`（`Entity.html:3059`），`ShipDatabaseEntry` 上只有
+    `setNewName` ✓ —— 所以"改船名"和"改称号"是**两件事** ✓（本原子不碰 title ✗）。
+  - **名字是纯字符串，不是 Format** ✓：`ShipDatabaseEntry [Server].html:2155` `property string name`
+    → **不需要 `translated()`** ✓（`getTitle()` 才返回 `Format`，`:9366` ✓）。
+  - 原版脚本里**零处**调用 `setNewName`（`data/scripts` 全仓 grep = 0 ✓）→ 改名 UI 在引擎里；
+    它自己的注释写明唯一被 UI 拦的场景：`simulation.lua:85-89`（**还有 yield 时**改名有问题 ✓）。
+- **入参**：`{ what="renameShip", ship=<现名>, name=<新名> }` —— `name` 是**纯字符串** ✓。
+- **校验（全部在写入之前 ✓，一个字节都不会落库 ✗）**：
+  - 空 / 只有空格 → `NAME_EMPTY`；
+  - 换行 / 制表符 / 回车 / DEL / NUL 等控制字符 → `NAME_BAD_CHARACTER`；
+  - 非法 UTF-8 → `NAME_BAD_UTF8`；含本 mod 配置分隔符 `|` → `NAME_BAD_CHARACTER`
+    （`copilot_auto_cfg` 的 `船名|auto|target` 会被切坏 ✓）；
+  - **超过 32 字符** → `NAME_TOO_LONG`。★ **32 是本 mod 的护栏，不是原版常量** ✗✓ ——
+    原版没有 Lua 侧长度常量可抄（`data/scripts` 里 0 处长度检查 ✓），所以错误串里**明说**这一点 ✓。
+    长度按**字符**数（UTF-8 code point）算，不是字节 ✓（32 个汉字 = 96 字节，仍然通过 ✓）。
+  - 首尾**半角空格**会被削掉并回显 `normalized=true` ✓（`\t\n` 不削 → 走控制字符拒绝 ✓）。
+- **拒绝但不动数据库**：`NO_SUCH_SHIP`（旧名查不到）、`SHIP_BUSY`（`InBackground` —— 后台命令按
+  `command.shipName` 记 `simulation.lua:1043`，改名会把在跑的命令变孤儿 ✗✓ ⇒ 先 `recall` 再改 ✓）、
+  `NAME_TAKEN`（船名是数据库主键 ✓，重名会让 `ShipDatabaseEntry(faction, name)` 歧义 ✗✓；
+  判据同时看 `getShipNames()` 与 `entry:exists()` ✓，两条都明确为假才放行 ✓）。
+- **★ 没有 `confirm` 参数** ✗ —— 判断依据：① **可逆的小操作**（改回原名即 undo；不动信用点/资源/
+  方块计划 ✓）；② 所有失败都在写入之前拒 ✓ → 不存在半执行 ✓；③ 对比 `mountUpgrade`/`blockUpgrade`/
+  `shipUpgrade` 要 confirm ✓，因为它们**花资源、改方块计划**（不可逆成本高）✓。
+- **★ 本 mod 自己的按名状态会在同一次调用里迁移** ✓✓（否则船的「目标」会静默丢失 ✗）：
+  `copilot_goal_<船名>` / `copilot_goal_kind_<船名>`（`lib/copilot/goal.lua:30-38`）、
+  面板名单 `copilot_auto_ships`（`lib/copilot/card.lua:123-131`）、每船配置 `copilot_auto_cfg`
+  （`card.lua:133-145`）→ 逐项写进 `migrated{goalText,goalOptions,designated,config}` ✓。
+  迁移 **pcall 逐步做**，失败只报告不回滚已经成功的改名 ✓（`migrated.errors[]`）。
+- **出参**：`{ ok, requestedShip, ship(=改完之后的规范名), oldName, newName, changed, databaseSynced,
+  verified, normalized, piloted, busy, migrated{...}, evidence{...}, limits{...}, note, warning? }`
+  - `databaseSynced` = 新名能查到且 `entry.name` 对得上 ✓；
+  - `verified` = 再加上**指纹未变**（`numBlocks` + `getTitle().text` 前后相同 → 还是同一条船 ✓）、
+    玩家名单已换、旧名已不再是有效条目 ✓；
+  - 驾驶中的船：`piloted=true`；若 `player.craft` 这个**活实体**还报旧名 → `warning` 说明
+    （数据库已改，星区重载后刷新 ✓）。
+- **实现（没有第二套逻辑 ✓）**：`lib/copilot/rename.lua`（校验 `:118` / 主体 `:349` / 护栏 `:58`）
+  + `link_in.lua` 分支 `:482` 与 `CopilotLinkIn.renameShip :520`（只做参数解析与 JSON 化 ✓）
+  + `card.lua` 的 `WHATS :1107` / `RENAME_SHIP_PARAMS :1257`。
+- **测试**：`native/harness/_rename_selftest.lua`（**76 项断言** ✓：空/换行/超长/非法 UTF-8/`|`/
+  重名/忙船/不存在/同名/中文名/迁移/引擎异常/caps 自我声明 ✓）。
+- **生效方式**：改的是 `net/*.lua` + `lib/*.lua` → **重载存档或重启游戏** ✓（`netstop/netstart` 已停用 ✗，
+  见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) ✓）。
+
 ### B.4 执行类（已达标，保持原子）
 
 | 原子 | 入参 | 出参 | 错误 |
