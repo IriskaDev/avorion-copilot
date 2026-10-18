@@ -329,6 +329,198 @@ function self.quote(oldResources, newResources, oldMoney, newMoney, durabilityPe
     return { resources = res, money = money, resourceUnits = total }
 end
 
+-- ---------------------------------------------------------------------------
+-- ★★ 整船材料升级**只读报价**（2026-10-18 加 ✓✓，主人：「能不能整船直升，你就看看行不行，
+--    不要动，整船太贵了」）
+--
+-- ★ 成本口径 = 原版修船坞的**材料差价 × 方块体积/价值** ✓：
+--     · 资源：repairdock.lua:993-1017（`getRepairResourcesCost`）——
+--       `value = templateValue[i] - craftValue[i]; value += templateValue[i]*(1-dur);
+--        value /= 2; value *= RepairDock.getRepairFactor()`（:1006-1013）
+--     · 信用点：repairdock.lua:1019-1037（`getRepairMoneyCostAndTax`，:1026-1037）
+--   旧 plan / 新 plan 的 `getUndamagedResourceValue()`（BlockPlan.html:534）与
+--   `getUndamagedMoneyValue()`（:523）都是**按材料分类的块体积/价值之和** ✓，
+--   所以两次快照的差 = 每块（新材质值 − 旧材质值）× 该块体积/价值 ✓，
+--   与"炮座报价 × 块数"没有任何关系 ✗✓。
+--   ★ 数值计算**直接复用 self.diffResources / self.diffMoney / self.quote** ✓
+--     （与 mountQuote 同一套函数，绝不另写公式 ✗）。
+--
+-- ★ 只读保证：只读 plan（getBlock 返回副本 ✓）、只往**新建的 plan** 上 addBlock ✓；
+--   返回前断言源 plan 的快照 / 块数 / 材料指纹一点没变 ✓。
+-- ---------------------------------------------------------------------------
+
+-- 全船材料分布 + 指纹（只读）。distribution 7 档全给（含 0 块的档 ✓）。
+function self.materialDistribution(plan)
+    local indices, err = self.blockIndices(plan)
+    if indices == nil then return nil, err end
+
+    local counts = {}
+    for i = 0, self.NUM_MATERIALS - 1 do counts[i] = 0 end
+
+    local total, unknown, sum = 0, 0, 0
+    for _, index in ipairs(indices) do
+        total = total + 1
+        local value = nil
+        local ok, block = pcall(function() return plan:getBlock(index) end)
+        if ok and block ~= nil then
+            local okM, material = pcall(function() return block.material end)
+            if okM and material ~= nil then value = tonumber(material.value) end
+        end
+        if value ~= nil and counts[value] ~= nil then
+            counts[value] = counts[value] + 1
+            sum = sum + value
+        else
+            unknown = unknown + 1
+        end
+    end
+
+    local distribution = {}
+    for i = 0, self.NUM_MATERIALS - 1 do
+        distribution[#distribution + 1] = {
+            material = self.materialName(i),
+            materialValue = i,
+            blocks = counts[i],
+        }
+    end
+    return {
+        blockCount = total,
+        distribution = distribution,
+        unknownMaterialBlocks = unknown,
+        materialSum = sum,      -- 指纹：块数 + 材料值之和都不变 = 源 plan 没被写 ✓
+    }, nil
+end
+
+-- 整船报价（只读）。返回纯事实表；**绝不 pay / setMovePlan / 写任何块** ✓。
+--   blockCount / distribution / needUpgrade / quote{resources,money,resourceUnits}
+--   nothingToDo / assertions{...} / errors[]
+function self.shipQuote(plan, targetValue, materialCtor, opts)
+    opts = opts or {}
+    materialCtor = materialCtor or Material
+
+    local out = {
+        ok = false,
+        stage = "start",
+        blockCount = nil,
+        distribution = {},
+        unknownMaterialBlocks = nil,
+        needUpgrade = nil,
+        nothingToDo = false,
+        quote = nil,
+        rebuild = nil,
+        assertions = {
+            sourcePlanUnchanged = false,
+            blockCountKept = false,
+            materialFingerprintKept = false,
+            newPlanDistinct = false,
+            upgradedCountMatched = false,
+        },
+        errors = {},
+    }
+    local function fail(stage, text)
+        out.stage = stage
+        out.errors[#out.errors + 1] = tostring(text)
+        return out
+    end
+
+    local target = tonumber(targetValue)
+    if target == nil or target ~= math.floor(target) or target < 0
+        or target >= self.NUM_MATERIALS then
+        return fail("material", "Invalid target material: " .. tostring(targetValue))
+    end
+    out.targetMaterial = target
+    out.targetMaterialName = self.materialName(target)
+
+    local before, distErr = self.materialDistribution(plan)
+    if before == nil then return fail("plan", distErr) end
+    out.blockCount = before.blockCount
+    out.distribution = before.distribution
+    out.unknownMaterialBlocks = before.unknownMaterialBlocks
+
+    local need = 0
+    for _, entry in ipairs(before.distribution) do
+        if entry.materialValue < target then need = need + entry.blocks end
+    end
+    out.needUpgrade = need
+
+    local oldRes, oldMoney = self.snapshot(plan)
+    if oldRes == nil or oldMoney == nil then return fail("plan", "plan snapshot failed") end
+
+    -- 已经全达到目标：报价为 0，且仍然做只读断言 ✓
+    if need == 0 then
+        out.nothingToDo = true
+        out.quote = self.quote(oldRes, oldRes, oldMoney, oldMoney, 1.0)
+        local after, afterErr = self.materialDistribution(plan)
+        out.assertions.sourcePlanUnchanged = (after ~= nil)
+        out.assertions.blockCountKept = (after ~= nil and after.blockCount == before.blockCount)
+        out.assertions.materialFingerprintKept = (after ~= nil
+            and after.materialSum == before.materialSum
+            and after.unknownMaterialBlocks == before.unknownMaterialBlocks)
+        out.assertions.newPlanDistinct = true       -- 没有重建新 plan（无事可做）
+        out.assertions.upgradedCountMatched = true
+        if afterErr ~= nil or not out.assertions.sourcePlanUnchanged
+            or not out.assertions.blockCountKept
+            or not out.assertions.materialFingerprintKept then
+            return fail("assert", "read-only assertion failed (nothing-to-do): "
+                .. tostring(afterErr or "fingerprint changed"))
+        end
+        out.ok = true
+        out.stage = "nothing"
+        return out
+    end
+
+    -- ★ 只在**新建的 plan** 上改；源 plan 只被读 ✓
+    local newPlan, rebuild = self.rebuildPlan(plan, nil, target, materialCtor,
+        { upgradeAll = true })
+    if rebuild ~= nil then
+        out.rebuild = {
+            added = rebuild.added,
+            upgraded = rebuild.upgraded,
+            failed = rebuild.failed,
+            parentFallback = rebuild.parentFallback,
+        }
+    end
+    if newPlan == nil or rebuild == nil or rebuild.failed > 0 then
+        return fail("plan", "Plan rebuild failed - nothing was written to any ship."
+            .. " added=" .. tostring(rebuild and rebuild.added)
+            .. " failed=" .. tostring(rebuild and rebuild.failed))
+    end
+
+    out.assertions.newPlanDistinct = (newPlan ~= plan)
+    out.assertions.upgradedCountMatched = (rebuild.upgraded == need)
+
+    local newRes, newMoney = self.snapshot(newPlan)
+    if newRes == nil or newMoney == nil then return fail("plan", "new plan snapshot failed") end
+    out.quote = self.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
+
+    -- 只读断言：源 plan 的快照 / 块数 / 材料指纹必须与算之前**逐项相同** ✓
+    local after, afterErr = self.materialDistribution(plan)
+    local afterRes, afterMoney = self.snapshot(plan)
+    local resKept = (afterRes ~= nil and afterMoney ~= nil)
+    if resKept then
+        for i = 1, self.NUM_MATERIALS do
+            if tonumber(afterRes[i]) ~= tonumber(oldRes[i]) then resKept = false end
+        end
+        if tonumber(afterMoney) ~= tonumber(oldMoney) then resKept = false end
+    end
+    out.assertions.sourcePlanUnchanged = resKept
+    out.assertions.blockCountKept = (after ~= nil and after.blockCount == before.blockCount)
+    out.assertions.materialFingerprintKept = (after ~= nil
+        and after.materialSum == before.materialSum
+        and after.unknownMaterialBlocks == before.unknownMaterialBlocks)
+
+    if afterErr ~= nil or not out.assertions.sourcePlanUnchanged
+        or not out.assertions.blockCountKept
+        or not out.assertions.materialFingerprintKept
+        or not out.assertions.newPlanDistinct
+        or not out.assertions.upgradedCountMatched then
+        return fail("assert", "read-only assertion failed: " .. tostring(afterErr or "plan changed"))
+    end
+
+    out.ok = true
+    out.stage = "quoted"
+    return out
+end
+
 function self.formatResources(resources)
     local parts = {}
     for i = 1, #(resources or {}) do
@@ -406,6 +598,9 @@ end
 --
 -- ⚠ 仍未验证（只有真机能回答）：setMovePlan 之后炮塔（按 block index 挂载）是否还在。
 --   实现里已准备：样式表按 box.center 重映射 ✓ + 炮塔数量掉了就 restoreTurrets ✓。
+--
+-- ★ opts.upgradeAll = true：**整船**（所有低于 target 的块，不只炮塔底座 ✓）——
+--   2026-10-18 为只读整船报价 shipQuote 加 ✓；缺省 false = 旧的"只换底座"行为不变 ✓。
 function self.rebuildPlan(oldPlan, baseSet, targetValue, materialCtor, opts)
     opts = opts or {}
     materialCtor = materialCtor or Material
@@ -484,7 +679,9 @@ function self.rebuildPlan(oldPlan, baseSet, targetValue, materialCtor, opts)
         local typeValue = self.blockType(oldPlan, oldIndex, block)
         local isBase = self.isTurretBase(typeValue, baseSet)
         local current = material ~= nil and tonumber(material.value) or nil
-        local upgraded = isBase and current ~= nil and current < targetValue
+        -- ★ upgradeAll：整船口径（blockIndex 不参与判据 ✓）；否则仍只换炮塔底座 ✓
+        local selected = (opts.upgradeAll == true) or isBase
+        local upgraded = selected and current ~= nil and current < targetValue
         if upgraded then material = materialCtor(targetValue) end
 
         local okBox, box = pcall(function() return block.box end)

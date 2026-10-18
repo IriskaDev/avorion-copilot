@@ -423,7 +423,8 @@ function self.mountsShortfall(player, quote)
     local needMoney = tonumber(quote.money) or 0
     if money < needMoney then
         out[#out + 1] = {
-            kind = "credits", need = needMoney, have = money, missing = needMoney - money,
+            kind = "credits", material = "credits",
+            need = needMoney, have = money, missing = needMoney - money,
         }
     end
 
@@ -824,6 +825,7 @@ function self.mountsQuoteRpc(player, shipName, targetValue)
 
     local fact = {
         what = "mountQuote",
+        liveProbe = "cli-live-check-20261018",
         ship = prep.shipName,
         targetMaterial = prep.targetMaterial,
         targetMaterialName = prep.targetName,
@@ -862,6 +864,131 @@ function self.mountsQuoteRpc(player, shipName, targetValue)
         fact.piloted = true
         fact.warning = "船上有人驾驶 ✓ 允许（真机验证 ddd792a ✓）—— 写回瞬间可能有极短卡顿 ✓"
     end
+    return fact
+end
+
+-- ★★ RPC 原子：shipQuote —— **整船**材料升级的**只读报价**（纯事实，一个字节都不改 ✓）
+--
+-- 主人 2026-10-18 原话：「能不能整船直升，你就看看行不行，不要动，整船太贵了」
+--   → 只算、不动船 ✓；**没有 confirm 参数**（这里根本没有执行入口 ✗）。
+--
+-- ★ 复用（绝不另写一套 ✗）：
+--   · 取船：self.mountsResolveShip（与 mountQuote 同一个 ✓）
+--   · 找块/报价：lib/copilot/mounts.lua 的 photoDistribution / rebuildPlan / quote ✓
+--   · 够不够/缺什么：self.mountsCanPay + self.mountsShortfall（与 mountQuote 同一套 ✓）
+-- ★ 成本口径 = 原版修船坞 repairdock.lua:993-1017 / :1019-1037 —— 见 mounts.shipQuote 头上 ✓。
+--
+-- 返回（JSON 可序列化 ✓）：
+--   ship / targetMaterial / targetMaterialName / blockCount
+--   distribution[{material, materialValue, blocks}]   ← 全船每种材料几块 ✓
+--   needUpgrade / quote{resources[7], money, resourceUnits} / costs[{material, amount}]
+--   affordable / shortfall[{kind, material, need, have, missing}]
+--   nothingToDo / readOnly / changed=0 / assertions{...} / stage / lines[] / errors[]
+function self.shipQuoteRpc(player, shipName, targetValue)
+    local Mounts = include("copilot/mounts")
+    local fact = {
+        what = "shipQuote",
+        ok = false,
+        ship = nil,
+        targetMaterial = tonumber(targetValue),
+        targetMaterialName = nil,
+        blockCount = nil,
+        distribution = {},
+        unknownMaterialBlocks = nil,
+        needUpgrade = nil,
+        quote = nil,
+        costs = {},
+        affordable = false,
+        shortfall = {},
+        nothingToDo = false,
+        readOnly = true,
+        changed = 0,
+        assertions = {},
+        stage = "start",
+        lines = {},
+        errors = {},
+    }
+    local function line(text) fact.lines[#fact.lines + 1] = tostring(text) end
+
+    local target = tonumber(targetValue)
+    if target == nil or target ~= math.floor(target) or target < 0
+        or target >= Mounts.NUM_MATERIALS then
+        fact.stage = "material"
+        line("Invalid target material.")
+        return fact
+    end
+    fact.targetMaterial = target
+    fact.targetMaterialName = Mounts.materialName(target)
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then
+        fact.stage = "ship"
+        line(shipErr)
+        return fact
+    end
+    fact.ship = tostring(ship.name)
+
+    -- ★ 只拿副本：后面所有读取/重建都在副本上 ✓（真机实测 getBlock 返回副本 ✓）
+    local plan = ship:getFullPlanCopy()
+    if plan == nil then
+        fact.stage = "plan"
+        line("getFullPlanCopy failed.")
+        return fact
+    end
+
+    local q = Mounts.shipQuote(plan, target, Material)
+    fact.ok = q.ok == true
+    fact.blockCount = q.blockCount
+    fact.distribution = q.distribution or {}
+    fact.unknownMaterialBlocks = q.unknownMaterialBlocks
+    fact.needUpgrade = q.needUpgrade
+    fact.nothingToDo = q.nothingToDo == true
+    fact.stage = q.stage
+    fact.assertions = q.assertions or {}
+    fact.rebuild = q.rebuild
+    fact.errors = q.errors or {}
+    for _, text in ipairs(fact.errors) do line(text) end
+
+    if q.quote ~= nil then
+        fact.quote = q.quote
+        fact.resourceUnits = q.quote.resourceUnits
+        fact.credits = q.quote.money
+        -- 逐材料成本（只列 > 0 的档 ✓；与 mountQuote 的 costs[] 同形状 ✓）
+        for i = 1, #(q.quote.resources or {}) do
+            local amount = tonumber(q.quote.resources[i]) or 0
+            if amount > 0 then
+                fact.costs[#fact.costs + 1] = {
+                    materialIndex = i - 1,
+                    material = Mounts.materialName(i - 1),
+                    amount = amount,
+                }
+            end
+        end
+    end
+
+    if q.ok then
+        local affordable, payMsg, payArgs = self.mountsCanPay(player, q.quote)
+        fact.affordable = affordable and true or false
+        fact.payMessage = payMsg
+        fact.payArgs = payArgs
+        fact.shortfall = self.mountsShortfall(player, q.quote)
+
+        if fact.nothingToDo then
+            line("Nothing to do: all " .. tostring(fact.blockCount) .. " block(s) are already "
+                .. tostring(fact.targetMaterialName) .. " or better.")
+        else
+            line("Whole ship to " .. tostring(fact.targetMaterialName) .. ": "
+                .. tostring(fact.blockCount) .. " block(s), "
+                .. tostring(fact.needUpgrade) .. " to upgrade -> "
+                .. Mounts.formatResources(q.quote.resources) .. " + "
+                .. tostring(q.quote.money) .. " credits"
+                .. (fact.affordable and "." or " (NOT affordable)."))
+        end
+    end
+
+    -- ★ 只读自证：这里从未调用 pay / setMovePlan / ShipDatabaseEntry:setPlan ✓
+    fact.wroteShip = false
+    fact.paid = false
     return fact
 end
 

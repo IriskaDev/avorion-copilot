@@ -1100,6 +1100,7 @@ M.WHATS = {
     "tradeEvaluate",    -- ★★ 原子：多框 × 多商品 × 多本金 → 单位时间净利矩阵（只计算、不推荐 ✓ 2026-10-18 加 ✓）
     "mountQuote",       -- ★★ 原子：炮塔底座材料升级报价（纯事实、绝不改船 ✓ 2026-10-18 加 ✓）
     "mountUpgrade",     -- ★★ 原子：炮塔底座材料升级（**只有 confirm=true 才执行** ✓ 2026-10-18 加 ✓）
+    "shipQuote",        -- ★★ 原子：**整船**材料升级只读报价（纯事实、绝不改船 ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1196,6 +1197,20 @@ M.MOUNT_UPGRADE_PARAMS = {
     note = "执行结果与 CLI `/copilot mounts <material> <ship> confirm` **同结构** ✓：" ..
         "changed/verified/wrong/paid/shape/turrets/databaseSynced/lines ✓。" ..
         "★ 驾驶中的船允许升级（真机 `ddd792a` ✓），但写回瞬间可能极短卡顿 → 返回 warning ✓。",
+}
+-- ★★ 整船材料升级**只读报价**的参数（2026-10-18 加 ✓✓ —— 主人「能不能整船直升，你就看看
+--   行不行，不要动，整船太贵了」）
+--   ★ 没有 confirm 参数 ✗：这个原子**根本不执行**，只算、不动船 ✓。
+--   ★ 成本口径 = 原版修船坞的材料差价（repairdock.lua:993-1017）——
+--     复用 mounts.shipQuote → mounts.rebuildPlan(upgradeAll) + mounts.quote ✓。
+M.SHIP_QUOTE_PARAMS = {
+    ship = "string：必填 ✓（船名；必须是**本星区里你自己的船** ✓，跨星区没有实体 ✗）",
+    material = "string：必填 ✓ —— iron|titanium|naonite|trinium|xanion|ogonite|avorion 或 0-6（也认中文 ✓）",
+    note = "**整船**只读报价、**绝不改任何东西** ✓（不 pay / 不 setMovePlan / 不写船档案 ✗✓）：" ..
+        "blockCount + distribution[{material, materialValue, blocks}]（每种材料几块 ✓）+ " ..
+        "needUpgrade + quote{resources[7], money, resourceUnits} + costs[] + affordable + " ..
+        "shortfall[{kind, material, need, have, missing}] + nothingToDo + assertions（只读断言 ✓）。" ..
+        "★ 没有 confirm 参数；执行入口**不在**本原子里 ✗。",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",

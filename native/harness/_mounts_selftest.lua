@@ -576,6 +576,148 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- (k) ★ 整船只读报价：shipQuote（2026-10-18 加 ✓✓）
+--   主人：「能不能整船直升，你就看看行不行，不要动，整船太贵了」
+--   ★ 这里调的是 link_in 的 shipQuote 分支背后的**同一个函数** ✓（不另写一套 ✗）。
+--   ★ 成本用**独立实现**的原版公式对拍（repairdock.lua:993-1017 / :1019-1037），
+--     不是拿 Cli 自己的数去证明自己 ✓。
+-- ---------------------------------------------------------------------------
+print("[mounts] shipQuote (whole ship, read-only)")
+
+-- 独立对拍：完全按原版 repairdock.lua:1006-1013 / :1026-1037 算一遍。
+-- 假 plan 的价值函数（本文件 :152-172）：资源 = Σ volume×10×(material+1)，钱 = Σ volume×100×(material+1)。
+local function independentQuote(plan, target)
+    local oldBuckets, newBuckets = {}, {}
+    for i = 1, 7 do oldBuckets[i], newBuckets[i] = 0, 0 end
+    local oldMoney, newMoney = 0, 0
+    for _, block in ipairs(plan.blocks) do
+        local volume = block.box.size.x * block.box.size.y * block.box.size.z
+        local v = block.material.value
+        local nv = v
+        if v < target then nv = target end
+        oldBuckets[v + 1] = oldBuckets[v + 1] + volume * 10 * (v + 1)
+        newBuckets[nv + 1] = newBuckets[nv + 1] + volume * 10 * (nv + 1)
+        oldMoney = oldMoney + volume * 100 * (v + 1)
+        newMoney = newMoney + volume * 100 * (nv + 1)
+    end
+    local res = {}
+    for i = 1, 7 do
+        local value = newBuckets[i] - oldBuckets[i]
+        value = value / 2          -- repairdock.lua:1010
+        value = value * 0.5        -- repairdock.lua:1011 + :1138-1141
+        if value < 0 then value = 0 end
+        res[i] = value > 0 and math.ceil(value) or 0
+    end
+    local money = (newMoney - oldMoney) / 2 * 0.5   -- repairdock.lua:1026-1029 + :1032
+    if money < 0 then money = 0 end
+    return res, math.ceil(money)
+end
+
+local function countsOf(plan)
+    local counts = {}
+    for i = 0, 6 do counts[i] = 0 end
+    for _, block in ipairs(plan.blocks) do
+        counts[block.material.value] = counts[block.material.value] + 1
+    end
+    return counts
+end
+
+do
+    local ship = freshWorld()
+    local beforeMoney = player.money
+    local beforeRes = { player:getResources() }
+    local beforePlan = ship:getFullPlanCopy()
+    local beforeCounts = countsOf(beforePlan)
+    local beforeBlocks = #beforePlan.blocks
+
+    local q = Cli.shipQuoteRpc(player, "TestShip", TARGET)
+    local expectedRes, expectedMoney = independentQuote(beforePlan, TARGET)
+
+    check("shipQuote：纯事实、成功出价", q.ok == true and q.stage == "quoted",
+        tostring(q.stage))
+    check("shipQuote：全船方块数 6", q.blockCount == 6, q.blockCount)
+    check("shipQuote：材料分布 Iron3/Ti1/Nao1/Tri0/Xan1/Ogo0/Avo0",
+        q.distribution[1].blocks == 3 and q.distribution[2].blocks == 1
+        and q.distribution[3].blocks == 1 and q.distribution[4].blocks == 0
+        and q.distribution[5].blocks == 1 and q.distribution[6].blocks == 0
+        and q.distribution[7].blocks == 0,
+        table.concat({ q.distribution[1].blocks, q.distribution[2].blocks,
+            q.distribution[3].blocks, q.distribution[4].blocks,
+            q.distribution[5].blocks, q.distribution[6].blocks,
+            q.distribution[7].blocks }, "/"))
+    check("shipQuote：要升 5 块（★ hull 也算进去，不像 mountQuote 只数底座）",
+        q.needUpgrade == 5 and q.rebuild ~= nil and q.rebuild.upgraded == 5,
+        tostring(q.needUpgrade) .. "/" .. tostring(q.rebuild and q.rebuild.upgraded))
+    check("shipQuote：资源成本 = 原版差价公式（独立对拍）",
+        q.quote ~= nil and q.quote.resources[4] == expectedRes[4]
+        and q.quote.resources[4] == 50
+        and q.quote.resources[1] == 0 and q.quote.resources[2] == 0
+        and q.quote.resources[3] == 0 and q.quote.resources[5] == 0,
+        tostring(q.quote and q.quote.resources[4]) .. " vs " .. tostring(expectedRes[4]))
+    check("shipQuote：信用点 = 原版差价公式（独立对拍）",
+        q.quote ~= nil and q.quote.money == expectedMoney and q.quote.money == 300,
+        tostring(q.quote and q.quote.money) .. " vs " .. tostring(expectedMoney))
+    check("shipQuote：够付 → affordable=true 且无缺口",
+        q.affordable == true and #(q.shortfall or {}) == 0,
+        tostring(q.affordable) .. "/" .. tostring(#(q.shortfall or {})))
+    check("shipQuote：readOnly 自证 + 一个字节都没改（pay/move 都是 0）",
+        q.readOnly == true and q.wroteShip == false and q.paid == false
+        and player.payCalls == 0 and ship.moveCalls == 0,
+        tostring(player.payCalls) .. "/" .. tostring(ship.moveCalls))
+    check("shipQuote：玩家钱/资源没变",
+        player.money == beforeMoney
+        and (function()
+            local now = { player:getResources() }
+            for i = 1, 7 do if now[i] ~= beforeRes[i] then return false end end
+            return true
+        end)())
+    local afterPlan = ship:getFullPlanCopy()
+    local afterCounts = countsOf(afterPlan)
+    local countsKept = true
+    for i = 0, 6 do if afterCounts[i] ~= beforeCounts[i] then countsKept = false end end
+    check("shipQuote：船的块数 / 材料分布一点没变",
+        #afterPlan.blocks == beforeBlocks and countsKept,
+        tostring(#afterPlan.blocks) .. " blocks")
+    check("shipQuote：源 plan 只读断言全 true",
+        q.assertions.sourcePlanUnchanged == true
+        and q.assertions.blockCountKept == true
+        and q.assertions.materialFingerprintKept == true
+        and q.assertions.newPlanDistinct == true
+        and q.assertions.upgradedCountMatched == true)
+end
+
+do
+    local ship = freshWorld()
+    local q = Cli.shipQuoteRpc(player, "TestShip", 0)   -- Iron：所有块都 >= Iron
+    check("shipQuote：目标不高于现状 → nothingToDo 且报价 0",
+        q.ok == true and q.nothingToDo == true and q.needUpgrade == 0
+        and q.quote.resourceUnits == 0 and q.quote.money == 0,
+        tostring(q.needUpgrade) .. "/" .. tostring(q.quote and q.quote.resourceUnits))
+    check("shipQuote：nothingToDo 也不写船", ship.moveCalls == 0 and player.payCalls == 0)
+end
+
+do
+    local ship = freshWorld()
+    player.money = 1
+    player.getResources = function() return 1, 1, 1, 1, 1, 1, 1 end
+    local q = Cli.shipQuoteRpc(player, "TestShip", TARGET)
+    check("shipQuote：钱/资源不足 → affordable=false", q.affordable == false, tostring(q.affordable))
+    local hasResourceGap, hasCreditGap = false, false
+    for _, item in ipairs(q.shortfall or {}) do
+        if item.kind == "resource" and item.missing > 0 then hasResourceGap = true end
+        if item.kind == "credits" and item.missing > 0 and item.material == "credits" then
+            hasCreditGap = true
+        end
+    end
+    check("shipQuote：shortfall 逐项给 kind/material/need/have/missing",
+        hasResourceGap and hasCreditGap,
+        tostring(#(q.shortfall or {})))
+    check("shipQuote：不足也绝不执行（pay/move 都是 0）",
+        player.payCalls == 0 and ship.moveCalls == 0)
+    player.getResources = function() return 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9 end
+end
+
+-- ---------------------------------------------------------------------------
 
 print("")
 if failures == 0 then
