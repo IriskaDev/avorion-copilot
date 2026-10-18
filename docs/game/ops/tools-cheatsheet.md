@@ -1,6 +1,7 @@
 # 工具速查（有哪些工具 / 什么时候查什么 / 拿不准先查别硬猜）
 
-> 上一级：[`index.md`](../mechanics/index.md) · 命令机制见 [`../mechanics/commands.md`](../mechanics/commands.md) ·
+> 上一级：[`../README.md`](../README.md) · 作业手册：[`fleet-ops-manual.md`](fleet-ops-manual.md) ·
+> 机制总目录：[`../mechanics/index.md`](../mechanics/index.md) · 命令机制见 [`../mechanics/commands.md`](../mechanics/commands.md) ·
 > 引用约定见 [`../README.md`](../README.md) §4。
 > ★ 本文件只讲**怎么用工具拿事实**；怎么决策是你的事。
 > ★ 玩家侧现在只有**面板**（`player/ui/panel.lua`）；决策者侧只有**本文的 RPC 工具**
@@ -16,7 +17,7 @@
 | `fleet_decisions` | 读 | 历史决策 + 思维链（**纯本地记忆，游戏关着也能查**） | 想知道"上一步为什么这么定"/审计 |
 | `fleet_order` | 写（动船） | 下后台命令（异步，船长带船离开星区） | 已决定动作与参数之后 |
 | `fleet_recall` | 写（动船） | 召回，让船回到空闲 | 想改主意 / 命令跑偏了 |
-| `fleet_escort` | 写（动船） | 把某船 Travel 到目标船所在星区（= 让它能当护航） | 需要护航但候选里没有 |
+| `fleet_escort` | 写（动船） | 把某船 Travel 进目标船的**一跳航程（reach）内**（= 让它能当护航）；护航**不必同星区**，已经在一跳内就**不用动** | 需要护航、但候选船超出它自己的 reach |
 | `fleet_goal` | 写（改意图） | 设/清某船的**长期目标**（空闲时会带着它再问一次） | 想改变某船的运营方向 |
 | `fleet_commander` | 读/写 | 看/设/清"哪条会话接收舰队决策任务" | 想知道答案算不算数（见 §5） |
 
@@ -111,17 +112,15 @@
 |---|---|
 | `fleet_recall(ship)` | 后台命令**能扛过游戏重启**（BGS 会恢复）→ **召回是唯一可靠的解绑方式**；召回后带着目标会马上下一次决策（`plugin/dsh/src/tools.ts:411-434`） |
 | `fleet_goal(ship, text?, options?, clear?)` | 目标是**长期意图**：船每次空闲都会带着它再问一次（`tools.ts:375-401`） |
-| `fleet_escort(escort, target)` | 只做一件事：给 escort 下一单 **Travel** 到 target 的星区（目的地 **≥2 跳**，太近游戏会拒）；**游戏拒绝就逐字回报，不自动重试**（`tools.ts:253-367`） |
+| `fleet_escort(escort, target)` | 只做一件事：给 escort 下一单 **Travel** 到 target 所在星区（客户端要求目的地**一跳到不了**，即 `d > reach`；服务端 `getErrors` 为空 ✓）；**游戏拒绝就逐字回报，不自动重试**（`tools.ts:654`）。护航资格见 [`../mechanics/escorts.md`](../mechanics/escorts.md) §1（距离 ≤ 护航自己 reach，**不必同星区**） |
 | `fleet_decisions(ship?, limit?, verbose?)` | 读**历史决策**：目标、取到的事实、思维链、选的动作、下单回执 —— 纯本地，**游戏关着也能用**（`tools.ts:537-642`） |
 | `fleet_commander(...)` | 看/设/清"舰队决策任务投给哪条会话"；★ 输出里的 **`mode`** 很关键：`shadow` = **你答了也只被记录，实际下单用单发模型**；`live` = 你的答案算数（插件默认 **shadow**：`plugin/dsh/src/index.ts:1247`、`tools.ts:525-527`；而 `plugin/dsh/src/dispatch.ts:172-173` 的注释说默认 `live` ✗矛盾 —— **以 `fleet_commander` 的实际输出为准**） |
 
 ## 6. ★ 拿不准先查，别硬猜（行为准则）
 
-1. **想不起来某个机制** → 先按 [`../README.md`](../README.md) 的路由表读对应文档，
-   不要用"应该是这样"去下单。
-2. **不确定某个数字**（风险、产量、货舱、离中心距离、未探索数） → **去查**：
-   计划（`*Plan`）、能力卡（`what=ship`）、任意坐标事实（`what=sectorFacts`）。
-3. **工具报错** → 把**它给的原因**当地事实（那是游戏/本 mod 的原话），别重试同一个错。
-4. **计划没取到**（空载荷/失败） → 那是**简报缺口**：`fleet_decisions` 里能看到原因；
-   **不许**把"没取到"读成"没有候选"，也**不许**用 safeMode 顶替（见 [`../rules/owner-rules.md`](../rules/owner-rules.md)）。
-5. **不要靠截图**：`fleet_query` 才是正当的"看游戏"方式（`plugin/dsh/src/tools.ts:136-138`）。
+1. 想不起来机制 → 按 [`../README.md`](../README.md) 路由表读对应文档，别用"应该是这样"下单。
+2. 不确定数字（风险/产量/货舱/离中心距离/未探索数）→ `*Plan` / `what=ship` / `what=sectorFacts` 去查。
+3. 工具报错 → 把原因当事实，别重试同一个错；**不要靠截图**（`fleet_query` 才是正当的"看游戏"方式）。
+4. 计划没取到 = 简报缺口（`fleet_decisions` 看原因），**不是**"没有候选"，也不许用 safeMode 顶替。
+
+★ 铁律（R1-R10）与故障对照（症状→原因→处置）见作业手册 [`fleet-ops-manual.md`](fleet-ops-manual.md) §4 / §5。

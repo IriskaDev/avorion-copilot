@@ -21,7 +21,7 @@
 |---|---|
 | [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
 | [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派 |
-| [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步 |
+| [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步、L16 揭图在任务完成时才生效、L18 未知占比 > 10% 才开、L20 换框 = 换一片（中心至少挪一个框宽 ≥21 格） |
 | [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**） |
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`wins.md`](wins.md) | L14 本会话的成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
@@ -31,7 +31,7 @@
 | 编号 | 一句话 | 落在 |
 |---|---|---|
 | L1 | 框是**严格包含**，船落框边会被拒；位移留余量（21×21 用 ±8、15×15 用 ±6） | [`boxes.md`](boxes.md) |
-| L2 | 护航有**四个前提**：真需要 / 同星区 / 有炮塔（`turretCount` 是槽位不是已装炮塔）/ 订单带 `escorts:[…]` | [`escorts.md`](escorts.md) |
+| L2 | 护航有**四个前提**：真需要 / 在**行动船的一跳航程（护航自己的 reach）**内（不必同星区）/ 有炮塔（`turretCount` 是槽位不是已装炮塔）/ 订单带 `escorts:[…]` | [`escorts.md`](escorts.md) |
 | L3 | `fleet_escort` **只把护航 Travel 过去**，≠ 护航生效（真正生效靠订单里的 `escorts`） | [`escorts.md`](escorts.md) |
 | L4 | 先判需不需要护航再派：`baseAttackChance ≤ 10%` 通常不派；战斗舰允许闲置 | [`escorts.md`](escorts.md) |
 | L5 | 不许给闲船编活（`action=None` 也是决策）；该修「反复来问」不是船 | [`orders.md`](orders.md) |
@@ -46,3 +46,5 @@
 | L14 | 成功模式：list → predict 单框 → 批量 3 框 → 自己比较 → 下单 | [`wins.md`](wins.md) |
 | L15 | 商船/跑商/移动只走友好星区（`sectorFacts.isFriendly` 逐个核）；`routeCount:0` 先换形状再判 | [`orders.md`](orders.md) |
 | L19 | 判「这船是干嘛的」：**装备 → 名字前缀 → 判不出就问主人**（原版无类型字段，名字是弱证据） | [`orders.md`](orders.md) |
+| L20 | 「换框」= **换一片**：侦察框中心至少挪一个框宽（**≥21 格**）；挪不动就换方向 | [`scouting.md`](scouting.md) |
+| L21 | 我们曾把 vanilla 的「一跳航程」误记成「必须同星区」：资格 = 距离 ≤ **护航自己**的 reach（同星区只是距离 0 的特例） | [`escorts.md`](escorts.md) |

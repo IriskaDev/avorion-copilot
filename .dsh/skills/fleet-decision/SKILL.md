@@ -29,35 +29,17 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - **贸易排序键 = 单位时间净利**（`profitPerHour = netProfitLow / durationHours`）✓，**不是** `profitPerSize` 比率、
   也不是单看 `netProfitLow`（`docs/game/lessons/orders.md` L17 ③ ✓）；本金（`deposit`）**不是成本**、结束全额退还 ✓。
 - **贸易要一次比一片**：`tradeEvaluate`（多框 × 全商品 × 多本金，一次调用 ≤60 组合 ✓）；`flights.from = 0` = 空跑 ✗。
-- **护航既降险也加产**；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（不是"必须同星系"）→ `docs/game/mechanics/escorts.md:7-19`、`:28-36`、`:38-44`。
+- **护航既降险也加产**；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（**不是"必须同星区"** ✗；同星区只是距离 0 的特例）→ `docs/game/mechanics/escorts.md:7-61`、`:63-71`、`:73-79`。
 
 ## 4. 原子接口作业规程（与代码一致）
-一次一件小事，**轻的先来**：一次只发一条查询 ✓；别指望一次查全 ✗；不满意可**补查一次** ✓。顺序：
-0. ★ **先判这船是干嘛的；判不出就问主人，别瞎派 ✗**（主人 2026-10-17 定的流程 ✓）
-   - 原版**没有**「船类型/角色」可读字段 ✗ —— 能读的"类型"只有**实体种类**（`getShipType`/`getEntityType` → `EntityType`，船恒 = Ship）；玩家能"设"的只有**名字**，所以「类型」的载体 = **名字**（原版自己也把 craft classification 写进名字）✓。
-   - 判定顺序：**① 装备/能力**（`captainClass` / `hasCaptain` / `turretCount` / `cargoCapacity`）→ **② 名字前缀**（可能无意义 ✗）→ **③ 判不出 → 停下来问主人**（不写 `action=` 行，直接问 ✓）。
-   - ⚠ 炮塔**种类**（采矿/打捞/武装）现在读不到：`card.lua` 读 `t.weaponType`，而原版字段是 `category`（`WeaponCategory.Mining/Salvaging/Armed`）→ 别把 `turretCount` 当"种类"✗。依据 [`docs/game/lessons/orders.md`](docs/game/lessons/orders.md) L19。
-1. `fleet_query {what:"list"}` → 只给名字/忙闲/船长/星区（索引级，~223B）→ **自己挑船**。
-2. `fleet_query {what:"ship", ship, brief:true}` → 只查这一艘。
-3. `fleet_query {what:"goal", ship}` → 这船目标/动作边界。
-4. ★ **自己决定要比哪几个框** → `fleet_query {what:"predict", ship, action, x, y, sizeX, sizeY, …}` → **一个框**，返回 `risk.baseAttackChance` / `value` / `box.containsShip`。
-   - 比较远处星区可补 `fleet_query {what:"sectorFacts", x, y}`（任意星区事实，不给结论）—— 现在**也带阵营/友好度**：`factionIndex` / `factionName` / `relation` / `isFriendly` / `hasStations`（原版 relation 判定 ✓）。
-   - 侦察：`fleet_query {what:"predict", ship, action:"Scout", x, y, sizeX:21, sizeY:21}` → ★ 主判据 `value.revealsOffgrid`（隐藏质量物质区**枚举** 0=none/1=some/2=all，**不是计数**）+ `value.unknownCount/knownCount/totalSectors`（框内未探索/已探索/总数）+ `value.revealsNothingNew`（无未探索且计数可信 → 揭不出新地图）；框不含船报 `SHIP_NOT_IN_AREA`。
-5. 贸易：★ **先算再选，别看见有得赚就上** ✗（主人 2026-10-18 原话：「你应大胆一点，多做些计算」✓）：
-   `fleet_query {what:"tradeEvaluate", ship, boxes:[{x,y,sizeX,sizeY}…], deposits:[…], goodsFilter?}` → **一次**拿到
-   「多框 × 全商品 × 多本金」的**单位时间净利**榜：`results[]` 已按 `profitPerHour = netProfitLow / durationHours` 降序 ✓，
-   `rejected[]` 写明每条被丢的原因（`EMPTY_RUN` 空跑 / `RISK_OVER_GATE` 风险超闸门 / `RISK_UNKNOWN` / `PREDICTION_FAILED`）。
-   - 排序键是**主人定的口径**：单位时间利润最高才是最好（`docs/game/lessons/orders.md` L17 ③ ✓）。
-   - `maxAvailable` / `flightsFrom` / `flightsTo` 小 → 这趟总盈利就小（`profitPerSize` 只是**比率**，不是能赚多少 ✗）；
-     `flights.from = 0` 的空跑必须当"没有收益" ✗。
-   - 本金（`deposits`）同时改**带货量**与**伏击概率** → 至少试 2~3 档 ✓。
-   - 选中后要下单的那个组合，按同框同商品同本金用一次 `predict` 复核（数字与 `tradeEvaluate` **逐字一致** ✓）。
-   - ★ **下单前逐个核星区阵营**：对路线两端与框内星区 `fleet_query {what:"sectorFacts", x, y}` 看 `isFriendly`；任一个 `isFriendly=false` → **不派** 或换框/换形状。
-   - 查到满意的就**立刻**下单（原版路线清单**会变** ✓）。
-6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
-7. ★ 炮塔底座材料升级（**决策者可直接发起，但必须先报价**）：`fleet_query {what:"mountQuote", ship, material}` → 每块底座现状 + 资源/信用点成本 + `affordable` + `shortfall`（缺口 ✓，纯事实、绝不改船 ✓）；把报价给主人看，得到同意后才 `fleet_query {what:"mountUpgrade", ship, material, confirm:true}`（**没有 confirm 绝不执行** ✓）；驾驶中的船允许升级（真机验过 ✓）但响应带 `warning` ✓。
-
-✗ **legacy 计划不要用**：`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`（游戏侧扫 ~67 框 + 自带排序推荐）——策略必须每次由决策者自己判断。
+一次一件小事，**轻的先来**：一次只发一条查询 ✓；别指望一次查全 ✗；不满意可**补查一次** ✓。
+- ★ 先判这船是干嘛的：**装备/能力**（`captainClass`/`hasCaptain`/`turretCount`/`cargoCapacity`）→ **名字前缀**（弱证据）→ **判不出就问主人**（[`docs/game/lessons/orders.md`](docs/game/lessons/orders.md) L19）。
+- ★ **自己决定要比哪几个框**，用 `predict` 拿 `risk.baseAttackChance` / `value` / `box.containsShip`；远处星区补 `sectorFacts`（带 `isFriendly`）。
+- 侦察看 `value.revealsOffgrid`（枚举 0/1/2，不是计数）+ `share`；贸易用 `tradeEvaluate` 一次比一片（按 `profitPerHour` 降序）。
+- 下单 `fleet_order`：一船一动作 + 该动作最小参数，缺了就明确报错、绝不自动补。
+- ★ 炮塔底座材料升级：先 `mountQuote` 报价 → 主人同意后才 `mountUpgrade {confirm:true}`。
+- ✗ **legacy 计划不要用**（`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`）：策略必须每次由决策者自己判断。
+- 完整步骤（P1-P8 前置/命令/成功判据/失败）与原子字典见作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md)。
 
 ## 5. 答复契约
 1. **第一行** `action=`（Mine / Salvage / Trade / Sell / Scout / Travel / None）。
@@ -66,15 +48,13 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 4. 需要主人拍板 → 直接写问题、**不写 action 行**（记为"等主人裁决"）。
 
 ## 6. 护航决策：先判定「要不要护航」，再决定「派不派」（战斗舰允许闲置 ✓）
-- 战斗舰**允许闲置** ✓ —— 不给闲着的它找「侦察」之类的活 ✗；**只有**出现需要护航的情况才调动它 ✓。
-- ① 先判定要护的船**当前任务**风险：`predict` 拿 `risk.baseAttackChance` + `risk.riskKind`（贸易船先 `tradeRoutes` 拿路线再 `predict`）✓；**≤ 10% 闸门 → 通常不需要护航，不派** ✗；**超过/接近闸门**才考虑护航（或换框/换位置做同一动作）✓。
-- ② 看旅途本身（Travel / 长距离移动）是否危险 → 危险才派战斗舰**接应** ✓。
-- ③ 派之前算代价：护航占掉一艘船 + 要 Travel 一段路（期间不产出）→ **没被需要就不派** ✗；已派出但发现不需要 → `fleet_recall` 召回、别占船 ✗。
-- 判据只认原子接口数字（`baseAttackChance` / `riskKind`）✓，不许凭感觉 ✗。
+- 战斗舰**允许闲置** ✓；不给闲船找活 ✗；只有真需要护航才调它 ✓。
+- 判据只认原子数字（`risk.baseAttackChance` / `riskKind`）：**≤10% 通常不派** ✗；超/逼近才考虑（或换框）；已派出发现不需要 → `fleet_recall` 召回 ✗。
+- 生效四前提 + 具体步骤 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) P5 · [`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L2-L4。
 
 ## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）
 - 框**严格包含船**，位移留余量：21×21 用 ±8、15×15 用 ±6；下单前 `predict` 看 `box.containsShip`。
-- 护航生效 = ① 真需要（`baseAttackChance` 超/逼近闸门）② 与行动船**同星区** ③ 有炮塔（`turretCount` 是槽位不是已装炮塔 ✗）④ 订单里带 `escorts:[…]`。
+- 护航生效 = ① 真需要（`baseAttackChance` 超/逼近闸门）② 在行动船**一跳航程**内（距离 ≤ 护航自己的 `reach`；**不必同星区** ✗）③ 有炮塔（`turretCount` 是槽位不是已装炮塔 ✗）④ 订单里带 `escorts:[…]`。
 - `fleet_escort` 只把护航 **Travel** 过去 ≠ 护航生效（真正生效靠订单里的 `escorts`）。
 - 不许给闲船编活：`action=None` 也是决策；战斗舰允许闲置。
 - 侦察看 `revealsOffgrid`（隐藏物质区枚举 0/1/2）**不是** `unknownCount`。
@@ -82,5 +62,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 派单前确认目标船/护航 `busy=false` 且状态落定（刚 recall 就派会被拒）。
 - ★ 商船/跑商/移动 → **只走友好星区**：下单前 `fleet_query {what:"sectorFacts", x, y}` 逐个核 `isFriendly`；`isFriendly=false`（unowned/neutral/ceasefire/hostile）→ **不派**或换框。
 - ★ `routeCount: 0` 的第一解释**不是**"这片没商站" ✗ —— 先**换形状**（17x17 → 29x11 / 11x29）再判。
+- ★ **换框 = 换一片**：侦察换框挪 **≥21 格** ✓ / 贸易换框挪 **≥17 格**或换形状 ✓（只挪几格 ≈ 同一个框 ✗）。
+- 挪不出一个框宽（敌人 / 边界）、或框必须含船 → **换方向** ✓；贸易"换框"= 先 `Travel` 再评估 ✓。
 
 拿不准先查、别猜；工具报错把它给的原因当事实。
