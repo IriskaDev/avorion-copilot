@@ -3930,10 +3930,169 @@ local function jobParamGrid(command, player, ship, data, escorts)
     return list, { from = from, to = to, default = d0, okValues = okV }
 end
 
+-- ===========================================================================
+-- ★★★ 装备类报错 → 补**实测数字**（2026-10-19 加 ✓✓）
+-- ===========================================================================
+--
+-- **为什么需要它**（真机血案的教训，2026-10-19 03:05/03:17 两条决策记录）：
+--   `predict{Mine|Salvage}` 失败时原样透传了原版那一句**不带任何数字**的文案 ✗：
+--       "The ship has no salvaging equipment!"  /  "The ship has no mining equipment!"
+--   → 当场**分不清**是①真没这类炮 ②炮的类别不对 ③船档案读不到 ✗✓
+--     （主人原话："肯定有炮的，没炮肯定是哪没搞对" —— 结果那次**真的是**打捞炮不在船上，
+--      见 `fleet_decisions` 记录 #5/#6；四分钟后炮装回来，同一条 predict 就成功了 ✓）
+--
+-- **原版判据到底是什么**（★ 不是"武装口径" ✗✓，别被"armed"这个词骗了）：
+--   · Salvage：`SalvageCommand:getSalvagingProperties`（salvagecommand.lua:626-805 ✓）
+--       候选 = 每门炮塔 + 每架舰载机（:675-677 / :647-673 ✓，都来自
+--       `ShipDatabaseEntry:getTurrets()` / `getLightweightHangar()` ✓ —— **船档案，跨星区可读** ✓）
+--       命中条件 = `metalRefinedEfficiency > 0` 或 `metalRawEfficiency > 0`（:729 / :693 ✓）
+--       —— 这正是 `TurretTemplate.category == WeaponCategory.Salvaging` 那一类 ✓
+--          （Enums.html:1623-1630 Armed=0/Mining=1/Salvaging=2/Heal=3/None=4 ✓）
+--       另有一条**备用口径** `armedSalvaging`（:795-798：一门打捞炮都没有、但有武装炮时也算能捞 ✓）
+--       报错文案两处：:554（getErrors）/ :904（calculatePrediction）✓
+--   · Mine：`MineCommand:getMiningProperties`（minecommand.lua:545+ ✓）同理，
+--       命中条件 = `stoneRefinedEfficiency > 0` 或 `stoneRawEfficiency > 0`（:570 / :612 ✓）
+--       —— `TurretTemplate.category == Mining` ✓；★ **没有**武装备用口径 ✗
+--       报错文案两处：:477（getErrors）/ :783（calculatePrediction）✓
+--
+-- ★★ **本文件不重写判定** ✗（判据仍是原版那一份 ✓✓）：
+--   ① 舰载机也能采/捞（原版 :647-673 / :566-592 ✓）→ 只看炮塔类别会**误杀**护航航母 ✗✓
+--   ② 原版自己前后不一致：`armedSalvaging` 进 getErrors（:545 ✓）却不进 calculatePrediction（:896 ✗）
+--      → 只带武装炮的船"能下单、算不出数" ✓（这不是我们能替原版决定的 ✗，但**必须说出来** ✓）
+--   这里只做一件事：把**与卡片同源**的事实（`Card.equipmentFacts` 的 `turretCategories` ✓）
+--   拼到那句文案后面 ✓ —— 只改文案，不改行为 ✓✓
+--
+-- ★ 中英文都要认 ✓：文案走 `%_t`/`%_T` **会被翻译**（zh.po:44280「舰船缺少采矿装备！」/
+--   zh.po:44851「舰船缺少分解装备！」✓）→ 关键词匹配两种语言都留 ✓
+
+local JOB_EQUIP_CATEGORY_ORDER = { "Armed", "Mining", "Salvaging", "Heal", "None" }
+
+-- 与卡片**同源**的装备事实（★ 直接调 Card.equipmentFacts ✓，绝不在这里重数一遍炮塔 ✗）
+local function jobEquipmentFacts(player, ship)
+    local out = { known = false }
+
+    local okC, Card = pcall(function() return include("copilot/card") end)
+    if not (okC and type(Card) == "table" and type(Card.equipmentFacts) == "function") then
+        out.note = "include('copilot/card') unavailable: " .. tostring(Card)
+        return out
+    end
+
+    local okE, entry = pcall(function() return ShipDatabaseEntry(player.index, ship) end)
+    if not okE or entry == nil then
+        out.note = "ShipDatabaseEntry failed: " .. tostring(entry)
+        return out
+    end
+
+    local card, notes = {}, {}
+    local okF, err = pcall(Card.equipmentFacts, player, entry, card, notes)
+    if not okF then
+        out.note = "Card.equipmentFacts threw: " .. tostring(err)
+        return out
+    end
+    if card.turretCountKnown ~= true then
+        out.note = "turret list unreadable (" .. tostring(notes.turrets or "no reason given") .. ")"
+        return out
+    end
+
+    out.known = true
+    out.turretCount = card.turretCount
+    out.categories = (type(card.turretCategories) == "table") and card.turretCategories or {}
+    out.categoryUnknown = card.turretCategoryUnknown
+    out.fighters = card.fighters
+    out.fightersKnown = card.fightersKnown
+    out.fighterCategories = card.fighterCategories
+    return out
+end
+
+-- 事实 → 一行可读数字 ✓（读不到就明说"读不到"，**绝不写 0** ✗✓）
+local function formatJobEquipmentFacts(facts)
+    if facts == nil or facts.known ~= true then
+        return "UNKNOWN (turret data unreadable: "
+            .. tostring(facts and facts.note or "no facts") .. ")"
+    end
+    local parts = {}
+    for _, name in ipairs(JOB_EQUIP_CATEGORY_ORDER) do
+        parts[#parts + 1] = name .. ":" .. tostring(facts.categories[name] or 0)
+    end
+    local s = string.format("turretCount=%d, turretCategories={%s}",
+        facts.turretCount or 0, table.concat(parts, ","))
+    if facts.categoryUnknown ~= nil then
+        s = s .. string.format(", categoryUnreadable=%d", facts.categoryUnknown)
+    end
+    if facts.fightersKnown == true then
+        s = s .. string.format(", fighters=%d", facts.fighters or 0)
+    end
+    return s
+end
+
+-- 这句文案是哪一类装备报错？→ "Mine" / "Salvage" / nil（不是装备类 → **原样返回** ✗✓）
+local function jobEquipmentErrorKind(msg)
+    if msg == nil then return nil end
+    local raw = tostring(msg)
+    local m = string.lower(raw)
+    local hasEquip = (m:find("equipment", 1, true) ~= nil) or (raw:find("装备", 1, true) ~= nil)
+    if not hasEquip then return nil end
+    if m:find("salvag", 1, true) ~= nil or raw:find("分解", 1, true) ~= nil then return "Salvage" end
+    if m:find("mining", 1, true) ~= nil or m:find("mine", 1, true) ~= nil
+        or raw:find("采矿", 1, true) ~= nil then
+        return "Mine"
+    end
+    return nil
+end
+
+-- 把数字拼上去 ✓（`cache` 由一次调用共用 ✓ —— predict 的 24 个框只读一次船档案 ✓）
+local function jobEnrichEquipmentError(player, ship, msg, cache)
+    local kind = jobEquipmentErrorKind(msg)
+    if kind == nil then return msg end
+
+    cache = cache or {}
+    local facts = cache[kind]
+    if facts == nil then
+        facts = jobEquipmentFacts(player, ship)
+        cache[kind] = facts
+    end
+
+    local head
+    if kind == "Salvage" then
+        head = "Salvage needs at least one turret/fighter of category 'Salvaging' "
+            .. "(vanilla: metalRefinedEfficiency>0 or metalRawEfficiency>0 -- salvagecommand.lua:626-805, :729, :693)"
+    else
+        head = "Mine needs at least one turret/fighter of category 'Mining' "
+            .. "(vanilla: stoneRefinedEfficiency>0 or stoneRawEfficiency>0 -- minecommand.lua:545+, :570, :612; "
+            .. "mining has NO armed fallback)"
+    end
+
+    local tail = ""
+    if facts.known == true then
+        local n = facts.categories[kind == "Salvage" and "Salvaging" or "Mining"] or 0
+        if n > 0 then
+            tail = " -- but this category IS non-zero, so the vanilla criterion must have failed elsewhere; "
+                .. "do not read this as 'no equipment'"
+        elseif kind == "Salvage" and (facts.categories.Armed or 0) > 0 then
+            tail = string.format(" -- vanilla ALSO accepts an armed-only salvager (armedSalvaging, "
+                .. "salvagecommand.lua:795-798), but getErrors (:545) and calculatePrediction (:896) DISAGREE: "
+                .. "%d armed turret(s) here -> the order would be accepted yet cannot be predicted", facts.categories.Armed)
+        else
+            tail = " -- 0 of that category: the ship really has no such device right now "
+                .. "(refit gap / turrets removed), not a misread"
+        end
+    end
+
+    return tostring(msg) .. " [copilot facts: " .. formatJobEquipmentFacts(facts) .. " -- " .. head .. tail .. "]"
+end
+
 -- 扫**一个**区域：分析（pcall ✓）+ 逐个参数档算预测（pcall ✓）＋ 评分 ✓
 -- ★ 任何一步失败都只写进 rec.error / cand.predictionFailed，**绝不中断整轮扫描** ✓✓
 local function scanJobArea(command, Job, player, ship, ctype, area, params, opts)
     local rec = { area = area, offset = { x = 0, y = 0 }, candidates = {}, acceptable = false }
+
+    -- ★ 装备事实缓存（★ 一次调用共用 ✓）：predict 的 boxes[] / jobPlan 的多区域扫描
+    --   只会在**失败**时才读船档案 ✓ —— 但预测失败的框可能有一堆，别每框读一遍 ✓
+    local equipCache = opts.equipFacts
+    if type(equipCache) ~= "table" then
+        equipCache = {}
+        opts.equipFacts = equipCache
+    end
 
     local okRun, rShipName, _rType, rArea, rResults = pcall(function()
         return run(player.index, ship, ctype, area, player.index)
@@ -3995,7 +4154,11 @@ local function scanJobArea(command, Job, player, ship, ctype, area, params, opts
 
         cand.attackChance = pred.attackChance and tonumber(pred.attackChance.value) or nil
         cand.chance = cand.attackChance
-        if pred.error ~= nil then cand.error = tostring(pred.error) end
+        if pred.error ~= nil then
+            -- ★★ 装备类报错 → 补实测数字 ✓（只改文案，判定仍是原版的 ✓；
+            --   理由与出处见本文件 jobEnrichEquipmentError 上方的长注释 ✓✓）
+            cand.error = jobEnrichEquipmentError(player, ship, tostring(pred.error), equipCache)
+        end
 
         -- ★★ 主人 2026-10-17 的硬要求：模型是**单次、无工具**的调用 ✗✓ ——
         --   **不许让它自己反推** safeMode 修正前的基准概率 ✓✓
@@ -6642,7 +6805,7 @@ tradePredictFromAnalysis = function(command, player, ship, area, results, boxInf
     }
 end
 
-local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job)
+local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job, equipCache)
     local cx, cy = tonumber(b.x), tonumber(b.y)
     local sizeX, sizeY = tonumber(b.sizeX), tonumber(b.sizeY)
     if cx == nil or cy == nil or sizeX == nil or sizeY == nil then
@@ -6766,6 +6929,8 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
             action = action, gate = gate, band = NET_PROFIT_BAND,
             nMaterials = nMaterials, matNames = matNames, weights = weights,
             scoreBasis = scoreBasis, rarityTier = rarityTier, collected = collected,
+            -- ★ 装备事实缓存：同一批 boxes[] 共用一份 ✓（只在预测失败时才真的去读船档案 ✓）
+            equipFacts = equipCache,
         }
         local params = { { tag = "predict", duration = duration, safeMode = (b.safeMode == true), escorts = escorts } }
         local rec = scanJobArea(command, Job, player, ship, ctype, area, params, opts)
@@ -7191,8 +7356,9 @@ function CopilotLinkIn.predict(player, data)
     end
 
     local results = {}
+    local equipCache = {}
     for _, b in ipairs(boxes) do
-        results[#results + 1] = predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job)
+        results[#results + 1] = predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job, equipCache)
     end
 
     if single then
