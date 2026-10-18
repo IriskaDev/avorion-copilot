@@ -137,6 +137,37 @@
   `NO_POSITION`、`NO_ANALYSIS_SCRIPT`、`NO_ANALYSIS_RUN`、`NO_COMMAND_FACTORY`、`NO_COMMAND`。
 - **它不做策略** ✗：不生成候选框、不替决策者挑框/挑商品/挑本金、不谈护航该不该带（`escorts` 只是原样传给预测 ✓）。
 
+### B.6 ★ 炮塔底座材料升级：`mountQuote`（只报价）/ `mountUpgrade`（必须 confirm）（2026-10-18 加 ✓✓）
+
+**为什么加**（主人原话：「你直接升就行了，材料不够你再跟我说」✓）：
+升级逻辑早就存在（`lib/copilot/mounts.lua` + `cli.lua` 的 `mountsUpgrade` ✓，Lady/Raven 真机验过 ✓），
+但入口只有**聊天命令 / 面板** ✗ —— 决策者（DSH 会话）手上没有 RPC 原子可用 ✗✓。
+
+- **入参**：`{ what="mountQuote", ship, material }`（只报价）；
+  `{ what="mountUpgrade", ship, material, confirm? }`（`confirm=true` 才执行 ✓；
+  `material` = `iron|titanium|naonite|trinium|xanion|ogonite|avorion` 或 `0-6`，解析 `mounts.lua:69` ✓）。
+- **出参（mountQuote，纯事实）**：
+  `{ ship, targetMaterial, targetMaterialName, baseCount, needCount,
+     bases:[{index, material, materialValue, needsUpgrade}],
+     quote:{resources[7], money, resourceUnits}, costs:[{material, amount}],
+     affordable, shortfall:[{kind, material, need, have, missing}],
+     environmentOk, environmentMessage, nothingToDo, stage, lines[], piloted?, warning? }`
+  —— **不改任何东西** ✓（不 pay / 不 setMovePlan ✓，离线断言锁着）。
+- **出参（mountUpgrade）**：与 CLI 结果同结构 ✓ ——
+  `{ ok, stage, executed, confirmed, changed, verified, wrong, paid,
+     shape:{blocksBefore, blocksAfter, blocksKept, boundingBoxKept},
+     turrets:{before, after, designsRestored, designsDropped},
+     databaseSynced, quote, affordable, shortfall, bases[], lines[] }`。
+  没有 `confirm=true` → `stage="preview"`、`executed=false`、`note` 明说没改 ✓。
+- **★ 安全取舍（驾驶中的船）**：**允许** ✓ —— 真机已验证「驾驶中 + 有炮塔」能安全升级
+  （Raven `ddd792a` ✓：炮塔 4→4、样式 20→20、无可见操控中断）。但写回是 `setMovePlan`，
+  执行瞬间可能极短卡顿 → 响应带 `piloted:true` + `warning` ✓；**执行必须显式 `confirm=true`** ✓✓。
+- **口径**：与 CLI **共用同一套函数** ✓ —— `mountsPrepare`（只读准备/报价）+ `mountsUpgrade`
+  （执行）。RPC 层只做参数解析与 JSON 化（`link_in.lua` 的 `mountQuote`/`mountUpgrade` 分支 →
+  `CopilotCli.mountsQuoteRpc` / `mountsUpgradeRpc`），**没有第二套逻辑** ✗✓。
+- **它不做策略** ✗：不替决策者选材料、不判断"该不该升"、不自动补足材料；
+  报价与缺口全给事实，要不要确认由决策者（主人）定 ✓。
+
 ### B.4 执行类（已达标，保持原子）
 
 | 原子 | 入参 | 出参 | 错误 |

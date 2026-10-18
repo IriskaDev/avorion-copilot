@@ -55,6 +55,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
    - ★ **下单前逐个核星区阵营**：对路线两端与框内星区 `fleet_query {what:"sectorFacts", x, y}` 看 `isFriendly`；任一个 `isFriendly=false` → **不派** 或换框/换形状。
    - 查到满意的就**立刻**下单（原版路线清单**会变** ✓）。
 6. 下单：`fleet_order {ship, action, x, y, …}` → **一船一动作** + 该动作最小参数（缺了就明确报错，绝不自动补）。
+7. ★ 炮塔底座材料升级（**决策者可直接发起，但必须先报价**）：`fleet_query {what:"mountQuote", ship, material}` → 每块底座现状 + 资源/信用点成本 + `affordable` + `shortfall`（缺口 ✓，纯事实、绝不改船 ✓）；把报价给主人看，得到同意后才 `fleet_query {what:"mountUpgrade", ship, material, confirm:true}`（**没有 confirm 绝不执行** ✓）；驾驶中的船允许升级（真机验过 ✓）但响应带 `warning` ✓。
 
 ✗ **legacy 计划不要用**：`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`（游戏侧扫 ~67 框 + 自带排序推荐）——策略必须每次由决策者自己判断。
 

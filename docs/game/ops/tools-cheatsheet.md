@@ -10,7 +10,7 @@
 
 | 工具 | 读/写 | 一句话 | 什么时候用 |
 |---|---|---|---|
-| `fleet_query` | 读 | **唯一正当的"看游戏"方式**（别靠截图） | 任何"我现在有什么/那里怎么样"的问题 |
+| `fleet_query` | 读（`mountUpgrade confirm=true` 时写） | **唯一正当的"看游戏"方式**（别靠截图）；★ 炮塔底座材料升级：`mountQuote` 只报价、`mountUpgrade` 必须 `confirm` | 任何"我现在有什么/那里怎么样"的问题；升级前先拿报价 |
 | `fleet_decisions` | 读 | 历史决策 + 思维链（**纯本地记忆，游戏关着也能查**） | 想知道"上一步为什么这么定"/审计 |
 | `fleet_order` | 写（动船） | 下后台命令（异步，船长带船离开星区） | 已决定动作与参数之后 |
 | `fleet_recall` | 写（动船） | 召回，让船回到空闲 | 想改主意 / 命令跑偏了 |
@@ -33,6 +33,8 @@
 | `predict` | `ship`,`action`,`x`,`y`,`sizeX`,`sizeY`（+动作参数） | **一个框 + 一个动作 → 预测数字**（风险 + value）；Trade 要 `goodName` + `deposit`；批量 `boxes[]`（N≤24 ✓） | `link_in.lua:6614+` ✓ |
 | `tradeRoutes` | `ship`,`x`,`y`,`sizeX`,`sizeY` | **一个框内的贸易路线 + 逐货数字**（不排序、不推荐 ✗） | `link_in.lua:6692+`（`CopilotLinkIn.tradeRoutes`）✓ |
 | `tradeEvaluate` | `ship`,`boxes[]`（≤6）,`deposits[]`（≤3）,`goodsFilter?`,`escorts?`,`maxAttackChance?` | ★ **多框 × 全商品 × 多本金一次算完**：`results[]` 按 `profitPerHour = netProfitLow / durationHours` 降序 ✓（主人定的口径 ✓）、`rejected[]` 逐条给原因（空跑 / 超闸门 / 风险算不出来 / 预测失败）、组合总数上限 60 ✓；**只计算、不推荐** ✗ | `link_in.lua:6859`（`CopilotLinkIn.tradeEvaluate`）✓ |
+| `mountQuote` | `ship`,`material` | ★ **炮塔底座材料升级报价（纯事实、绝不改船 ✓）**：每块底座 `bases[{index, material, materialValue, needsUpgrade}]` + 目标材料 + `quote{resources[7], money}` / `costs[]` + `affordable` + `shortfall[]`（不够时**缺什么** ✓）+ `environmentOk`；驾驶中带 `piloted/warning` ✓ | `link_in.lua` 的 `mountQuote` 分支 → `CopilotCli.mountsQuoteRpc` ✓；与 CLI **共用 `mountsPrepare`** ✓ |
+| `mountUpgrade` | `ship`,`material`,`confirm` | ★ 真的执行；**只有 `confirm=true` 才扣资源/写回** ✓（没有它 = 只报价）。结果与 CLI 同结构：`changed/verified/wrong/paid/shape/turrets/databaseSynced/lines[]` ✓ | `link_in.lua` 的 `mountUpgrade` 分支 → `CopilotCli.mountsUpgradeRpc` ✓ |
 | `minePlan` | `ship` | **多区域 × 参数档（时长/安全模式/护航）× 层级加权**的采矿计划（含风险折算与候选表） | `:87-92` ✓、`:3133+` ✓ |
 | `salvagePlan` | `ship` | 打捞计划（装备件数 × 期望稀有度层级） | `:94-98` ✓ |
 | `jobPlan` | `ship`,`action` | 上面两个的通用入口（`action` 取 `Mine` 或 `Salvage`） | `:100-104` ✓ |

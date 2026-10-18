@@ -10,10 +10,14 @@
 1. **命令只在服务端执行**：`execute(sender, …)` 里 `Player(sender)` 拿到玩家对象；
    所以命令能碰 plan / 资源 / 船档案（`data/scripts/commands/copilot.lua:19-38`）。
 2. **改代码怎么生效**：`cli.lua` / `mounts.lua` 在 `RELOADABLE` 里 → `/copilot reload` 即生效；
-   `net/*` 链在**另一个 VM** → 先 `/copilot netstop`，等 2 秒，再 `/copilot netstart`；
+   **`net/*` 链在另一个 VM** → 改它**必须重载存档或重启游戏**（主菜单 → 继续 → 按空格 ✓）；
+   ★ **不要**用 `/copilot netstop` + `/copilot netstart` ✗（2026-10-17 真机两次实测：会变成"只发不收"，
+   详见 [`../../dev/hot-reload-and-vm-boundaries.md`](../../dev/hot-reload-and-vm-boundaries.md) §末 ✓）；
    **客户端面板 UI**（`player/ui/panel.lua` 的界面部分）**不归 reload 管**，要重启一次游戏。
 3. **写操作只有两种**：`/copilot mounts … confirm`（扣资源/信用点）与 `on/off/explore/net*`（改状态）。
    其余命令都是只读；没加 `confirm` 时 `mounts` **一个字节都不写**（有离线断言锁着）。
+   ★ 现在**还有第三个写入入口**：RPC 的 `fleet_query {what:"mountUpgrade", …, confirm:true}` ——
+   它和 `mounts … confirm` **共用同一套函数** ✓，没有 `confirm:true` 同样只报价（§2.6 ✓）。
 
 ## 1. 总表
 
@@ -95,6 +99,31 @@
 
 能，实测过（Raven：驾驶中执行，炮塔 4→4、样式 20→20、无可见操控中断）。
 但写回是 `setMovePlan`，执行瞬间理论上有一下画面/视角抖动 —— 对玩家说一声再点。
+
+### 2.6 ★ 也可以用 RPC（决策者用，2026-10-18 加）
+
+同一套逻辑现在暴露成两个 `fleet_query` 原子（**与上面命令共用函数** ✓，不是另写一套 ✗）：
+
+```jsonc
+// 只报价：纯事实，绝不改任何东西
+{ "what": "mountQuote", "ship": "Miner-00001", "material": "naonite" }
+// 执行：必须显式 confirm=true；没有它 = 与 CLI 预览一样只报价
+{ "what": "mountUpgrade", "ship": "Miner-00001", "material": "naonite", "confirm": true }
+```
+
+* `mountQuote` 返回：每块底座 `bases[{index, material, materialValue, needsUpgrade}]`、目标材料、
+  `quote{resources[7], money, resourceUnits}` / `costs[]`、`affordable`、
+  `shortfall[{kind, material, need, have, missing}]`（不够时**缺什么** ✓）、`environmentOk`；
+  **绝不 pay / setMovePlan** ✓（离线断言锁着）。
+* `mountUpgrade` 返回与 CLI 同结构的结果：`changed / verified / wrong / paid /
+  shape{blocksBefore,blocksAfter,blocksKept,boundingBoxKept} / turrets{before,after,designsRestored,
+  designsDropped} / databaseSynced / lines[]`；`executed` 只在 `stage="applied"` 时为 true。
+* ★ **驾驶中的船允许升级**（真机 `ddd792a` 验过 ✓），但响应会带 `piloted:true` +
+  `warning`（写回瞬间可能有极短卡顿 ✓）—— 决策者应当先把报价给主人看，再决定要不要 confirm。
+
+> 生效方式：`mountQuote/mountUpgrade` 的分发在 `data/scripts/net/link_in.lua`（net VM）→
+> **必须重载存档或重启游戏**才出现 ✓（`/copilot reload` 只覆盖命令 VM，见 §0 第 2 条）。
+> 插件工具的参数（`material` / `confirm`）在 `plugin/dsh/src/tools.ts` → 插件重建后随 DSH 重启加载。
 
 ## 3. 只读探针（排障用，别当功能用）
 
