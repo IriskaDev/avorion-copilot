@@ -239,7 +239,16 @@ local player = {
     paidMoney = 0,
     paidResources = nil,
 }
-function player:canPay() return true end
+function player:canPay(money, ...)
+    -- ★ 用**真实判据**（钱 + 7 档资源），这样"材料不足"那组才测得到 ✓
+    if type(money) == "number" and (tonumber(self.money) or 0) < money then return false end
+    local res = { self:getResources() }
+    local need = { ... }
+    for i = 1, #need do
+        if (tonumber(res[i]) or 0) < (tonumber(need[i]) or 0) then return false end
+    end
+    return true
+end
 function player:pay(description, money, ...)
     -- 可选第一参是 description；我们只按数字参数记账
     if type(description) == "string" then money = money end
@@ -410,6 +419,7 @@ local function freshWorld()
     gateResult = BuildError.BuildingOk
     player.payCalls = 0
     player.paidMoney = 0
+    player.money = 1000000
     dbSynced = 0
     local plan = samplePlan()
     local ship = Ship.new(plan)
@@ -459,6 +469,110 @@ do
     local result = Cli.mountsUpgrade(player, "", 0, true)   -- 目标 Iron 比所有底座都低
     check("目标不比现状高 → 报“无事可做”且不写回",
         result.ok == false and ship.moveCalls == 0, result.stage)
+end
+
+-- ---------------------------------------------------------------------------
+-- (j) ★ RPC 原子：mountQuote / mountUpgrade（2026-10-18 加 ✓✓）
+--   主人要求：决策者能直接发起炮塔底座材料升级 —— 但**没有 confirm=true 绝不执行** ✓。
+--   ★ 这里调的就是 link_in 的两个入口背后的**同一个函数** ✓（不另写一套 ✗）。
+-- ---------------------------------------------------------------------------
+print("[mounts] RPC atoms")
+
+do
+    local ship = freshWorld()
+    local before = ship:getFullPlanCopy()
+    local quote = Cli.mountsQuoteRpc(player, "TestShip", TARGET)
+
+    check("mountQuote：纯事实（不扣钱 / 不 setMovePlan）",
+        player.payCalls == 0 and ship.moveCalls == 0,
+        tostring(player.payCalls) .. "/" .. tostring(ship.moveCalls))
+    check("mountQuote：船上一块都没改",
+        before:getBlock(5).material.value == ship:getFullPlanCopy():getBlock(5).material.value,
+        "material changed")
+    check("mountQuote：每块底座都带 index + 材料 + 是否要升",
+        #(quote.bases or {}) == 4 and quote.bases[1].index ~= nil
+        and quote.bases[1].material ~= nil and quote.bases[1].needsUpgrade ~= nil,
+        #(quote.bases or {}))
+    check("mountQuote：目标材料 / 要升级块数",
+        quote.targetMaterial == TARGET and quote.needCount == 3,
+        tostring(quote.targetMaterial) .. "/" .. tostring(quote.needCount))
+    check("mountQuote：报价非零（资源 + 信用点）",
+        quote.quote ~= nil and quote.quote.resourceUnits > 0 and quote.quote.money > 0,
+        quote.quote and (quote.quote.resourceUnits .. "/" .. quote.quote.money))
+    check("mountQuote：够付 → affordable=true 且无缺口",
+        quote.affordable == true and #(quote.shortfall or {}) == 0,
+        #(quote.shortfall or {}))
+    check("mountQuote：驾驶中（player.craft）→ piloted + warning",
+        quote.piloted == true and quote.warning ~= nil)
+
+    -- ★ 与 CLI 预览**同价**（两者共用 mountsPrepare ✓）
+    local cli = Cli.mountsUpgrade(player, "", TARGET, false)
+    check("mountQuote 与 CLI 预览同价（资源单位）",
+        cli.quote ~= nil and cli.quote.resourceUnits == quote.quote.resourceUnits,
+        tostring(cli.quote and cli.quote.resourceUnits) .. " vs " .. tostring(quote.quote.resourceUnits))
+    check("mountQuote 与 CLI 预览同价（信用点）",
+        cli.quote ~= nil and cli.quote.money == quote.quote.money,
+        tostring(cli.quote and cli.quote.money) .. " vs " .. tostring(quote.quote.money))
+end
+
+do
+    -- 目标低于所有底座 → 无事可做（纯事实，不执行）
+    local ship = freshWorld()
+    local quote = Cli.mountsQuoteRpc(player, "TestShip", 0)
+    check("mountQuote：目标不高于现状 → nothingToDo，不写船",
+        quote.nothingToDo == true and ship.moveCalls == 0, quote.stage)
+end
+
+do
+    local ship = freshWorld()
+    local result = Cli.mountsUpgradeRpc(player, "TestShip", TARGET, false)
+    check("mountUpgrade 无 confirm → 只预览（executed=false）",
+        result.executed == false and result.stage == "preview",
+        tostring(result.stage) .. "/" .. tostring(result.executed))
+    check("mountUpgrade 无 confirm → 不扣钱 / 不写船",
+        player.payCalls == 0 and ship.moveCalls == 0,
+        tostring(player.payCalls) .. "/" .. tostring(ship.moveCalls))
+    check("mountUpgrade 无 confirm → 有报价 + note",
+        result.quote ~= nil and result.note ~= nil)
+end
+
+do
+    -- ★ 材料不足：报价要报"缺什么"，且 confirm=true 也**绝不执行**
+    local ship = freshWorld()
+    player.getResources = function() return 1, 1, 1, 1, 1, 1, 1 end
+    local quote = Cli.mountsQuoteRpc(player, "TestShip", TARGET)
+    check("材料不足 → affordable=false", quote.affordable == false, tostring(quote.affordable))
+    check("材料不足 → shortfall 指出缺什么（missing > 0）",
+        #(quote.shortfall or {}) > 0 and quote.shortfall[1].missing > 0,
+        quote.shortfall and quote.shortfall[1]
+            and (tostring(quote.shortfall[1].material) .. ":" .. tostring(quote.shortfall[1].missing)))
+    local result = Cli.mountsUpgradeRpc(player, "TestShip", TARGET, true)
+    check("材料不足 + confirm=true → 拒绝执行（pay/move 都是 0）",
+        result.executed == false and player.payCalls == 0 and ship.moveCalls == 0, result.stage)
+    player.getResources = function() return 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9 end
+end
+
+do
+    local ship = freshWorld()
+    local result = Cli.mountsUpgradeRpc(player, "TestShip", TARGET, true)
+    check("mountUpgrade confirm=true → 执行成功", result.executed == true and result.ok == true, result.stage)
+    check("mountUpgrade confirm=true → 扣一次钱 / 写回一次",
+        player.payCalls == 1 and ship.moveCalls == 1,
+        tostring(player.payCalls) .. "/" .. tostring(ship.moveCalls))
+    check("mountUpgrade → paid 与报价一致",
+        result.paid ~= nil and result.paid.money == result.quote.money,
+        result.paid and result.paid.money)
+    check("mountUpgrade → 形状不变（块数）",
+        result.shape ~= nil and result.shape.blocksKept == true,
+        result.shape and tostring(result.shape.blocksBefore))
+    check("mountUpgrade → 炮塔结构字段存在",
+        result.turrets ~= nil and result.turrets.before ~= nil and result.turrets.after ~= nil)
+    check("mountUpgrade → 船档案同步", result.databaseSynced == true)
+    check("mountUpgrade → verified=3 / wrong=0",
+        result.verified == 3 and result.wrong == 0,
+        tostring(result.verified) .. "/" .. tostring(result.wrong))
+    check("mountUpgrade → 执行后 #5 真是 Trinium",
+        ship:getFullPlanCopy():getBlock(5).material.value == TARGET)
 end
 
 -- ---------------------------------------------------------------------------
