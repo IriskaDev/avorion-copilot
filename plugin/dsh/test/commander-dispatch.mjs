@@ -119,7 +119,9 @@ const REQ = {
 const ALLOWED = ['Mine', 'Salvage', 'Trade', 'Travel', 'Sell', 'Scout']
 
 /** 压缩的时间预算（唯一变量是等待时长 ✓；代码路径与生产逐字相同 ✓） */
-const FAST = { sessionDeadlineMs: 1500, queueReserveMs: 100, commitReserveMs: 50, singleShotTimeoutMs: 400, retryOnceMs: 300 }
+// ★ 2026-10-18：`mergeWindowMs` = 合并收集窗口（A 项 ✓）—— 测试里压到 30ms：
+//   同一批同时来的几条仍然会被收进**一个块** ✓，但不必每条都干等 800ms ✓。
+const FAST = { sessionDeadlineMs: 1500, queueReserveMs: 100, commitReserveMs: 50, singleShotTimeoutMs: 400, retryOnceMs: 300, mergeWindowMs: 30 }
 
 const results = []
 async function test(name, fn) {
@@ -284,10 +286,16 @@ await test('⑦b 影子模式下没有指定会话：与今天逐字相同（单
   return '清除投递会话 = 立刻回到今天的行为（这就是回滚开关 ✓）'
 })
 
-await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞（锁兜住竞态；绝不排队）', async (log) => {
+await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞 → 第二条**排队等下一轮**（绝不丢 ✗）', async (log) => {
   const agent = makeAgent({ script: ['action=Mine\nx=1\ny=1\ntask=A'], turnMs: 200 })
   const single = makeSingleShot('action=Salvage\nx=2\ny=2\ntask=B')
   let held
+  let maxInFlight = 0
+  let inFlight = 0
+  // ★ 真的量"同一刻有几条在飞" ✓（不是靠猜 ✓）：followup 时 +1，turn/end 时 -1 ✓
+  const origFollowup = agent.followup.bind(agent)
+  agent.followup = (msg) => { inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight); origFollowup(msg) }
+  agent.onEvent((e) => { if (e.type === 'turn/end') inFlight = Math.max(0, inFlight - 1) })
   const lock = {
     tryClaim() {
       if (held !== undefined) return undefined
@@ -302,20 +310,23 @@ await test('⑧ 舰队级串行：同一会话同一刻只有一条在飞（锁�
   }
   const first = dispatchDecision({ ...deps, log: () => {} }, { ...REQ, taskId: 'A' })
   await sleep(40)                                     // 第一条真的递出去了、正占着会话 ✓
-  assert.equal(agent.inbox.length, 1, '第一条必须已经递出去 ✓')
-  // ★ 竞态兜底：真环境里 `status` 可能还没翻成 running，或者我们会话刚递完又有人来问 ✓
-  //   → 就算它看着"空闲"，只要锁被占着，也**绝不许**再递一条 ✗（同时飞两条 = 两条矛盾命令 ✓）
+  // ★ 2026-10-18（A 项）：**不再**"第二条立刻被判 SESSION_BUSY_ELSEWHERE + None" ✗✓ ——
+  //   那条路就是主人说的「会漏」✓。现在它**进合并队列**，这一轮结束后**立刻**投下一轮 ✓。
+  assert.equal(agent.inbox.length, 1, '第一条已经递出去了（合并窗口 30ms + 投递 ✓）')
   agent.status = 'idle'
-  const second = await dispatchDecision({ ...deps, log: () => {} }, { ...REQ, taskId: 'B', ship: 'Miner-00003' })
+  const second = dispatchDecision({ ...deps, log: () => {} }, { ...REQ, taskId: 'B', ship: 'Miner-00003' })
   const done = await first
-  console.log('  second:', JSON.stringify(second))
+  const secondOut = await second
+  console.log('  second:', JSON.stringify(secondOut))
   console.log('  first :', JSON.stringify(done))
-  assert.equal(second.source, 'fallbackNone', '★ 抢不到会话 → 兜底 None（**不排队**、也不许单发替它拍板 ✗）')
-  assert.equal(single.calls, 0, '★ 锁被占时**不许**落单发（兜底不许下单 ✗）')
-  assert.equal(second.session?.code, 'SESSION_BUSY_ELSEWHERE', '★ 锁拦住了并发投递 ✓')
-  assert.equal(agent.inbox.length, 1, '同一个会话绝不许同时飞两条任务 ✓')
   assert.equal(done.source, 'session', '第一条照常由会话定 ✓')
-  return '一个会话同一刻只有一条任务（TAKEOVER.md 的铁律 ✓）'
+  assert.equal(agent.inbox.length, 2, '★ 第二条**也真的投出去了**（只是等下一轮 ✓ —— 绝不静默丢掉 ✗）')
+  assert.equal(maxInFlight, 1, '★ 同一刻**从来只有一条**在飞（锁 + 队列串行 ✓）')
+  assert.equal(single.calls, 0, '★ 会话在线 → 绝不落单发（兜底不许下单 ✗）')
+  // 她回显的是 task=A（这轮她答的是上一单的号）→ 第二条**正确地**被判 TASK_MISMATCH ✓
+  //   ★ 重点不是"她答错"，而是**这艘船拿到了自己的结论**（不是被静默判 None ✓）
+  assert.equal(secondOut.session?.code, 'TASK_MISMATCH', '★ 别船答案不许混用（判 TASK_MISMATCH ✓）')
+  return '一个会话同一刻只有一条任务；第二条排队等下一轮、绝不丢（TAKEOVER.md 铁律 ✓）'
 })
 
 await test('⑧b 会话**正忙**时：连锁都不碰，兜底 None（绝不插进主人的聊天 ✗）', async (log) => {
