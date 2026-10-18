@@ -210,6 +210,21 @@ export function registerFleetTools(
         'upgraded, and it too ONLY executes when confirm=true. mountQuote/mountUpgrade remain the historical ' +
         'shortcut for the four turret-base BlockTypes. Per-block facts are omitted above 200 selected blocks ' +
         '(blocksOmitted). ' +
+        '★★ what=renameShip RENAMES one ship. The vanilla entry point is ShipDatabaseEntry:setNewName(name), ' +
+        'SERVER-side only; the ship name is a plain string (property string name), NOT a Format, so no ' +
+        'translated() is involved (the Format-based field is getTitle(), which this atom does NOT touch). ' +
+        'Pass ship (the CURRENT name) + name (the NEW name, plain string; leading/trailing spaces are trimmed ' +
+        'and reported as normalized=true). Rejected BEFORE any write: empty / control characters (newline, tab, ' +
+        'CR, DEL, NUL) / ' + "this mod's config separator '|' / invalid UTF-8 / more than 32 CHARACTERS " +
+        '(that 32 is OUR guard, not a vanilla constant -- vanilla exposes no Lua-side length limit). Also ' +
+        'refused: a busy ship (InBackground) -> SHIP_BUSY (recall it first: vanilla warns renaming with pending ' +
+        'yield is problematic and background commands are keyed by ship name), an unknown ship -> NO_SUCH_SHIP, ' +
+        'a name already used by another ship -> NAME_TAKEN. There is NO confirm parameter: this is a reversible ' +
+        'one-field write (renaming back = undo) and every failure is rejected before anything is written. ' +
+        'Returns {ok, requestedShip, ship(=the name AFTER the call), oldName, newName, changed, databaseSynced, ' +
+        'verified, normalized, piloted, busy, migrated{goalText,goalOptions,designated,config}, evidence{...}}: ' +
+        'this mod ALSO migrates its own name-keyed state (goal / panel roster / per-ship config) in the SAME ' +
+        'call, so the ship does not silently lose its goal. After a rename, use the NEW name in every later call. ' +
         'The old plan queries -- tradePlan | minePlan | ' +
         'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
@@ -220,11 +235,12 @@ export function registerFleetTools(
         what: {
           type: 'string',
           required: true,
-          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | orderStatus | dossier | ' +
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | renameShip | orderStatus | dossier | ' +
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
         orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
-        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/shipQuote/blockQuote/blockUpgrade/shipUpgrade/any plan' },
+        ship: { type: 'string', description: 'ship name; required when what is ship/goal/dossier/predict/tradeRoutes/tradeEvaluate/shipQuote/blockQuote/blockUpgrade/shipUpgrade/renameShip (renameShip: the CURRENT name)/any plan' },
+        name: { type: 'string', description: 'renameShip only: the NEW ship name (a plain string, NOT a Format). Trimmed; must be non-empty, free of control characters and \'|\', valid UTF-8, and <= 32 characters (this mod\'s guard). No confirm needed -- it is a reversible one-field write.' },
         x: { type: 'number', description: 'sector x; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         y: { type: 'number', description: 'sector y; required for what=sectorFacts/predict/tradeRoutes (box centre; for Travel = the DESTINATION sector)' },
         sizeX: { type: 'number', description: 'box WIDTH; required for what=predict/tradeRoutes (with sizeY); Travel: use 1; Refine: must be 31; tradeEvaluate: put it inside each boxes[] entry' },
@@ -295,7 +311,7 @@ export function registerFleetTools(
         duration?: number; safeMode?: boolean; escorts?: string[]; goodsToSell?: unknown; boxes?: unknown[]
         compact?: boolean; top?: number; full?: boolean; brief?: boolean; action?: string
         material?: string; confirm?: boolean; blockType?: string
-        orderId?: number
+        orderId?: number; name?: string
       }) {
         // ★ sectorFacts 只需坐标 ✓；list 什么都不用 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
         //   ★ orderStatus 例外：给 orderId 就够（精确到某一单 ✓），不给才按 ship 取最近一单 ✓
@@ -304,6 +320,11 @@ export function registerFleetTools(
           && !orderStatusById
         if (needsShip && (args.ship === undefined || args.ship === '')) {
           return `what=${args.what} needs the ship parameter${args.what === 'orderStatus' ? ' (or an orderId)' : ''}`
+        }
+        // ★ renameShip：`ship` = 旧名（needsShip 已覆盖 ✓）、`name` = 新名（必填 ✓ 且**不许**是空串 ——
+        //   空串会被游戏侧当成 NAME_EMPTY 拒掉，但在这里先拦一次更省一次往返 ✓）。
+        if (args.what === 'renameShip' && (args.name === undefined || args.name === '')) {
+          return 'what=renameShip needs the name parameter (the NEW ship name; plain string)'
         }
         if (args.what === 'sectorFacts' && (args.x === undefined || args.y === undefined)) {
           return 'what=sectorFacts needs the x and y parameters'
@@ -349,6 +370,7 @@ export function registerFleetTools(
           action: args.action, material: args.material, confirm: args.confirm,
           blockType: args.blockType,
           orderId: args.orderId,
+          name: args.name,
         }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`
         const body = text(r.data)
