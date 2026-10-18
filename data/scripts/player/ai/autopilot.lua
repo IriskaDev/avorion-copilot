@@ -81,9 +81,9 @@ function Copilot.updateServer()
 
     -- 接管玩家正在开的船。
     --
-    -- 这是**玩家显式打开**的行为：copilot_enabled 只由「Copilot 面板的开关」或
-    -- /copilot on 写入，所以接管是"按玩家的意愿"。要收回控制权，玩家关掉那个
-    -- 开关即可（/copilot off 或点面板上的按钮）。
+    -- 这是**玩家显式打开**的行为：copilot_enabled 只由「Copilot 面板的开关」写入
+    -- （★ 2026-10-18 起 `/copilot on|off` 聊天命令已退役 ✓），所以接管是"按玩家的意愿"。
+    -- 要收回控制权，玩家点面板上的开关即可。
     --
     -- Engage ONCE, not every tick.
     --
