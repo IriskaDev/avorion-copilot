@@ -319,6 +319,27 @@ function self.mountsBaseSet()
     return Mounts.baseTypeSet(BlockType)
 end
 
+-- ★ 通用"某一种方块类型"选择器（2026-10-18 加 ✓）：
+--   blockType = 原版 BlockType 名（Enums.html）或数字 0..N；大小写不敏感 ✓。
+--   ★ 只认原版枚举 ✓，不自己造类别 ✗（"Hull"/"Armor"/"CargoBay"/... 都是原版名字 ✓）。
+function self.blockSelector(blockTypeText)
+    local Mounts = include("copilot/mounts")
+    local value, name, err = Mounts.resolveBlockType(blockTypeText, BlockType)
+    if value == nil then return nil, err end
+    local set = {}
+    set[value] = true
+    local n = tonumber(value)
+    if n ~= nil then set[n] = true end
+    return {
+        all = false,
+        set = set,
+        blockType = name,
+        blockTypeId = n or value,
+        typeNames = { name },
+        label = tostring(name) .. " block",
+    }, nil
+end
+
 -- 找船：不给名字 = 玩家正在开的这艘 ✓；给名字 = **本星区里你自己的船** ✓。
 -- （跨星区的船没有实体可 setMovePlan —— 老实说做不到，不硬编 ✗）
 function self.mountsResolveShip(player, shipName)
@@ -461,10 +482,14 @@ function self.mountsBaseFacts(bases, targetValue)
     return out
 end
 
--- ★ 共用准备（只读）。返回 prep；**永远不**扣钱 / 写船 ✓。
-function self.mountsPrepare(player, shipName, targetValue)
+-- ★★ 通用准备（只读）：selector = { all=true }（整船）或 { set=<typeSet>, typeNames=... }。
+--   ★ 炮塔底座 / 任意类型 / 整船**共用这一个函数** ✓（绝不另写一套 ✗）。
+--   ★ 永远不扣钱 / 不写船 ✓；执行器只在 confirmed=true 时才越过这里。
+function self.blocksPrepare(player, shipName, targetValue, selector)
     local Mounts = include("copilot/mounts")
-    local prep = { ok = false, stage = "start", lines = {}, changed = 0 }
+    selector = selector or {}
+    local label = selector.label or "block"
+    local prep = { ok = false, stage = "start", lines = {}, changed = 0, selector = selector }
     local function line(text) prep.lines[#prep.lines + 1] = tostring(text) end
 
     local target = tonumber(targetValue)
@@ -496,33 +521,37 @@ function self.mountsPrepare(player, shipName, targetValue)
         line(gateMsg)
     end
 
-    local baseSet = self.mountsBaseSet()
-    if next(baseSet) == nil then
-        line("BlockType enum unavailable - cannot identify turret bases.")
+    if not selector.all and (type(selector.set) ~= "table" or next(selector.set) == nil) then
+        line("BlockType enum unavailable - cannot identify " .. label .. ".")
         return prep
     end
-    prep.baseSet = baseSet
+    prep.baseSet = selector.set            -- 执行器仍要用它来找炮塔底座（保样式 ✓）
+    prep.turretBaseSet = self.mountsBaseSet()   -- ★ 不管这次升哪种块，炮塔样式都要保 ✓
+    prep.selectedTypeNames = selector.typeNames
 
-    -- ② 副本上找底座（含空底座）+ 只挑比目标低的
+    -- ② 副本上找选中类型 + 只挑比目标低的
     local plan, copyErr = ship:getFullPlanCopy()
     if plan == nil then
         line("getFullPlanCopy failed: " .. tostring(copyErr))
         return prep
     end
     prep.plan = plan
-    local bases, collectErr = Mounts.collectBases(plan, baseSet)
-    prep.bases = bases
-    prep.baseCount = #bases
-    if #bases == 0 then
+    local selected, collectErr = Mounts.collectSelected(plan, selector)
+    prep.selected = selected
+    prep.selectedCount = #selected
+    -- 兼容旧字段（mountQuote/mountUpgrade/面板 ✓）
+    prep.bases = selected
+    prep.baseCount = #selected
+    if #selected == 0 then
         prep.stage = "plan"
-        line(collectErr or "This ship has no turret bases.")
+        line(collectErr or ("This ship has no " .. label .. " blocks."))
         return prep
     end
 
     local need = {}
-    for _, base in ipairs(bases) do
-        if base.materialValue ~= nil and base.materialValue < target then
-            need[#need + 1] = base.index
+    for _, item in ipairs(selected) do
+        if item.materialValue ~= nil and item.materialValue < target then
+            need[#need + 1] = item.index
         end
     end
     prep.need = need
@@ -530,8 +559,8 @@ function self.mountsPrepare(player, shipName, targetValue)
     if #need == 0 then
         prep.stage = "nothing"
         prep.nothingToDo = true
-        line("Nothing to do: all " .. tostring(#bases) .. " turret base(s) are already "
-            .. prep.targetName .. " or better.")
+        line("Nothing to do: all " .. tostring(#selected) .. " " .. label
+            .. "(s) are already " .. prep.targetName .. " or better.")
         return prep
     end
 
@@ -540,7 +569,8 @@ function self.mountsPrepare(player, shipName, targetValue)
     --     （读回原值、资源值 delta = 0，BlockPlan 也没有按下标的 material setter），
     --     证据见 docs/game/ops/mount-material-upgrade.md 的实测记录。
     local oldRes, oldMoney = Mounts.snapshot(plan)
-    local newPlan, rebuild = Mounts.rebuildPlan(plan, baseSet, target, Material)
+    local newPlan, rebuild = Mounts.rebuildPlan(plan, selector.set, target, Material,
+        { upgradeAll = selector.all == true })
     prep.rebuild = rebuild
     prep.newPlan = newPlan
     if newPlan == nil or rebuild.failed > 0 then
@@ -553,16 +583,16 @@ function self.mountsPrepare(player, shipName, targetValue)
     end
     if rebuild.upgraded ~= #need then
         prep.stage = "plan"
-        line("Plan rebuild upgraded " .. tostring(rebuild.upgraded) .. " base(s), expected "
-            .. tostring(#need) .. " - aborting, nothing was written.")
+        line("Plan rebuild upgraded " .. tostring(rebuild.upgraded) .. " " .. label
+            .. "(s), expected " .. tostring(#need) .. " - aborting, nothing was written.")
         return prep
     end
 
     local newRes, newMoney = Mounts.snapshot(newPlan)
     local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
     prep.quote = quote
-    line("Upgrade " .. tostring(#need) .. " of " .. tostring(#bases) .. " turret base(s) to "
-        .. prep.targetName .. ": " .. Mounts.formatResources(quote.resources)
+    line("Upgrade " .. tostring(#need) .. " of " .. tostring(#selected) .. " " .. label
+        .. "(s) to " .. prep.targetName .. ": " .. Mounts.formatResources(quote.resources)
         .. " + " .. tostring(quote.money) .. " credits")
 
     if quote.resourceUnits == 0 and quote.money == 0 then
@@ -596,13 +626,30 @@ function self.mountsPrepare(player, shipName, targetValue)
     return prep
 end
 
--- 执行器：**一次调用内**从副本算到写回，不跨调用保存半成品 ✓。
--- 返回 { ok, stage, shipName, lines, quote, changed, ... }
+-- 兼容旧入口：炮塔底座 = 4 个类型的组 ✓
+function self.mountsPrepare(player, shipName, targetValue)
+    local baseSet = self.mountsBaseSet()
+    local prep = self.blocksPrepare(player, shipName, targetValue, {
+        all = false,
+        set = baseSet,
+        label = "turret base",
+        typeNames = { "TurretBase", "EdgeTurretBase", "ArmoredTurretBase", "ArmoredEdgeTurretBase" },
+    })
+    prep.baseSet = baseSet
+    prep.bases = prep.selected
+    prep.baseCount = prep.selectedCount
+    return prep
+end
+
+-- 通用执行器：**一次调用内**从副本算到写回，不跨调用保存半成品 ✓。
+-- selector = { all=true }（整船）或 { set=<typeSet> }（某一种/某一组方块）。
 -- ★ confirmed=false 时**只报价、一个字节都不改** ✓（这是"绝不自动"的硬闸门）
--- ★ 前半段与 RPC 的 mountQuote **共用 mountsPrepare** ✓（报价逐字一致 ✓）。
-function self.mountsUpgrade(player, shipName, targetValue, confirmed)
+-- ★ 前半段与 RPC 的 blockQuote / shipQuote **共用 blocksPrepare** ✓（报价逐字一致 ✓）。
+function self.blocksUpgrade(player, shipName, targetValue, selector, confirmed)
     local Mounts = include("copilot/mounts")
-    local prep = self.mountsPrepare(player, shipName, targetValue)
+    selector = selector or {}
+    local label = selector.label or "block"
+    local prep = self.blocksPrepare(player, shipName, targetValue, selector)
     local result = {
         ok = false,
         stage = prep.stage or "start",
@@ -610,13 +657,23 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
         changed = 0,
         shipName = prep.shipName,
         targetMaterial = prep.targetMaterial,
-        baseCount = prep.baseCount,
+        targetName = prep.targetName,
+        selection = {
+            scope = selector.all and "all" or "types",
+            label = label,
+            blockType = selector.blockType,
+            blockTypes = selector.typeNames or {},
+        },
+        selectedCount = prep.selectedCount,
+        selectedBefore = prep.selected,
         needCount = prep.needCount,
-        basesBefore = prep.bases,
         quote = prep.quote,
         rebuild = prep.rebuild,
         affordable = prep.affordable,
         shortfall = prep.shortfall,
+        -- 兼容旧字段（mountUpgradeRpc / 面板 ✓）
+        baseCount = prep.selectedCount,
+        basesBefore = prep.selected,
     }
     local function line(text) result.lines[#result.lines + 1] = tostring(text) end
 
@@ -635,13 +692,15 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     end
 
     local ship = prep.ship
-    local baseSet = prep.baseSet
     local plan = prep.plan
-    local bases = prep.bases
+    local selected = prep.selected or {}
     local target = prep.targetMaterial
     local targetName = prep.targetName
     local newPlan = prep.newPlan
     local quote = prep.quote
+    -- ★ 炮塔样式永远要保（setMovePlan 重建整船 plan ✓，不管这次升的是哪种块 ✓）
+    local baseSet = prep.turretBaseSet
+    if baseSet == nil or next(baseSet) == nil then baseSet = self.mountsBaseSet() end
 
     if not confirmed then
         result.ok = true
@@ -678,6 +737,9 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     local bboxBefore = nil
     pcall(function() bboxBefore = plan:getBoundingBox() end)
 
+    -- 炮塔样式按"炮塔底座"的 center 重映射（与本次升哪种块无关 ✓）
+    local basesForTurretsBefore = Mounts.collectBases(plan, baseSet)
+
     local paidOk, paidErr = pcall(function()
         player:pay(quote.money, table.unpack(quote.resources))
     end)
@@ -707,7 +769,7 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     end
     local designsMapped, dropped = 0, 0
     if turretDesigns ~= nil and next(turretDesigns) ~= nil then
-        local remapped, mapped, lost = Mounts.remapDesigns(turretDesigns, bases, afterBases)
+        local remapped, mapped, lost = Mounts.remapDesigns(turretDesigns, basesForTurretsBefore, afterBases)
         designsMapped, dropped = mapped, lost
         if next(remapped) ~= nil then
             local okS, setErr = pcall(function() TurretBases(ship):setDesigns(remapped) end)
@@ -735,17 +797,17 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
 
     -- ⑤ 事后核验：材料真变了 / 块数没变 / 包围盒没变 / 炮塔没少
     local verifyPlan = ship:getFullPlanCopy()
-    local verifyBases = {}
-    if verifyPlan ~= nil then verifyBases = Mounts.collectBases(verifyPlan, baseSet) end
+    local verifySelected = {}
+    if verifyPlan ~= nil then verifySelected = Mounts.collectSelected(verifyPlan, selector) end
     local byCenter = {}
-    for _, base in ipairs(verifyBases) do
-        local key = Mounts.centerKey(base.center)
-        if key ~= nil then byCenter[key] = base end
+    for _, item in ipairs(verifySelected) do
+        local key = Mounts.centerKey(item.center)
+        if key ~= nil then byCenter[key] = item end
     end
     local verified, wrong = 0, 0
-    for _, base in ipairs(bases) do
-        if base.materialValue ~= nil and base.materialValue < target then
-            local key = Mounts.centerKey(base.center)
+    for _, item in ipairs(selected) do
+        if item.materialValue ~= nil and item.materialValue < target then
+            local key = Mounts.centerKey(item.center)
             local now = key and byCenter[key] or nil
             if now ~= nil and now.materialValue == target then
                 verified = verified + 1
@@ -792,7 +854,7 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     result.databaseSynced = entrySynced
     line("Applied. Paid " .. Mounts.formatResources(quote.resources)
         .. " + " .. tostring(quote.money) .. " credits.")
-    line("Verified: " .. tostring(verified) .. " base(s) now " .. targetName
+    line("Verified: " .. tostring(verified) .. " " .. label .. "(s) now " .. targetName
         .. ", " .. tostring(wrong) .. " not upgraded.")
     line("Shape: blocks " .. tostring(blockCountBefore) .. " -> " .. tostring(blockCountAfter)
         .. (shapeKept and " (unchanged)" or " *** CHANGED ***")
@@ -801,6 +863,20 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
         .. "; turret designs restored " .. tostring(designsMapped)
         .. (dropped > 0 and (" (lost " .. tostring(dropped) .. ")") or ""))
     line("Ship database plan synced: " .. (entrySynced and "yes" or "NO"))
+    return result
+end
+
+-- 兼容旧入口：炮塔底座 = 4 个类型的组 ✓
+function self.mountsUpgrade(player, shipName, targetValue, confirmed)
+    local baseSet = self.mountsBaseSet()
+    local result = self.blocksUpgrade(player, shipName, targetValue, {
+        all = false,
+        set = baseSet,
+        label = "turret base",
+        typeNames = { "TurretBase", "EdgeTurretBase", "ArmoredTurretBase", "ArmoredEdgeTurretBase" },
+    }, confirmed)
+    result.baseCount = result.selectedCount
+    result.basesBefore = result.selectedBefore
     return result
 end
 
@@ -825,7 +901,6 @@ function self.mountsQuoteRpc(player, shipName, targetValue)
 
     local fact = {
         what = "mountQuote",
-        liveProbe = "cli-live-check-20261018",
         ship = prep.shipName,
         targetMaterial = prep.targetMaterial,
         targetMaterialName = prep.targetName,
@@ -990,6 +1065,207 @@ function self.shipQuoteRpc(player, shipName, targetValue)
     fact.wroteShip = false
     fact.paid = false
     return fact
+end
+
+-- ★★ RPC 原子：blockQuote —— **某一种方块类型**的材料升级只读报价（通用接口 ✓ 2026-10-18）
+--
+-- 入参：{ what="blockQuote", ship, blockType, material }
+--   blockType = 原版 BlockType 名（Hull / Armor / CargoBay / Engine / TurretBase / ...）
+--               或数字 0..N；大小写不敏感 ✓（只认原版枚举 ✓，不造类别 ✗）
+-- ★ 纯事实：不 pay / 不 setMovePlan / 不写档案 ✓（**没有 confirm 参数** ✗）。
+-- ★ 与整船接口**分开**：整船是 shipQuote；这里只碰 blockType 选中的那种块 ✓。
+function self.blockQuoteRpc(player, shipName, blockTypeText, targetValue)
+    local Mounts = include("copilot/mounts")
+    local fact = {
+        what = "blockQuote",
+        ok = false,
+        ship = nil,
+        blockType = tostring(blockTypeText or ""),
+        blockTypeId = nil,
+        targetMaterial = tonumber(targetValue),
+        targetMaterialName = nil,
+        blockCount = nil,
+        totalBlockCount = nil,
+        distribution = {},
+        byType = {},
+        unknownMaterialBlocks = nil,
+        needUpgrade = nil,
+        quote = nil,
+        costs = {},
+        affordable = false,
+        shortfall = {},
+        nothingToDo = false,
+        readOnly = true,
+        changed = 0,
+        assertions = {},
+        stage = "start",
+        lines = {},
+        errors = {},
+    }
+    local function line(text) fact.lines[#fact.lines + 1] = tostring(text) end
+
+    local target = tonumber(targetValue)
+    if target == nil or target ~= math.floor(target) or target < 0
+        or target >= Mounts.NUM_MATERIALS then
+        fact.stage = "material"
+        line("Invalid target material.")
+        return fact
+    end
+    fact.targetMaterial = target
+    fact.targetMaterialName = Mounts.materialName(target)
+
+    local selector, selErr = self.blockSelector(blockTypeText)
+    if selector == nil then
+        fact.stage = "blockType"
+        line(selErr)
+        return fact
+    end
+    fact.blockType = selector.blockType
+    fact.blockTypeId = selector.blockTypeId
+
+    local ship, shipErr = self.mountsResolveShip(player, shipName)
+    if ship == nil then
+        fact.stage = "ship"
+        line(shipErr)
+        return fact
+    end
+    fact.ship = tostring(ship.name)
+
+    -- 环境闸门只报事实（报价不拦 ✓）；执行入口才用它 ✗✓
+    local gateOk, gateMsg = self.mountsEnvironmentGate(ship)
+    fact.environmentOk = gateOk and true or false
+    fact.environmentMessage = gateMsg
+
+    local plan = ship:getFullPlanCopy()
+    if plan == nil then
+        fact.stage = "plan"
+        line("getFullPlanCopy failed.")
+        return fact
+    end
+
+    local q = Mounts.quoteSelection(plan, selector, target, Material)
+    fact.ok = q.ok == true
+    fact.blockCount = q.blockCount
+    fact.totalBlockCount = q.totalBlockCount
+    fact.distribution = q.distribution or {}
+    fact.byType = q.byType or {}
+    fact.unknownMaterialBlocks = q.unknownMaterialBlocks
+    fact.needUpgrade = q.needUpgrade
+    fact.nothingToDo = q.nothingToDo == true
+    fact.stage = q.stage
+    fact.assertions = q.assertions or {}
+    fact.rebuild = q.rebuild
+    fact.errors = q.errors or {}
+    for _, text in ipairs(fact.errors) do line(text) end
+
+    if q.quote ~= nil then
+        fact.quote = q.quote
+        fact.resourceUnits = q.quote.resourceUnits
+        fact.credits = q.quote.money
+        for i = 1, #(q.quote.resources or {}) do
+            local amount = tonumber(q.quote.resources[i]) or 0
+            if amount > 0 then
+                fact.costs[#fact.costs + 1] = {
+                    materialIndex = i - 1,
+                    material = Mounts.materialName(i - 1),
+                    amount = amount,
+                }
+            end
+        end
+    end
+
+    if q.ok then
+        local affordable, payMsg, payArgs = self.mountsCanPay(player, q.quote)
+        fact.affordable = affordable and true or false
+        fact.payMessage = payMsg
+        fact.payArgs = payArgs
+        fact.shortfall = self.mountsShortfall(player, q.quote)
+
+        if fact.nothingToDo then
+            line("Nothing to do: all " .. tostring(fact.blockCount) .. " " .. tostring(fact.blockType)
+                .. " block(s) are already " .. tostring(fact.targetMaterialName) .. " or better.")
+        else
+            line("Upgrade " .. tostring(fact.needUpgrade) .. " of " .. tostring(fact.blockCount) .. " "
+                .. tostring(fact.blockType) .. " block(s) to " .. tostring(fact.targetMaterialName)
+                .. ": " .. Mounts.formatResources(q.quote.resources) .. " + "
+                .. tostring(q.quote.money) .. " credits"
+                .. (fact.affordable and "." or " (NOT affordable)."))
+        end
+    end
+
+    fact.wroteShip = false
+    fact.paid = false
+    return fact
+end
+
+-- 通用执行结果 → JSON 事实（blockUpgrade / shipUpgrade 共用 ✓）
+function self.blocksUpgradeRpc(player, shipName, targetValue, selector, confirmed, what)
+    local Mounts = include("copilot/mounts")
+    local result = self.blocksUpgrade(player, shipName, targetValue, selector, confirmed == true)
+
+    local fact = {
+        what = what,
+        ship = result.shipName,
+        targetMaterial = result.targetMaterial,
+        targetMaterialName = result.targetMaterial ~= nil
+            and Mounts.materialName(result.targetMaterial) or nil,
+        blockType = selector.blockType,
+        blockTypes = selector.typeNames or {},
+        scope = selector.all and "all" or "types",
+        confirmed = (confirmed == true),
+        executed = (result.stage == "applied"),
+        ok = result.ok == true,
+        stage = result.stage,
+        selectedCount = result.selectedCount,
+        needCount = result.needCount,
+        quote = result.quote,
+        affordable = result.affordable,
+        shortfall = result.shortfall or {},
+        changed = result.changed,
+        verified = result.verified,
+        wrong = result.wrong,
+        paid = result.paid,
+        shape = result.shape,
+        turrets = result.turrets,
+        databaseSynced = result.databaseSynced,
+        lines = result.lines or {},
+    }
+    -- ★ 逐块事实有上限（整船 4617 块绝不能全塞进答复 ✗）；超了只给计数 + 提示 ✓
+    local before = result.selectedBefore or {}
+    if #before <= 200 then
+        fact.blocks = self.mountsBaseFacts(before, result.targetMaterial)
+    else
+        fact.blocksOmitted = true
+        fact.blocksOmittedReason = "selected " .. tostring(#before)
+            .. " blocks > 200; per-block facts omitted (use blockQuote for aggregates)"
+    end
+    if confirmed ~= true and result.stage == "preview" then
+        fact.note = "PREVIEW ONLY -- nothing was changed. Pass confirm=true to apply."
+    end
+    return fact
+end
+
+-- ★★ RPC 原子：blockUpgrade —— **某一种方块类型**升级（confirm=true 才执行 ✓）
+function self.blockUpgradeRpc(player, shipName, blockTypeText, targetValue, confirmed)
+    local selector, selErr = self.blockSelector(blockTypeText)
+    if selector == nil then
+        return {
+            what = "blockUpgrade", ok = false, stage = "blockType",
+            blockType = tostring(blockTypeText or ""), confirmed = (confirmed == true),
+            executed = false, lines = { tostring(selErr) },
+        }
+    end
+    return self.blocksUpgradeRpc(player, shipName, targetValue, selector, confirmed, "blockUpgrade")
+end
+
+-- ★★ RPC 原子：shipUpgrade —— **整船**升级（独立接口 ✓；confirm=true 才执行 ✓）
+--   ★ 与 blockUpgrade 分开：这里 selector.all = true，所有低于目标的块都升 ✓。
+function self.shipUpgradeRpc(player, shipName, targetValue, confirmed)
+    return self.blocksUpgradeRpc(player, shipName, targetValue, {
+        all = true,
+        label = "block",
+        typeNames = {},
+    }, confirmed, "shipUpgrade")
 end
 
 -- ★★ RPC 原子：mountUpgrade —— **只有 confirm=true 才执行** ✓；否则与 CLI 预览一样只报价 ✓

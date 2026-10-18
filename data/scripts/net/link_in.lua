@@ -421,6 +421,52 @@ function CopilotLinkIn.onQuery(data)
         local Cli = include("copilot/cli")
         return true, Cli.shipQuoteRpc(player, shipQuoteShip, shipQuoteTarget)
 
+    elseif what == "blockQuote" or what == "blockUpgrade" then
+        -- ★★ 通用：**某一种方块类型**的材料升级（2026-10-18 加 ✓✓）
+        --   主人：「我希望能够独立升级舰船内的某一种类型方块，需要把这套接口做成通用化」
+        --   blockType = 原版 BlockType 名 / 数字（Hull / Armor / CargoBay / ... ✓）
+        -- ★ blockQuote = 纯事实；blockUpgrade 必须 confirm=true 才执行 ✓。
+        local blockShip = data.ship
+        if type(blockShip) ~= "string" or blockShip == "" then
+            return false, "BAD_REQUEST", "query " .. tostring(what) .. " needs data.ship"
+        end
+        local blockTypeText = data.blockType
+        if type(blockTypeText) ~= "string" or blockTypeText == "" then
+            return false, "BAD_REQUEST",
+                "query " .. tostring(what) .. " needs data.blockType " ..
+                "(vanilla BlockType name, e.g. Hull|Armor|CargoBay|Engine|TurretBase, or a number)"
+        end
+        local Mounts = include("copilot/mounts")
+        local blockTarget = Mounts.parseMaterial(data.material)
+        if blockTarget == nil then
+            return false, "BAD_REQUEST",
+                "query " .. tostring(what) .. " needs data.material " ..
+                "(iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6)"
+        end
+        local Cli = include("copilot/cli")
+        if what == "blockQuote" then
+            return true, Cli.blockQuoteRpc(player, blockShip, blockTypeText, blockTarget)
+        end
+        return true, Cli.blockUpgradeRpc(player, blockShip, blockTypeText, blockTarget,
+            data.confirm == true)
+
+    elseif what == "shipUpgrade" then
+        -- ★★ **整船**材料升级（独立接口 ✓ 2026-10-18）——
+        --   与 blockQuote/blockUpgrade 分开；必须 confirm=true 才 pay + setMovePlan ✓。
+        local shipUpShip = data.ship
+        if type(shipUpShip) ~= "string" or shipUpShip == "" then
+            return false, "BAD_REQUEST", "query shipUpgrade needs data.ship"
+        end
+        local Mounts = include("copilot/mounts")
+        local shipUpTarget = Mounts.parseMaterial(data.material)
+        if shipUpTarget == nil then
+            return false, "BAD_REQUEST",
+                "query shipUpgrade needs data.material " ..
+                "(iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6)"
+        end
+        local Cli = include("copilot/cli")
+        return true, Cli.shipUpgradeRpc(player, shipUpShip, shipUpTarget, data.confirm == true)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -431,7 +477,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），

@@ -99,11 +99,75 @@ function self.baseTypeSet(blockTypeEnum)
     return set
 end
 
-function self.isTurretBase(typeValue, baseSet)
-    if typeValue == nil or type(baseSet) ~= "table" then return false end
-    if baseSet[typeValue] then return true end
+-- ★ 通用类型判据（2026-10-18 加 ✓）—— 整船/任意类型升级都走这一个 set 判据 ✓。
+function self.isInSet(typeValue, typeSet)
+    if typeValue == nil or type(typeSet) ~= "table" then return false end
+    if typeSet[typeValue] then return true end
     local n = tonumber(typeValue)
-    return n ~= nil and baseSet[n] == true
+    return n ~= nil and typeSet[n] == true
+end
+
+function self.isTurretBase(typeValue, baseSet)
+    return self.isInSet(typeValue, baseSet)
+end
+
+-- 解析一个原版 BlockType（名字 / 数字 0..N）→ 值 + 规范名 + 错误。
+-- ★ 只认原版枚举名 ✓（Enums.html 的 BlockType 段），不自己造"类型类别" ✗。
+--   名字大小写不敏感；数字必须能在枚举表里反查到名字（查不到就回 "#<n>"，仍然可用 ✓）。
+function self.resolveBlockType(text, blockTypeEnum)
+    local trimmed = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if trimmed == "" then return nil, nil, "empty block type" end
+
+    local n = tonumber(trimmed)
+    if n ~= nil and n == math.floor(n) then
+        local name = nil
+        if type(blockTypeEnum) == "table" then
+            pcall(function()
+                for k, v in pairs(blockTypeEnum) do
+                    if type(k) == "string" and tonumber(v) == n then name = k break end
+                end
+            end)
+        end
+        return n, name or ("#" .. tostring(n)), nil
+    end
+
+    -- 直接查（枚举可能是 table，也可能是可索引的 userdata）
+    local okDirect, direct = pcall(function() return blockTypeEnum[trimmed] end)
+    if okDirect and direct ~= nil then
+        return tonumber(direct) or direct, trimmed, nil
+    end
+
+    -- 大小写不敏感扫描（仍然只接受枚举里真实存在的名字 ✓）
+    local lower = trimmed:lower()
+    local found, foundName = nil, nil
+    if type(blockTypeEnum) == "table" then
+        pcall(function()
+            for k, v in pairs(blockTypeEnum) do
+                if type(k) == "string" and k:lower() == lower then
+                    found, foundName = tonumber(v) or v, k
+                    break
+                end
+            end
+        end)
+    end
+    if found ~= nil then return found, foundName, nil end
+
+    return nil, nil, "unknown block type: " .. trimmed
+end
+
+-- 多个类型名 → 一个 set（炮塔底座就是"4 个类型的组"✓；通用接口也可以只给 1 个 ✓）
+function self.typeSet(blockTypeEnum, names)
+    local set, resolved, errors = {}, {}, {}
+    for _, name in ipairs(names or {}) do
+        local value, canonical, err = self.resolveBlockType(name, blockTypeEnum)
+        if value == nil then
+            errors[#errors + 1] = tostring(err)
+        else
+            addKey(set, value)
+            resolved[#resolved + 1] = canonical
+        end
+    end
+    return set, resolved, errors
 end
 
 -- ---------------------------------------------------------------------------
@@ -139,12 +203,15 @@ function self.blockCenter(block)
     return { x = center.x, y = center.y, z = center.z }
 end
 
--- 所有炮塔底座（**含没装炮塔的空底座** ✓ —— 判据只有方块类型，不看 TurretBases）。
--- 返回 list of {index, typeValue, materialValue, materialName, center}
-function self.collectBases(plan, baseSet)
+-- 通用选择器（2026-10-18 加 ✓）：selector = { all=true } 或 { all=false, set=<typeSet>, label=... }
+-- 返回 list of {index, typeValue, materialValue, materialName, center, block}
+function self.collectSelected(plan, selector)
     if plan == nil then return {}, "no plan" end
-    if type(baseSet) ~= "table" or next(baseSet) == nil then
-        return {}, "empty base type set (BlockType unavailable?)"
+    selector = selector or {}
+    local typeSet = selector.set
+    local selectAll = selector.all == true
+    if not selectAll and (type(typeSet) ~= "table" or next(typeSet or {}) == nil) then
+        return {}, "empty block type set (BlockType unavailable?)"
     end
 
     local indices, err = self.blockIndices(plan)
@@ -155,7 +222,7 @@ function self.collectBases(plan, baseSet)
         local ok, block = pcall(function() return plan:getBlock(index) end)
         if ok and block ~= nil then
             local typeValue = self.blockType(plan, index, block)
-            if self.isTurretBase(typeValue, baseSet) then
+            if selectAll or self.isInSet(typeValue, typeSet) then
                 local mv, name = nil, "?"
                 local okM, mat = pcall(function() return block.material end)
                 if okM and mat ~= nil then
@@ -175,6 +242,11 @@ function self.collectBases(plan, baseSet)
         end
     end
     return out, nil
+end
+
+-- 兼容旧入口：炮塔底座 = 4 个类型的组 ✓
+function self.collectBases(plan, baseSet)
+    return self.collectSelected(plan, { set = baseSet })
 end
 
 -- 资源/信用点快照（BlockPlan.html:534 getUndamagedResourceValue / :523 getUndamagedMoneyValue）
@@ -390,19 +462,80 @@ function self.materialDistribution(plan)
     }, nil
 end
 
--- 整船报价（只读）。返回纯事实表；**绝不 pay / setMovePlan / 写任何块** ✓。
---   blockCount / distribution / needUpgrade / quote{resources,money,resourceUnits}
---   nothingToDo / assertions{...} / errors[]
-function self.shipQuote(plan, targetValue, materialCtor, opts)
+-- 选择范围内的事实（只读）：方块数 / 每种材料几块 / 每种类型几块 / 要升几块 ✓
+-- selector = { all=true } 或 { all=false, set=<typeSet>, typeNames={...} }
+function self.selectionStats(plan, selector)
+    selector = selector or {}
+    local total, distErr = self.materialDistribution(plan)
+    if total == nil then return nil, distErr end
+
+    local selected, collectErr = self.collectSelected(plan, selector)
+    if collectErr ~= nil then return nil, collectErr end
+
+    local counts = {}
+    for i = 0, self.NUM_MATERIALS - 1 do counts[i] = 0 end
+    local typeCounts, typeOrder = {}, {}
+    local need, sum = 0, 0
+    for _, item in ipairs(selected) do
+        local mv = item.materialValue
+        if mv ~= nil and counts[mv] ~= nil then
+            counts[mv] = counts[mv] + 1
+            sum = sum + mv
+            if mv < (tonumber(selector.targetValue) or -1) then need = need + 1 end
+        end
+        local key = tostring(item.typeValue)
+        if typeCounts[key] == nil then
+            typeCounts[key] = {
+                blockType = tonumber(item.typeValue) or tostring(item.typeValue),
+                blockTypeId = tonumber(item.typeValue),
+                blocks = 0,
+            }
+            typeOrder[#typeOrder + 1] = key
+        end
+        typeCounts[key].blocks = typeCounts[key].blocks + 1
+    end
+
+    local distribution = {}
+    for i = 0, self.NUM_MATERIALS - 1 do
+        distribution[#distribution + 1] = {
+            material = self.materialName(i),
+            materialValue = i,
+            blocks = counts[i],
+        }
+    end
+    local byType = {}
+    for _, key in ipairs(typeOrder) do byType[#byType + 1] = typeCounts[key] end
+
+    return {
+        blockCount = #selected,
+        totalBlockCount = total.blockCount,
+        distribution = distribution,
+        byType = byType,
+        materialSum = sum,
+        needUpgrade = need,
+        totalMaterialSum = total.materialSum,
+        unknownMaterialBlocks = total.unknownMaterialBlocks,
+        selected = selected,
+    }, nil
+end
+
+-- 通用报价（只读）：scope = 整船（selector.all）或任意类型组（selector.set）。
+-- ★ 成本口径 = 原版修船坞 repairdock.lua:993-1017 / :1019-1037（见本文件 quote() 头上 ✓）。
+function self.quoteSelection(plan, selector, targetValue, materialCtor, opts)
     opts = opts or {}
     materialCtor = materialCtor or Material
+    selector = selector or { all = true }
 
     local out = {
         ok = false,
         stage = "start",
+        scope = selector.all and "all" or "types",
+        blockType = selector.blockType,
+        blockTypes = selector.typeNames or {},
         blockCount = nil,
+        totalBlockCount = nil,
         distribution = {},
-        unknownMaterialBlocks = nil,
+        byType = {},
         needUpgrade = nil,
         nothingToDo = false,
         quote = nil,
@@ -430,32 +563,35 @@ function self.shipQuote(plan, targetValue, materialCtor, opts)
     out.targetMaterial = target
     out.targetMaterialName = self.materialName(target)
 
-    local before, distErr = self.materialDistribution(plan)
-    if before == nil then return fail("plan", distErr) end
+    selector.targetValue = target
+    local before, statsErr = self.selectionStats(plan, selector)
+    if before == nil then return fail("plan", statsErr) end
     out.blockCount = before.blockCount
+    out.totalBlockCount = before.totalBlockCount
     out.distribution = before.distribution
+    out.byType = before.byType
     out.unknownMaterialBlocks = before.unknownMaterialBlocks
+    out.needUpgrade = before.needUpgrade
 
-    local need = 0
-    for _, entry in ipairs(before.distribution) do
-        if entry.materialValue < target then need = need + entry.blocks end
+    if before.blockCount == 0 then
+        return fail("plan", "No blocks match this selection.")
     end
-    out.needUpgrade = need
 
     local oldRes, oldMoney = self.snapshot(plan)
     if oldRes == nil or oldMoney == nil then return fail("plan", "plan snapshot failed") end
 
     -- 已经全达到目标：报价为 0，且仍然做只读断言 ✓
-    if need == 0 then
+    if before.needUpgrade == 0 then
         out.nothingToDo = true
         out.quote = self.quote(oldRes, oldRes, oldMoney, oldMoney, 1.0)
-        local after, afterErr = self.materialDistribution(plan)
-        out.assertions.sourcePlanUnchanged = (after ~= nil)
-        out.assertions.blockCountKept = (after ~= nil and after.blockCount == before.blockCount)
-        out.assertions.materialFingerprintKept = (after ~= nil
-            and after.materialSum == before.materialSum
-            and after.unknownMaterialBlocks == before.unknownMaterialBlocks)
-        out.assertions.newPlanDistinct = true       -- 没有重建新 plan（无事可做）
+        local afterFull, afterErr = self.materialDistribution(plan)
+        out.assertions.sourcePlanUnchanged = (afterFull ~= nil)
+        out.assertions.blockCountKept = (afterFull ~= nil
+            and afterFull.blockCount == before.totalBlockCount)
+        out.assertions.materialFingerprintKept = (afterFull ~= nil
+            and afterFull.materialSum == before.totalMaterialSum
+            and afterFull.unknownMaterialBlocks == before.unknownMaterialBlocks)
+        out.assertions.newPlanDistinct = true
         out.assertions.upgradedCountMatched = true
         if afterErr ~= nil or not out.assertions.sourcePlanUnchanged
             or not out.assertions.blockCountKept
@@ -469,8 +605,8 @@ function self.shipQuote(plan, targetValue, materialCtor, opts)
     end
 
     -- ★ 只在**新建的 plan** 上改；源 plan 只被读 ✓
-    local newPlan, rebuild = self.rebuildPlan(plan, nil, target, materialCtor,
-        { upgradeAll = true })
+    local newPlan, rebuild = self.rebuildPlan(plan, selector.set, target, materialCtor,
+        { upgradeAll = selector.all == true })
     if rebuild ~= nil then
         out.rebuild = {
             added = rebuild.added,
@@ -486,7 +622,7 @@ function self.shipQuote(plan, targetValue, materialCtor, opts)
     end
 
     out.assertions.newPlanDistinct = (newPlan ~= plan)
-    out.assertions.upgradedCountMatched = (rebuild.upgraded == need)
+    out.assertions.upgradedCountMatched = (rebuild.upgraded == before.needUpgrade)
 
     local newRes, newMoney = self.snapshot(newPlan)
     if newRes == nil or newMoney == nil then return fail("plan", "new plan snapshot failed") end
@@ -503,9 +639,10 @@ function self.shipQuote(plan, targetValue, materialCtor, opts)
         if tonumber(afterMoney) ~= tonumber(oldMoney) then resKept = false end
     end
     out.assertions.sourcePlanUnchanged = resKept
-    out.assertions.blockCountKept = (after ~= nil and after.blockCount == before.blockCount)
+    out.assertions.blockCountKept = (after ~= nil
+        and after.blockCount == before.totalBlockCount)
     out.assertions.materialFingerprintKept = (after ~= nil
-        and after.materialSum == before.materialSum
+        and after.materialSum == before.totalMaterialSum
         and after.unknownMaterialBlocks == before.unknownMaterialBlocks)
 
     if afterErr ~= nil or not out.assertions.sourcePlanUnchanged
@@ -519,6 +656,17 @@ function self.shipQuote(plan, targetValue, materialCtor, opts)
     out.ok = true
     out.stage = "quoted"
     return out
+end
+
+-- 通用类型报价（只给某一种/某一组方块 ✓）
+function self.typeQuote(plan, selector, targetValue, materialCtor, opts)
+    return self.quoteSelection(plan, selector, targetValue, materialCtor, opts)
+end
+
+-- 整船报价：selector.all = true（**独立接口** ✓；不要把"某一种类型"和"整船"混在一个入口 ✗）
+function self.shipQuote(plan, targetValue, materialCtor, opts)
+    return self.quoteSelection(plan, { all = true, typeNames = {}, label = "whole ship" },
+        targetValue, materialCtor, opts)
 end
 
 function self.formatResources(resources)

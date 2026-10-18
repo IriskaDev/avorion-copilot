@@ -1101,6 +1101,9 @@ M.WHATS = {
     "mountQuote",       -- ★★ 原子：炮塔底座材料升级报价（纯事实、绝不改船 ✓ 2026-10-18 加 ✓）
     "mountUpgrade",     -- ★★ 原子：炮塔底座材料升级（**只有 confirm=true 才执行** ✓ 2026-10-18 加 ✓）
     "shipQuote",        -- ★★ 原子：**整船**材料升级只读报价（纯事实、绝不改船 ✓ 2026-10-18 加 ✓）
+    "blockQuote",       -- ★★ 原子：**某一种方块类型**材料升级只读报价（通用 ✓ 2026-10-18 加 ✓）
+    "blockUpgrade",     -- ★★ 原子：**某一种方块类型**材料升级（只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
+    "shipUpgrade",      -- ★★ 原子：**整船**材料升级（独立接口；只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1210,7 +1213,39 @@ M.SHIP_QUOTE_PARAMS = {
         "blockCount + distribution[{material, materialValue, blocks}]（每种材料几块 ✓）+ " ..
         "needUpgrade + quote{resources[7], money, resourceUnits} + costs[] + affordable + " ..
         "shortfall[{kind, material, need, have, missing}] + nothingToDo + assertions（只读断言 ✓）。" ..
-        "★ 没有 confirm 参数；执行入口**不在**本原子里 ✗。",
+        "★ 没有 confirm 参数；执行入口是本组里**独立**的 shipUpgrade ✓。",
+}
+-- ★★ 通用"某一种方块类型"接口（2026-10-18 加 ✓✓ —— 主人「我希望能够独立升级舰船内的
+--   某一种类型方块，需要把这套接口做成通用化」）
+--   ★ blockType = **原版 BlockType 名 / 数字**（Enums.html：Hull / Armor / CargoBay / Engine /
+--     TurretBase / ...）—— 只认原版枚举 ✓，不自己造类别 ✗。
+--   ★ 炮塔底座（mountQuote/mountUpgrade）只是"4 个类型的组"的历史快捷入口 ✓；
+--     新代码请用 blockQuote/blockUpgrade（或 mounts = blockQuote blockType 那 4 个名字 ✓）。
+M.BLOCK_QUOTE_PARAMS = {
+    ship = "string：必填 ✓（船名；必须是**本星区里你自己的船** ✓）",
+    blockType = "string：必填 ✓ —— 原版 BlockType 名（Hull|Armor|CargoBay|Engine|TurretBase|...）或数字 0..N；大小写不敏感 ✓",
+    material = "string：必填 ✓ —— iron|titanium|naonite|trinium|xanion|ogonite|avorion 或 0-6（也认中文 ✓）",
+    note = "**某一种方块类型**的只读报价 ✓：blockCount（该类型几块）+ totalBlockCount + " ..
+        "distribution（该类型的材料分布 ✓）+ byType + needUpgrade + quote{resources[7], money, resourceUnits} + " ..
+        "costs[] + affordable + shortfall[] + nothingToDo + assertions（只读断言 ✓）。" ..
+        "★ 不 pay / 不 setMovePlan / 不写档案 ✓；没有 confirm 参数 ✗（执行用 blockUpgrade ✓）。",
+}
+M.BLOCK_UPGRADE_PARAMS = {
+    ship = "string：必填 ✓（船名 ✓）",
+    blockType = "string：必填 ✓（同上 ✓）",
+    material = "string：必填 ✓（同上 ✓）",
+    confirm = "boolean：**缺省 false = 只报价、绝不执行** ✗✓；**必须显式 true 才扣资源/信用点并写回** ✓",
+    note = "只升级 blockType 选中的那种块 ✓；结果与 mountsUpgrade 同结构：" ..
+        "selectedCount/needCount/changed/verified/wrong/paid/shape/turrets/databaseSynced/lines[] ✓。" ..
+        "★ setMovePlan 会重建整船 plan → 炮塔样式/实物仍按原逻辑保住 ✓。",
+}
+M.SHIP_UPGRADE_PARAMS = {
+    ship = "string：必填 ✓（船名 ✓）",
+    material = "string：必填 ✓（同上 ✓）",
+    confirm = "boolean：**缺省 false = 只报价、绝不执行** ✗✓；**必须显式 true 才执行** ✓",
+    note = "**整船**升级（与 blockUpgrade **分开的独立接口** ✓）：所有低于目标材料的块都升 ✓。" ..
+        "★ 成本可能很大（整船几千块）→ 请先 shipQuote/本接口 confirm=false 拿报价 ✓；" ..
+        "结果同 blockUpgrade 结构，但逐块 facts 超过 200 块会省略（blocksOmitted ✓）。",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",
