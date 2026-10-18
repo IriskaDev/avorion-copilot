@@ -456,4 +456,7 @@ fleet_query { what:"systemsFacts", ship:"Miner-00001" }
   远程船 `socketsKnown=false` ✓、两个 `known=false` 路径 ✓、完整卡与简报一致 ✓）。
 * 生效方式：改 **Lua** → **重载存档或重启游戏** ✓（`net/*` 与 `include` 缓存都不会热更新 ✗）；
   改**插件** → **重启 DSH** ✓。
-* 真机样例：见 §11.7。
+* 真机样例：**待激活后补** ✓ —— 改 Lua 后跑着的游戏 VM 仍是旧代码（实测：`caps` 里没有
+  `systemsFacts`，`query systemsFacts` 回 `unknown what` ✓），本 mod 不强制杀游戏 ✗。
+  重载存档后跑 `fleet_query {what:"systemsFacts", ship:"<当前船>"}` 与一艘远程船，
+  把两份原文贴到本节即可 ✓。
