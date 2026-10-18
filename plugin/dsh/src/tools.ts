@@ -425,7 +425,14 @@ export function registerFleetTools(
         'risk:{known, attackChance, baseAttackChance, riskKind, ...} = the ambush assessment of THIS ' +
         'order, computed by the SAME code as fleet_query what=predict (so it matches what you predicted; ' +
         'for Travel it is the whole-trip ambush chance). known=false means the game could NOT compute it: ' +
-        'attackChance is then null -- never read that as 0%. ★★ The receipt now ALSO carries ' +
+        'attackChance is then null -- never read that as 0%. ★★ For Trade the box->route list is ' +
+        'validated BEFORE ordering with the SAME implementation tradeEvaluate uses: if goodName is not ' +
+        'one of that box\'s routes RIGHT NOW, the receipt is accepted:false with error starting ' +
+        '"NO_ROUTE:" plus noRoute:{goodName, routeCount, candidates:[up to 8 route names], didYouMean, ' +
+        'box} -- and NOTHING was queued (no area analysis, no startCommand). Read noRoute.candidates and ' +
+        'order one of those instead: the vanilla route list is a live sample (top 4) and hides routes ' +
+        'occupied for 120 s, so a route you saw a few seconds ago can be gone. Matching is EXACT ' +
+        '(case/spacing/plural must match); didYouMean only suggests. ★★ The receipt now ALSO carries ' +
         'preflight:{ok, code, reason, checks, warnings, ...} (the game checked the vanilla ' +
         'preconditions BEFORE ordering -- preflight.ok=false means NOTHING was ordered: no area ' +
         'analysis, no startCommand) and verify:{ok, evidence, busy, moved, atDestination, cargoUsed, ' +
