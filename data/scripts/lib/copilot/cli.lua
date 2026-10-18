@@ -1,16 +1,26 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"
--- copilotcli —— **/copilot 聊天命令的真正实现**（命令中枢）。
+-- copilotcli —— Copilot 的**能力实现层**（2026-10-18 起：聊天命令层已退役，见文件末尾 ✓）。
+--
+-- ★ 退役结论（先说清楚 ✗✓）：
+--   `/copilot ...` 的**注册 / 解析 / help 已退役** ✓ —— `self.execute` 只回一句
+--   「已退役，请用面板 / RPC」✓（理由与替代入口见文件末尾那一节 ✓）。
+--   本文件继续**保留**、也继续**被 RPC 与面板调用** ✓✓：
+--     RPC（`data/scripts/net/link_in.lua`）：mountsQuoteRpc / mountsUpgradeRpc /
+--         shipQuoteRpc / blockQuoteRpc / blockUpgradeRpc / shipUpgradeRpc
+--     面板（`data/scripts/player/ui/panel.lua`）：mountsPanelState / mountsUpgrade
+--   ★ 这些函数**不许删、不许改签名** ✗✓ —— 它们才是真正的入口 ✓。
 --
 -- ★ 为什么不放在 commands/copilot.lua 里 ✗→✓（2026-10-16 重构，主人提的 ✓）：
 --   那个文件的**名字不是它的作用** ✗ —— 目录与文件名都是引擎约定：
 --     · 目录必须是 data/scripts/commands/ ✓（引擎只扫这一个 ✓）
 --     · **文件名就是聊天命令名** ✓：copilot.lua → /copilot ✓（改名 = 命令消失 ✗）
---   所以它只能叫 copilot.lua ✗，而它实际装的是整台命令中枢 ✓（名不符实 ✓）。
---   现在：入口只留引擎要的三个钩子 ✓，实现全在本文件 ✓✓。
+--   所以它只能叫 copilot.lua ✗，而它装的其实是**能力实现** ✓（2026-10-18 起连命令中枢
+--   都退役了 ✓）。现在：入口仍是那三个引擎钩子 ✓，能力全在本文件 ✓✓。
 --
--- ⚠️ 本文件必须在 RELOADABLE 里 ✗✓ —— `/copilot reload` 靠「重执行文件体」换实现 ✓，
---   若不在清单里，以后改它按 reload 不生效 ✗（只能重启游戏 ✓）。
+-- ⚠️ 本文件仍在 RELOADABLE 里 ✗✓ —— 但**2026-10-18 起 `self.reload` 已没有入口** ✗
+--   （`execute` 不再分发 reload ✓；RPC 的 reload 只是个 stub ✓）→ 现在改本文件要生效，
+--   只能**重载存档或重启游戏** ✓✓。RELOADABLE 与 reload 函数保留 = 可逆 + 历史证据 ✓。
 -- ⚠️ lib 规矩：只放定义 + return 表 ✓；不许有需要 net 链全局的顶层语句 ✗
 --   （命令脚本活在另一个 VM ✓，那边 CopilotRpc 是 nil ✓ —— 见 AGENTS.md ✓）。
 
@@ -1814,8 +1824,13 @@ function self.mountsPanelState(player, selectedShip, selectedMaterial, reportOve
 end
 
 -- ---------------------------------------------------------------------------
--- 热重载（开发提速）
+-- 热重载（开发提速）—— ⚠️ 2026-10-18 起**已无入口** ✓（聊天命令层退役 ✓）
 -- ---------------------------------------------------------------------------
+--
+-- 下面这套（RELOADABLE / copilotReloadOne / self.reload）**保留不删** ✓，
+-- 但**没有任何调用者** ✗ —— execute 不再分发 reload，RPC 的 reload 是 stub
+-- （`net/link_in.lua:5642` 只置 reloadRequested ✓）。要恢复它，在 execute 里加回
+-- 一个 `reload` 分支即可 ✓（旧分发器在 git 历史里 ✓）。
 --
 -- 为什么能重载：我们的脚本都是「命名空间脚本」——
 --   文件体只是 CopilotUI = {} + function CopilotUI.xxx() 这样的定义；
@@ -1834,10 +1849,11 @@ local RELOADABLE = {
     "data\\scripts\\player\\ai\\autopilot.lua",
     "data\\scripts\\player\\ai\\ops.lua",
     "data\\scripts\\player\\ui\\panel.lua",
-    -- ★ 命令中枢（2026-10-16 起逻辑在本文件 ✓）—— 必须在表里 ✗✓，
-    --   否则以后改它按 `/copilot reload` 不会生效 ✓（只能重启游戏 ✓）。
+    -- ★ 命令中枢（2026-10-16 起逻辑在本文件 ✓）—— 2026-10-18 聊天层退役后
+    --   `self.reload` **已无入口** ✓，本表仅作历史留档 ✓（现在改本文件 = 重载存档 ✓）。
     "data\\scripts\\lib\\copilot\\cli.lua",
-    -- ★ 炮塔底座材料升级的纯逻辑（2026-10-17）—— 改它也只要 `/copilot reload` ✓。
+    -- ★ 炮塔底座材料升级的纯逻辑（2026-10-17）—— 原本改它只要 `/copilot reload` ✓；
+    --   2026-10-18 起 reload 无入口 → 改它也只能**重载存档 / 重启游戏** ✓。
     --   include 会缓存它，但文件体是 `CopilotMounts = CopilotMounts or {}` + 定义，
     --   重执行 = 原地换掉函数实现 ✓（和 cli.lua 同一个 VM）。
     "data\\scripts\\lib\\copilot\\mounts.lua",
@@ -1893,225 +1909,67 @@ function self.reload(player, which)
         "Copilot reload: " .. tostring(done) .. " ok, " .. tostring(failed) .. " failed.")
 end
 
+-- ===========================================================================
+-- ★★ 聊天命令层已退役（2026-10-18 ✓✓）
+-- ===========================================================================
+--
+-- 主人原话：「/copilot 那套我认为没必要维护了，我反正不用，你用起来也不方便」✓
+--
+-- 为什么整层退役 ✗→✓：
+--   · 主人**不用**任何 `/copilot ...` 子命令 ✓；
+--   · 决策者（DSH 侧）**敲不进游戏聊天** ✗ —— 它只有 RPC（`net/link_in.lua`）✓；
+--   → 每个子命令都已经有一个**真机用过**的替代入口，聊天层对双方都没入口价值 ✗：
+--       on / off / explore / status → 面板（`player/ui/panel.lua:590` setEnabled /
+--         `:608` setExplore / `:520` refresh ✓）
+--       mounts（炮塔底座 / 整船 / 单一方块类型）→ 面板按钮，或 RPC
+--         mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade
+--         （`net/link_in.lua:379-468` → 本文件的 mountsQuoteRpc / mountsUpgradeRpc /
+--           shipQuoteRpc / blockQuoteRpc / blockUpgradeRpc / shipUpgradeRpc ✓）
+--       goal                    → RPC setGoal（`net/link_in.lua:5608` onSetGoal ✓）
+--       status / ops            → RPC fleet / ship（能力卡，`net/link_in.lua:54-76` ✓）
+--       reload                  → ★ **没有等价入口** ✗：改代码现在只能重载存档 / 重启游戏 ✓
+--         （RPC 的 reload 是 stub：`net/link_in.lua:5642` 只置 reloadRequested，无人消费 ✗）
+--       netstop / netstart      → 本来就**已证明会把派发搞坏** ✗✗（2026-10-17 两次真机：
+--         `docs/dev/hot-reload-and-vm-boundaries.md:74-95` ✓）→ 停用，也不再复述它们的用法
+--       probe / mountprobe / mountsetter / mountrebuild → 开发探针，改用 harness 或重载存档 ✓
+--
+-- ★★ 退役的是**入口**，不是能力 ✗✓：
+--   · `mountsUpgrade` / `mountsPanelState`（面板叫的）与全部 `*Rpc`（RPC 叫的）
+--     **一个都没动** ✓ —— 它们在本文件上半部分，是 mounts.lua 之上的同一套逻辑 ✓。
+--   · 只服务于聊天的函数（opsStatus / mountsCommand / mountProbe / mountRebuildProbe /
+--     mountSetterProbe / reload / copilotProbe / probe*）**保留不删** ✓：
+--     没人调 = 不会执行 ✓，零成本；删了只会让想恢复的人去 git 里捞 ✗。
+--   · 想恢复整个聊天层 = 把本函数改回旧分发器（git 历史里有一份 ✓）。
 function self.execute(player, arg, rest)
-    -- player 由入口传进来 ✓（入口负责 Player(sender) 与 nil 判断 ✓）
     if not player then
         return 0, "", ""
     end
 
-    rest = rest or {}
     local a = tostring(arg or ""):lower()
 
-    if a == "on" or a == "start" or a == "enable" then
-        player:setValue("copilot_enabled", true)
-        player:addScriptOnce("data/scripts/player/ai/autopilot.lua")
-        player:sendChatMessage("Server", ChatMessageType.Information, "Copilot enabled. Your current ship now flies itself."%_t)
-        player:sendChatMessage("Server", ChatMessageType.Information, "This ship is under Copilot control. Click the Copilot button (top right) or use /copilot off to take it back."%_t)
-
-    elseif a == "off" or a == "stop" or a == "disable" then
-        player:setValue("copilot_enabled", false)
-        player:sendChatMessage("Server", ChatMessageType.Information, "Copilot disabled."%_t)
-
-    -- ★★ net 链的专用重挂（2026-10-16 ✓）
-    --
-    -- 为什么需要它 ✗✓：`/copilot reload` 只能重载**同一个 VM** 的文件 ✗，
-    --   而 net 链活在另一个 VM（见 AGENTS.md 的「热重载的 VM 边界」✓）。
-    --   net 链的改动要生效，原本只能**重启游戏** ✗ —— 而重启会丢掉
-    --   名单与目标（player value 未必落盘 ✗）。
-    --   本命令用「摘掉挂载的脚本再挂回去」来**在同一个 VM 里重跑整条链** ✓✓，
-    --   不需要重启游戏 ✓，名单目标全部保留 ✓✓。
-    --
-    -- ⚠️ 必须**分成两条命令** ✗：removeScript 是延迟生效的 ✓，
-    --    同一次执行里紧接着 addScriptOnce 可能被那次延迟移除连带干掉 ✗。
-    --    所以：先 /copilot netstop，等两秒，再 /copilot netstart ✓✓。
-    elseif a == "netstop" then
-        player:removeScript("data/scripts/net/net.lua")
+    -- ★ netstop/netstart 单独一句：不是"换个入口"的问题，是**会弄坏派发** ✗✗
+    if a == "netstop" or a == "netstart" then
         player:sendChatMessage("Server", ChatMessageType.Information,
-            -- ⚠️ 这里**不能**用 %_t 后缀 ✗：引擎没把这两个字符串当本地化字面量处理 ✓，
-            --    于是 Lua 见到 `"…" % _t` 就当成**取模运算** ✗ →
-            --    "attempt to perform arithmetic on a string value" ✓（2026-10-16 实测 ✓）
-            "Copilot net chain: unmounted. Now run /copilot netstart.")
-
-    elseif a == "netstart" then
-        -- ★★★ 必须先清 `include` 缓存 ✗→✓（2026-10-16 实测 ✓✓）
-        --
-        -- 起因：重挂后 `tradePlan` 依然不存在 ✓，而且 trace 里**没有** initialize 行 ✗。
-        -- 根因有两层：
-        --   ① `CopilotNet = CopilotNet or {}`（热重载友好 ✓）在同一个 VM 里保留旧表 ✗
-        --      → `handlersReady` 还是 true → `initialize()` 早退 ✗
-        --   ② `include` 会**缓存** ✗ → 即使 initialize 跑了，拿到的也是旧版的 lib ✗
-        -- 所以：先清缓存 ✓，再把 `handlersReady` 清掉（下一次 initialize 才会真跑 ✓）。
-        local cleared = 0
-        for k in pairs(package.loaded) do
-            if type(k) == "string" then
-                local lk = string.lower(k)
-                if string.find(lk, "copilot", 1, true) or string.find(lk, "net/", 1, true)
-                   or lk == "net" or string.find(lk, "commandtype", 1, true)
-                   or string.find(lk, "commandfactory", 1, true) or string.find(lk, "areaanalysis", 1, true) then
-                    package.loaded[k] = nil
-                    cleared = cleared + 1
-                end
-            end
-        end
-        if CopilotNet ~= nil then CopilotNet.handlersReady = nil end
-
-        player:addScriptOnce("data/scripts/net/net.lua")
-        player:sendChatMessage("Server", ChatMessageType.Information,
-            "Copilot net chain: remounted (cleared " .. tostring(cleared) .. " cached modules).")
-        player:sendChatMessage("Server", ChatMessageType.Information,
-            "Copilot net chain: remounted (fresh VM, all libs reloaded).")
-
-    elseif a == "explore" then
-        local sub = tostring(rest[1] or ""):lower()
-        if sub == "on" or sub == "true" or sub == "1" then
-            player:setValue("copilot_explore", true)
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot will now jump to new sectors when the current one is cleared."%_t)
-        elseif sub == "off" or sub == "false" or sub == "0" then
-            player:setValue("copilot_explore", false)
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot will no longer auto-jump."%_t)
-        else
-            local on = player:getValue("copilot_explore")
-            -- "On"/"Off"/"None" are spelled the way the base game's localization files spell
-            -- them, so they reuse the existing translations instead of staying English.
-            local state = "Off"%_t
-            if on then state = "On"%_t end
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot auto-explore is %1%. Use /copilot explore on|off."%_T, state)
-        end
-
-    elseif a == "goal" or a == "goals" then
-        -- ★ 目标（主人 2026-10-14 定的核心概念 ✓）
-        --   /copilot goal                              列出所有已设目标
-        --   /copilot goal <船名> <文字...>              设文字目标（最常用 ✓）
-        --   /copilot goal <船名> text <文字...>         同上，显式写法
-        --   /copilot goal <船名> options Mine,Salvage  设选项目标
-        --   （可选动作 = Goal.KNOWN_ACTIONS：Mine / Salvage / Trade / Travel / Sell / Scout / Refine ✓）
-        --   /copilot goal <船名> clear                 清掉
-        local player2 = player
-        local Goal = include("copilot/goal")
-
-        local ship = tostring(rest[1] or "")
-        local verb = tostring(rest[2] or ""):lower()
-
-        -- 不带船名 = 列出全部
-        if ship == "" then
-            local names = {}
-            for n in tostring(player2:getValue("copilot_auto_ships") or ""):gmatch("[^\n]+") do
-                table.insert(names, n)
-            end
-            local shown = 0
-            for _, n in ipairs(names) do
-                local d = Goal.describe(player2, n)
-                if d.hasGoal then
-                    shown = shown + 1
-                    local opts = "(none)"
-                    if #d.options > 0 then opts = table.concat(d.options, ", ") end
-                    player2:sendChatMessage("Server", ChatMessageType.Information,
-                        "%1%  text=[%2%]  options=[%3%]"%_T, n, d.text, opts)
-                    if #d.unknown > 0 then
-                        player2:sendChatMessage("Server", ChatMessageType.Warning,
-                            "%1%  unknown options ignored: %2%"%_T, n, table.concat(d.unknown, ", "))
-                    end
-                end
-            end
-            if shown == 0 then
-                player2:sendChatMessage("Server", ChatMessageType.Information,
-                    "No goal set on any listed ship. Usage: /copilot goal <ship> <text>"%_t)
-            end
-
-        elseif verb == "clear" or verb == "none" or verb == "off" then
-            Goal.clear(player2, ship)
-            player2:sendChatMessage("Server", ChatMessageType.Information,
-                "Goal cleared for %1%."%_T, ship)
-
-        elseif verb == "options" or verb == "option" then
-            -- 剩下的词按逗号/顿号/空格切开 ✓
-            local joined = table.concat(rest, " ", 3)
-            local opts = {}
-            for piece in joined:gmatch("[^,，、%s]+") do
-                if piece ~= "" then table.insert(opts, piece) end
-            end
-            local good, bad = Goal.sanitizeOptions(opts)
-            if #good == 0 then
-                player2:sendChatMessage("Server", ChatMessageType.Warning,
-                    "No known action in that list. Known: Mine, Salvage, Trade, Travel, Sell, Scout, Refine"%_t)
-            else
-                Goal.setOptions(player2, ship, good)
-                player2:sendChatMessage("Server", ChatMessageType.Information,
-                    "Options for %1%: %2%"%_T, ship, table.concat(good, ", "))
-                if #bad > 0 then
-                    player2:sendChatMessage("Server", ChatMessageType.Warning,
-                        "Ignored (unknown): %1%"%_T, table.concat(bad, ", "))
-                end
-            end
-
-        else
-            -- 文字目标：verb 是第一个词，从 rest[2] 开始
-            local text = table.concat(rest, " ", 2)
-            if verb == "text" then text = table.concat(rest, " ", 3) end
-            if text == "" then
-                player2:sendChatMessage("Server", ChatMessageType.Warning,
-                    "Usage: /copilot goal <ship> <text>  |  <ship> options Mine,Salvage  |  <ship> clear"%_t)
-            else
-                Goal.setText(player2, ship, text)
-                player2:sendChatMessage("Server", ChatMessageType.Information,
-                    "Goal for %1%: %2%"%_T, ship, text)
-            end
-        end
-    elseif a == "status" or a == "state" then
-        local enabled = player:getValue("copilot_enabled")
-        local craft = player.craft
-        if enabled and craft then
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot is ON, controlling %1%."%_T, tostring(craft.name))
-        elseif enabled then
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot is ON, but you are not in a ship."%_t)
-        else
-            player:sendChatMessage("Server", ChatMessageType.Information, "Copilot is OFF."%_t)
-        end
-
-        -- ships ticked in the Copilot panel as "operated by the AI"
-        local names = {}
-        for name in tostring(player:getValue("copilot_auto_ships") or ""):gmatch("[^\n]+") do
-            table.insert(names, name)
-        end
-        local list = "None"%_t
-        if #names > 0 then list = table.concat(names, ", ") end
-        player:sendChatMessage("Server", ChatMessageType.Information,
-            "Ships operated by the AI (%1%): %2%"%_T, #names, list)
-
-    elseif a == "reload" then
-        self.reload(player, tostring(rest[1] or ""))
-
-    elseif a == "ops" then
-        self.opsStatus(player)
-
-    -- ★ 炮塔底座材料升级（只由玩家手动触发，绝不自动 ✓）
-    --   全部逻辑在 mountsUpgrade / mountsCommand 里；本分支只做分发 ✓。
-    elseif a == "mounts" or a == "mount" then
-        self.mountsCommand(player, rest)
-
-    -- ★ 只读探针（验证调研里的两个 ⚠；绝不写回船 ✓）
-    elseif a == "mountprobe" or a == "mountprobe2" then
-        self.mountProbe(player, table.concat(rest, " "))
-
-    elseif a == "mountsetter" then
-        self.mountSetterProbe(player, table.concat(rest, " "))
-
-    elseif a == "mountrebuild" then
-        self.mountRebuildProbe(player, table.concat(rest, " "))
-
-    elseif a == "probe" then
-        copilotProbe(player)
-
-    else
-        player:sendChatMessage("Server", ChatMessageType.Information, "Copilot: /copilot on | off | explore on|off | status | ops | mounts | mountprobe | reload | probe"%_t)
+            "/copilot netstop|netstart stays disabled: both broke the net chain in the 2026-10-17 live tests. To make net changes take effect, reload the save or restart the game."%_t)
+        return 0, "", ""
     end
+
+    -- ★ reload 也没有替代入口：如实说明现在怎么生效 ✓
+    if a == "reload" then
+        player:sendChatMessage("Server", ChatMessageType.Information,
+            "/copilot reload is retired too: code changes now take effect after reloading the save or restarting the game."%_t)
+        return 0, "", ""
+    end
+
+    player:sendChatMessage("Server", ChatMessageType.Information,
+        "/copilot chat commands are retired. Use the Copilot panel (top right), or the fleet_query RPC atoms (mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade)."%_t)
 
     return 0, "", ""
 end
 
 
-self.DESCRIPTION = "Toggle the Copilot autopilot that plays your current ship"
+self.DESCRIPTION = "Copilot (chat commands retired; use the panel or the RPC atoms)"
 
-self.HELP = "Usage: /copilot on | off | explore on|off | status | ops | mounts [list|<material> [ship] [confirm]] | mountprobe [ship] | reload | probe | goal <ship> <text|options ...|clear>"
+self.HELP = "Retired. Use the Copilot panel (top right) or the fleet_query RPC atoms: mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade."
 
 return self

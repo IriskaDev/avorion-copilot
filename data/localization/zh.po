@@ -129,3 +129,22 @@ msgstr "跃迁"
 # 缺船长：硬门槛，只提示一次（否则每 tick 重试会刷屏）
 msgid "Copilot: this ship needs a captain before it can mine or salvage."
 msgstr "副驾驶：本舰需要一名船长才能采矿或打捞。"
+
+# ---------- 聊天命令层已退役（2026-10-18）----------
+# 下面这几条是"退役说明"：/copilot 的任何子命令都只回一句「已退役，请用面板 / RPC」。
+# 旧的那些指令串（"Copilot: /copilot on | off | ..." 等）仍留在上面，原因是
+# 对应的 Lua 字面量还在 cli.lua 里（没人调、但没删 ✓）—— 留着它们不影响任何东西。
+msgid "/copilot chat commands are retired. Use the Copilot panel (top right), or the fleet_query RPC atoms (mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade)."
+msgstr "「/copilot」聊天命令已退役。请用右上角的 Copilot 面板，或 fleet_query 的 RPC 原子（mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade）。"
+
+msgid "/copilot reload is retired too: code changes now take effect after reloading the save or restarting the game."
+msgstr "「/copilot reload」也已退役：改代码现在要重载存档或重启游戏才生效。"
+
+msgid "/copilot netstop|netstart stays disabled: both broke the net chain in the 2026-10-17 live tests. To make net changes take effect, reload the save or restart the game."
+msgstr "「/copilot netstop|netstart」保持停用：2026-10-17 两次真机实测都把 net 链搞坏了（只发不收）。net 改动要生效，请重载存档或重启游戏。"
+
+msgid "Copilot (chat commands retired; use the panel)"
+msgstr "副驾驶（聊天命令已退役，请用面板）"
+
+msgid "Usage: /copilot (retired) - use the Copilot panel (top right) or the fleet_query RPC atoms"
+msgstr "用法：/copilot 已退役 —— 请用右上角的 Copilot 面板，或 fleet_query 的 RPC 原子"
