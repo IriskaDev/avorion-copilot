@@ -5,8 +5,11 @@
 -- `M.systemsFacts` / `M.shipCard` / `M.shipBrief` ✓。
 --
 -- 断言点（主人这一轮的要求逐条对上 ✓）：
---   ① 本星区船：numSockets / maxSockets / numUpgrades / processingPower / equipped 全部读到 ✓
---   ② 远程船（不在本星区）：`socketsKnown=false` + 原因，**绝不填 0** ✗✓；equipped 仍可读 ✓
+--   ① 本星区船：numSockets / maxSockets / numUpgrades / processingPower / equipped 全部读到 ✓；
+--      ★ 2026-10-18 扩展：sockets{num,max,used,free} / 逐槽 slots / 20 个 ppThresholds /
+--      missing（nextSocket=3、missingPP=7654.4）✓
+--   ② 远程船（不在本星区）：socketsKnown/slotsKnown/ppThresholdsKnown/missingKnown 全 false
+--      + 原因，**绝不填 0 / 空表** ✗✓；equipped 仍可读 ✓
 --   ③ known=false 路径：plan 失败 / getSystems 失败 → 值**不写** + known=false + 原因 ✓
 --   ④ 不存在的船 → NO_SUCH_SHIP（不崩、不编）✓
 --   ⑤ **只读断言**：调用前后 资源/信用点/方块数/计划 一字不差，写接口调用计数全 0 ✓✓
@@ -14,6 +17,10 @@
 --      只回 2 个值时 → cooldown/impaired **不写** + known=false ✓
 --   ⑦ 完整卡 与 简报：hyperspace（含 cooldown/impaired）逐字一致 ✓
 --   ⑧ onQuery 分支 + caps 自我声明（WHATS / systemsFactsParams）✓
+--   ⑨ PP 极高：所有门槛都低于 currentPP → missingPP=0 是**合法 0** + probeExhausted ✓
+--   ⑩a PP 门槛读炸 → ppThresholdsKnown=false + **不写值**（不是 0 个门槛 ✗）✓
+--   ⑩b 逐槽读炸 → slotsKnown=false + **不写空表**（不是 3 个空槽 ✗）✓
+--   ⑪ caps 声明新三样 + 新路径只读总闸 ✓
 --
 -- 跑法（在仓库根执行）：
 --   native\harness\lua.exe native\harness\_systemsfacts_selftest.lua
@@ -86,6 +93,11 @@ local SHIPS = {
         sockets = { numSockets = 3, maxSockets = 4, numUpgrades = 2 },
         processingPower = 12345.6,
         systems = { SYS_MINING, SYS_TRADING },
+        -- ★ 逐槽数据（索引 0 基；1 基窗口只有 1 个非 nil → 自动判定应选 0 基 ✓）
+        slotOccupancy = { [0] = SYS_MINING, [2] = SYS_TRADING },
+        permanent = { [2] = true },
+        -- ★ 原样值：0/1/2 都低于 PP(12345.6)，第 3 槽 20000 > PP → missing 应指向 3 ✓
+        ppThresholds = { [0] = 100, [1] = 1000, [2] = 8000, [3] = 20000, [4] = 30000 },
         hyper = { 4.1, false, 30, true },
         title = "Mine",
     },
@@ -112,6 +124,38 @@ local SHIPS = {
         processingPower = 7.5,
         systems = {},
         hyper = { 1.1, false },              -- 旧版本/异常：只有 2 个值
+        title = "",
+    },
+    -- ⑨ PP 极高：所有门槛都低于它 → missingPP 必须是**合法 0**（不是缺数据 ✓）
+    ["Rich-00001"] = {
+        inSector = true,
+        sockets = { numSockets = 5, maxSockets = 15, numUpgrades = 2 },
+        processingPower = 1000000000,
+        systems = { SYS_TRADING },
+        slotOccupancy = { [0] = SYS_TRADING, [4] = SYS_MINING },
+        hyper = { 2, false },
+        title = "Mine",
+    },
+    -- ⑩a 第 4 个 PP 读数就炸 → ppThresholdsKnown=false / missingKnown=false，且绝不填 0 ✓
+    ["BrokenPP-00001"] = {
+        inSector = true,
+        sockets = { numSockets = 2, maxSockets = 4, numUpgrades = 1 },
+        processingPower = 5000,
+        systems = {},
+        slotOccupancy = { [0] = SYS_MINING },
+        ppThrowsAt = 3,
+        hyper = { 2, false },
+        title = "",
+    },
+    -- ⑩b 逐槽读就炸 → slotsKnown=false / slots **不写**（不是「3 个空槽」✗）
+    ["BrokenSlot-00001"] = {
+        inSector = true,
+        sockets = { numSockets = 3, maxSockets = 4, numUpgrades = 1 },
+        processingPower = 999,
+        systems = {},
+        slotOccupancy = { [0] = SYS_MINING },
+        slotsThrowAt = 1,
+        hyper = { 2, false },
         title = "",
     },
 }
@@ -202,7 +246,7 @@ function ShipSystem(entity)
     shipSystemCalls[name] = (shipSystemCalls[name] or 0) + 1
     local spec = SHIPS[name]
     if spec == nil or spec.sockets == nil then error("ShipSystem: no such entity") end
-    return {
+    local ss = {
         numSockets = spec.sockets.numSockets,
         maxSockets = spec.sockets.maxSockets,
         numUpgrades = spec.sockets.numUpgrades,
@@ -212,6 +256,25 @@ function ShipSystem(entity)
         removeUpgrade = writeBomb("removeUpgrade"),
         setUpgrade = writeBomb("setUpgrade"),
     }
+    -- ★ 逐槽 / 每槽 PP 门槛（真机签名：ShipSystem.html:162-201，本替身只回数据 ✓）
+    ss.getUpgrade = function(_, i)
+        if spec.slotsThrowAt == i then
+            error("getUpgrade(" .. tostring(i) .. ") exploded")
+        end
+        return (spec.slotOccupancy or {})[i]
+    end
+    ss.isPermanent = function(_, i)
+        return (spec.permanent or {})[i] == true
+    end
+    ss.getProcessingPowerForSocket = function(_, i)
+        if spec.ppThrowsAt == i then
+            error("getProcessingPowerForSocket(" .. tostring(i) .. ") exploded")
+        end
+        local t = spec.ppThresholds
+        if t ~= nil and t[i] ~= nil then return t[i] end
+        return (i + 1) * 10000          -- 缺省单调递增，便于「全部低于 PP」路径 ✓
+    end
+    return ss
 end
 
 ShipAvailability = { Available = 0, InBackground = 1 }
@@ -314,6 +377,87 @@ if ok1 == true then
     check("① 排序稳定：miningsystem 在 tradingoverview 之前",
         res1.equipped[1].script:find("miningsystem", 1, true) ~= nil,
         tostring(res1.equipped[1] and res1.equipped[1].script))
+
+    -- ★★ 新三样（2026-10-18 扩展）：「上限 / 每槽空不空 / 缺多少 PP」✓
+    check("① sockets 四元组 num=3 / max=4 / used=2 / free=1（★ free = num - used ✓）",
+        type(res1.sockets) == "table" and res1.sockets.num == 3 and res1.sockets.max == 4
+            and res1.sockets.used == 2 and res1.sockets.free == 1,
+        type(res1.sockets) == "table"
+            and string.format("%s/%s/%s/%s", tostring(res1.sockets.num), tostring(res1.sockets.max),
+                tostring(res1.sockets.used), tostring(res1.sockets.free)) or "missing")
+    check("① sockets.freeDefinition 明写 num - used ✓",
+        type(res1.sockets) == "table" and type(res1.sockets.freeDefinition) == "string"
+            and res1.sockets.freeDefinition:find("num - used", 1, true) ~= nil,
+        type(res1.sockets) == "table" and tostring(res1.sockets.freeDefinition) or "missing")
+    check("① sockets.maxSocketsSemanticsKnown=false（文档没写语义 → 不解释 ✗）",
+        type(res1.sockets) == "table" and res1.sockets.maxSocketsSemanticsKnown == false,
+        type(res1.sockets) == "table" and tostring(res1.sockets.maxSocketsSemanticsKnown) or "missing")
+    check("① slotsKnown=true / 逐槽 3 个（numSockets=3 ✓）",
+        res1.slotsKnown == true and type(res1.slots) == "table" and #res1.slots == 3,
+        string.format("%s/%s", tostring(res1.slotsKnown),
+            type(res1.slots) == "table" and #res1.slots or tostring(res1.slots)))
+    check("① slots[1] index=0 occupied=true subsystemName=Mining System",
+        res1.slots[1] ~= nil and res1.slots[1].index == 0 and res1.slots[1].occupied == true
+            and res1.slots[1].subsystemName == "Mining System",
+        res1.slots[1] and string.format("%s/%s/%s", tostring(res1.slots[1].index),
+            tostring(res1.slots[1].occupied), tostring(res1.slots[1].subsystemName)) or "missing")
+    check("① slots[2] index=1 occupied=false（★ 空格 ✓）",
+        res1.slots[2] ~= nil and res1.slots[2].index == 1 and res1.slots[2].occupied == false,
+        res1.slots[2] and string.format("%s/%s", tostring(res1.slots[2].index),
+            tostring(res1.slots[2].occupied)) or "missing")
+    check("① slots[3] index=2 occupied=true permanent=true（isPermanent 逐槽 ✓）",
+        res1.slots[3] ~= nil and res1.slots[3].index == 2 and res1.slots[3].occupied == true
+            and res1.slots[3].permanent == true,
+        res1.slots[3] and string.format("%s/%s/%s", tostring(res1.slots[3].index),
+            tostring(res1.slots[3].occupied), tostring(res1.slots[3].permanent)) or "missing")
+    check("① slotIndexBase=0 / slotIndexBaseKnown=true（被 numUpgrades 反向对齐 ✓）",
+        res1.slotIndexBase == 0 and res1.slotIndexBaseKnown == true,
+        string.format("%s/%s", tostring(res1.slotIndexBase), tostring(res1.slotIndexBaseKnown)))
+    check("① slotsConsistentWithNumUpgrades=true（2 个占用 = numUpgrades ✓）",
+        res1.slotsConsistentWithNumUpgrades == true and res1.slotsOccupiedCount == 2,
+        string.format("%s/%s", tostring(res1.slotsConsistentWithNumUpgrades),
+            tostring(res1.slotsOccupiedCount)))
+    check("① ppThresholdsKnown=true / 20 个原样值 ✓",
+        res1.ppThresholdsKnown == true and type(res1.ppThresholds) == "table"
+            and #res1.ppThresholds == 20,
+        string.format("%s/%s", tostring(res1.ppThresholdsKnown),
+            type(res1.ppThresholds) == "table" and #res1.ppThresholds or tostring(res1.ppThresholds)))
+    check("① ppThresholds[1] socket=0 requiredProcessingPower=100（原样）",
+        res1.ppThresholds[1] ~= nil and res1.ppThresholds[1].socket == 0
+            and res1.ppThresholds[1].requiredProcessingPower == 100,
+        res1.ppThresholds[1] and string.format("%s/%s", tostring(res1.ppThresholds[1].socket),
+            tostring(res1.ppThresholds[1].requiredProcessingPower)) or "missing")
+    check("① ppThresholds[4] socket=3 requiredProcessingPower=20000",
+        res1.ppThresholds[4] ~= nil and res1.ppThresholds[4].socket == 3
+            and res1.ppThresholds[4].requiredProcessingPower == 20000,
+        res1.ppThresholds[4] and string.format("%s/%s", tostring(res1.ppThresholds[4].socket),
+            tostring(res1.ppThresholds[4].requiredProcessingPower)) or "missing")
+    check("① thresholdSemanticsKnown=false（官方文档没写语义 → 不解释 ✓✓）",
+        res1.thresholdSemanticsKnown == false, tostring(res1.thresholdSemanticsKnown))
+    check("① ppThresholdsNonDecreasing=true（事实描述，不是语义解释 ✓）",
+        res1.ppThresholdsNonDecreasing == true, tostring(res1.ppThresholdsNonDecreasing))
+    check("① missingKnown=true / missing.known=true / inferred=true",
+        res1.missingKnown == true and type(res1.missing) == "table"
+            and res1.missing.known == true and res1.missing.inferred == true,
+        string.format("%s/%s/%s", tostring(res1.missingKnown),
+            type(res1.missing) == "table" and tostring(res1.missing.known) or "nil",
+            type(res1.missing) == "table" and tostring(res1.missing.inferred) or "nil"))
+    check("① missing.nextSocket=3 / requiredPP=20000 / currentPP=12345.6",
+        res1.missing.nextSocket == 3 and res1.missing.requiredPP == 20000
+            and res1.missing.currentPP == 12345.6,
+        string.format("%s/%s/%s", tostring(res1.missing.nextSocket),
+            tostring(res1.missing.requiredPP), tostring(res1.missing.currentPP)))
+    check("① missing.missingPP = 20000 - 12345.6（推断差额 ✓）",
+        type(res1.missing.missingPP) == "number"
+            and math.abs(res1.missing.missingPP - 7654.4) < 1e-6,
+        tostring(res1.missing.missingPP))
+    check("① missing.nextSocketAtOrBeyondCurrentSockets=true（3 >= 0 + 3 ✓）",
+        res1.missing.nextSocketAtOrBeyondCurrentSockets == true,
+        tostring(res1.missing.nextSocketAtOrBeyondCurrentSockets))
+    check("① missing.thresholdSemanticsKnown=false / socketIndexBase=0",
+        res1.missing.thresholdSemanticsKnown == false and res1.missing.socketIndexBase == 0,
+        string.format("%s/%s", tostring(res1.missing.thresholdSemanticsKnown),
+            tostring(res1.missing.socketIndexBase)))
 end
 check("① 只读：调用后 资源/信用点/方块数 一字不差 ✓", snapshotState() == before,
     before .. " -> " .. snapshotState())
@@ -345,6 +489,21 @@ if ok2 == true then
         res2.systemsKnown == true and res2.equippedCount == 1
             and findEquipped(res2, "data/scripts/systems/tradingoverview.lua") ~= nil,
         string.format("%s/%s", tostring(res2.systemsKnown), tostring(res2.equippedCount)))
+    -- ★ 新三样在远程船上必须「未知」，不是 0 / 空表 ✓✓
+    check("② sockets / slots / ppThresholds / missing **一个都不写**（未知 ≠ 0 ✗✓）",
+        res2.sockets == nil and res2.slots == nil and res2.ppThresholds == nil
+            and res2.missing == nil,
+        string.format("%s/%s/%s/%s", tostring(res2.sockets), tostring(res2.slots),
+            tostring(res2.ppThresholds), tostring(res2.missing)))
+    check("② slotsKnown / ppThresholdsKnown / missingKnown 全 false + 各有原因",
+        res2.slotsKnown == false and res2.ppThresholdsKnown == false and res2.missingKnown == false
+            and type(res2.slotsUnknownReason) == "string"
+            and type(res2.ppThresholdsUnknownReason) == "string"
+            and type(res2.missingUnknownReason) == "string",
+        string.format("%s/%s/%s", tostring(res2.slotsKnown),
+            tostring(res2.ppThresholdsKnown), tostring(res2.missingKnown)))
+    check("② thresholdSemanticsKnown 仍=false（未知也照实说 ✓）",
+        res2.thresholdSemanticsKnown == false, tostring(res2.thresholdSemanticsKnown))
 end
 
 -- ---------------------------------------------------------------------------
@@ -471,6 +630,81 @@ if okC == true then
             and caps.systemsFactsParams.note:find("纯事实", 1, true) ~= nil,
         type(caps.systemsFactsParams))
 end
+
+-- ---------------------------------------------------------------------------
+-- ⑨ PP 极高：missingPP 是**合法 0**（probeExhausted），不是缺数据
+-- ---------------------------------------------------------------------------
+print("== ⑨ 所有门槛都低于 currentPP → missingPP = 0 ==")
+local ok9, res9 = LinkIn.onQuery({ what = "systemsFacts", ship = "Rich-00001" })
+check("⑨ ok=true", ok9 == true, tostring(res9))
+if ok9 == true then
+    check("⑨ sockets.free = 5 - 2 = 3（有 3 个空槽 ✓）",
+        type(res9.sockets) == "table" and res9.sockets.num == 5 and res9.sockets.used == 2
+            and res9.sockets.free == 3,
+        type(res9.sockets) == "table" and tostring(res9.sockets.free) or "missing")
+    check("⑨ slots 5 个 / 0 与 4 占用、中间 3 个空",
+        res9.slotsKnown == true and #res9.slots == 5
+            and res9.slots[1].occupied == true and res9.slots[2].occupied == false
+            and res9.slots[3].occupied == false and res9.slots[4].occupied == false
+            and res9.slots[5].occupied == true,
+        string.format("known=%s count=%s", tostring(res9.slotsKnown),
+            type(res9.slots) == "table" and #res9.slots or tostring(res9.slots)))
+    check("⑨ missingKnown=true / missingPP=0 / probeExhausted=true（合法 0 ✓）",
+        res9.missingKnown == true and res9.missing.missingPP == 0
+            and res9.missing.probeExhausted == true,
+        type(res9.missing) == "table" and string.format("%s/%s", tostring(res9.missing.missingPP),
+            tostring(res9.missing.probeExhausted)) or "missing")
+    check("⑨ 没有更高门槛 → nextSocket **不写**（不填 0 ✗✓）",
+        res9.missing.nextSocket == nil, tostring(res9.missing.nextSocket))
+end
+
+-- ---------------------------------------------------------------------------
+-- ⑩ 读不到 → known=false + 值**不写**（绝不 0 / 绝不空表 ✗✓）
+-- ---------------------------------------------------------------------------
+print("== ⑩ 读不到：known=false + 值不写 ==")
+local okA, resA = LinkIn.onQuery({ what = "systemsFacts", ship = "BrokenPP-00001" })
+check("⑩a ok=true（诚实说读不到 ✓）", okA == true, tostring(resA))
+if okA == true then
+    check("⑩a ppThresholdsKnown=false 且 ppThresholds **不写**（不是 0 个门槛 ✗）",
+        resA.ppThresholdsKnown == false and resA.ppThresholds == nil,
+        string.format("%s/%s", tostring(resA.ppThresholdsKnown), tostring(resA.ppThresholds)))
+    check("⑩a ppThresholdsUnknownReason 记了具体槽",
+        type(resA.ppThresholdsUnknownReason) == "string"
+            and resA.ppThresholdsUnknownReason:find("socket 3", 1, true) ~= nil,
+        tostring(resA.ppThresholdsUnknownReason))
+    check("⑩a missingKnown=false 且 missing **不写**（missingPP 不是 0 ✗✓）",
+        resA.missingKnown == false and resA.missing == nil,
+        string.format("%s/%s", tostring(resA.missingKnown), tostring(resA.missing)))
+end
+local okB, resB = LinkIn.onQuery({ what = "systemsFacts", ship = "BrokenSlot-00001" })
+check("⑩b ok=true", okB == true, tostring(resB))
+if okB == true then
+    check("⑩b slotsKnown=false 且 slots **不写**（不是 3 个空槽 ✗）",
+        resB.slotsKnown == false and resB.slots == nil,
+        string.format("%s/%s", tostring(resB.slotsKnown), tostring(resB.slots)))
+    check("⑩b slotsUnknownReason 记了 getUpgrade 失败",
+        type(resB.slotsUnknownReason) == "string"
+            and resB.slotsUnknownReason:find("getUpgrade", 1, true) ~= nil,
+        tostring(resB.slotsUnknownReason))
+end
+
+-- ---------------------------------------------------------------------------
+-- ⑪ caps 自我声明新三样 + 新路径也只读
+-- ---------------------------------------------------------------------------
+print("== ⑪ caps 声明 + 只读总闸 ==")
+if okC == true and type(caps.systemsFactsParams) == "table" then
+    local pnote = tostring(caps.systemsFactsParams.note or "")
+    check("⑪ note 提到 sockets{num,max,used,free}",
+        pnote:find("sockets{num,max,used,free}", 1, true) ~= nil, pnote)
+    check("⑪ note 提到 slots 逐槽", pnote:find("slots[", 1, true) ~= nil, pnote)
+    check("⑪ note 提到 ppThresholds 与 missing",
+        pnote:find("ppThresholds", 1, true) ~= nil and pnote:find("missing", 1, true) ~= nil, pnote)
+    check("⑪ note 明说 thresholdSemanticsKnown=false",
+        pnote:find("thresholdSemanticsKnown=false", 1, true) ~= nil, pnote)
+end
+check("⑪ 新路径也只读：写接口计数仍为 0 ✓", writesTotal() == 0, tostring(writesTotal()))
+check("⑪ 新路径也不改 资源/信用点/方块数 ✓", snapshotState() == before5,
+    before5 .. " -> " .. snapshotState())
 
 -- ---------------------------------------------------------------------------
 print(string.format("\n%d checks, %d failure(s)", checks, failures))
