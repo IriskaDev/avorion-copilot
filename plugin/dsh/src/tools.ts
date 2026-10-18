@@ -225,12 +225,19 @@ export function registerFleetTools(
         'verified, normalized, piloted, busy, migrated{goalText,goalOptions,designated,config}, evidence{...}}: ' +
         'this mod ALSO migrates its own name-keyed state (goal / panel roster / per-ship config) in the SAME ' +
         'call, so the ship does not silently lose its goal. After a rename, use the NEW name in every later call. ' +
-        '★★ what=systemsFacts is the PURE-FACT subsystem read (nothing is written): numSockets / maxSockets / ' +
-        'numUpgrades (vanilla ShipSystem fields; numUpgrades = OCCUPIED sockets, NOT the number of sockets), ' +
+        '★★ what=systemsFacts is the PURE-FACT subsystem read (nothing is written): ' +
+        'sockets{num,max,used,free} (★ free = num - used), slots[{index,occupied,subsystemName?,script?,permanent?}] ' +
+        '(EVERY socket, empty or full), ppThresholds[{socket,requiredProcessingPower}] (raw values from ' +
+        'ShipSystem:getProcessingPowerForSocket, at most 20) and missing{nextSocket?,requiredPP?,currentPP,missingPP} ' +
+        '(★ INFERRED: inferred=true, first threshold above currentPP) plus numSockets / maxSockets / numUpgrades ' +
+        '(vanilla ShipSystem fields; numUpgrades = OCCUPIED sockets, NOT the number of sockets), ' +
         'processingPower (entry:getPlan().processingPower), equipped:[{name, script, rarity, rarityValue}] ' +
-        '(entry:getSystems(), readable for ships far away) plus the known flags socketsKnown / systemsKnown / ' +
-        'processingPowerKnown. ★ For a ship that is NOT in your current sector there is no entity, so ' +
-        'socketsKnown=false + socketsUnknownReason -- that is UNKNOWN, never 0 sockets; equipped is still read. ' +
+        '(entry:getSystems(), readable for ships far away) and the known flags socketsKnown / slotsKnown / ' +
+        'ppThresholdsKnown / missingKnown / systemsKnown / processingPowerKnown. ' +
+        '★ thresholdSemanticsKnown=false: the vanilla docs do NOT say what getProcessingPowerForSocket means ' +
+        '(per-socket cost vs required threshold) -- never present missing.nextSocket/missingPP as an engine fact. ' +
+        '★ For a ship NOT in your current sector there is no entity, so socketsKnown/slotsKnown/ppThresholdsKnown/' +
+        'missingKnown=false + a reason -- that is UNKNOWN, never 0 sockets; equipped is still read. ' +
         'The old plan queries -- tradePlan | minePlan | ' +
         'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
