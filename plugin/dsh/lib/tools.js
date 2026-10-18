@@ -369,8 +369,9 @@ opts = {}) {
                 description: 'Trade/Travel/Mine/Salvage: escort ship names. The vanilla escort check is ' +
                     'SimulationUtility.isShipUsableAsEscort: available, and within the ESCORT\'s own ' +
                     'hyperspace reach (a same-sector escort is just the easy case) -- "too far away" makes ' +
-                    'the game abort the whole order. Owner rule: an escort only counts for the risk model ' +
-                    'when it is in the SAME SECTOR, so prefer same-sector escorts. Vanilla never checks ' +
+                    'the game abort the whole order. Vanilla does NOT require the same sector: the only ' +
+                    'distance gate is the escort\'s own reach (simulationutility.lua:156-163), so a ship ' +
+                    'in another sector is perfectly usable. Vanilla never checks ' +
                     'armament; the receipt reports canFight as a warning.',
             },
             goodsToSell: {
@@ -434,9 +435,11 @@ opts = {}) {
     // fleet_escort -- send an escort over to the target ship's sector
     //
     // The owner's feature (2026-10-17): when a job's ambush risk is too high and
-    // the only way to lower it is an escort, but no escort is in the action
-    // ship's sector, the escort has to TRAVEL there first (HARD RULE: an escort
-    // only counts if it is in the SAME SECTOR as the action ship).
+    // the only way to lower it is an escort, but no escort is within the action
+    // ship's reach, the escort has to TRAVEL there first. Vanilla rule (NOT a
+    // same-sector rule): an escort is usable when the action ship is within the
+    // ESCORT's own hyperspace reach -- simulationutility.lua:156-163; same sector
+    // is only the distance-0 case. 2026-10-18 real-machine verified.
     //
     // This is the explicit, human-drivable version of the step the decide flow
     // does on its own (see index.ts: escortNeedOf / pickRendezvousEscort).
@@ -444,14 +447,16 @@ opts = {}) {
     addTool(ctx, {
         name: 'fleet_escort',
         description: 'Send an escort ship to the target ship sector with a Travel background command, so the ' +
-            'target can later take a risky job with a SAME-SECTOR escort. FIRST judge whether the target ' +
+            'target can later take a risky job with a nearby escort. FIRST judge whether the target ' +
             'actually needs it: predict the target job ambush risk (risk.baseAttackChance); at/below the ' +
             '10% gate it usually does NOT need an escort, and combat ships are allowed to idle, so do not ' +
-            'send one just to give an idle ship work. HARD RULE: an escort only ' +
-            'counts if it is in the same sector as the action ship, so this is the only way to make an ' +
-            'escort usable. The target sector is resolved here from the target ship card. Travel needs a ' +
-            'destination at least 2 jumps away; if the game refuses for any reason, the refusal is ' +
-            'returned verbatim (this tool never retries by itself).',
+            'send one just to give an idle ship work. Vanilla rule (no same-sector requirement): an ' +
+            'escort is usable when the action ship is within the ESCORT\'s own hyperspace reach ' +
+            '(simulationutility.lua:156-163) -- same sector is only the distance-0 case. A ship already ' +
+            'inside that reach needs NO travel: pass escorts=[...] on the action instead. The target ' +
+            'sector is resolved here from the target ship card. Travel needs a destination at least ' +
+            '2 jumps away; if the game refuses for any reason, the refusal is returned verbatim (this ' +
+            'tool never retries by itself).',
         parameters: {
             escort: {
                 type: 'string',

@@ -305,7 +305,7 @@ export interface OrderPreflight {
   /**
    * ★ 提示（**不是失败** ✓）：原版**不会**拒绝、但按主人的规矩/机制值得知道的事。
    *   例：`DURATION_CLAMPED`（被原版夹紧）、`SELL_SKIPPED`（卖不掉的货被剔掉）、
-   *       `ESCORT_UNARMED`（原版不查武装 ✗）、`ESCORT_NOT_SAME_SECTOR`（原版允许一跳之内 ✓）
+   *       `ESCORT_UNARMED`（原版不查武装 ✗）、`ESCORT_OUT_OF_SECTOR`（原版允许一跳之内 ✓）
    */
   warnings?: OrderPreflightWarning[]
   /** 预检时真的改过的参数（如 duration 被夹紧 ✓） */

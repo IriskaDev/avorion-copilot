@@ -695,8 +695,8 @@ reset()
 ESCORTS = { ["Combat-00001"] = { x = SHIP_X + 3, y = SHIP_Y, reach = 5, canFight = true } }
 local ok24, r24 = order("Mine", { x = SHIP_X, y = SHIP_Y, size = 15, escorts = { "Combat-00001" } })
 check("P14c accepted=true ✓（原版只拒 TooFarAway ✓）", ok24 == true and r24.accepted == true, r24)
-check("P14c 预检带 ESCORT_NOT_SAME_SECTOR 提示 ✓",
-    codesOf(r24.preflight):find("ESCORT_NOT_SAME_SECTOR") ~= nil, codesOf(r24.preflight))
+check("P14c 预检带 ESCORT_OUT_OF_SECTOR 提示 ✓",
+    codesOf(r24.preflight):find("ESCORT_OUT_OF_SECTOR") ~= nil, codesOf(r24.preflight))
 
 -- ===========================================================================
 -- P15：★ orderStatus 取不到 → NO_ORDER（不瞎编 ✓）

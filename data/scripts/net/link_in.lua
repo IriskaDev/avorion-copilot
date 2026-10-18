@@ -1401,10 +1401,10 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
                 f.name, f.distance, tostring(f.reach), f.name))
         end
         if f.sameSector == false then
-            warn("ESCORT_NOT_SAME_SECTOR", string.format(
-                "escort '%s' is NOT in the action ship's sector (distance %.2f, reach %s) — vanilla "
-                .. "ACCEPTS this (only TooFarAway is refused: simulationutility.lua:161-163), but the "
-                .. "owner's rule says an escort only counts when it is in the SAME sector",
+            warn("ESCORT_OUT_OF_SECTOR", string.format(
+                "escort '%s' is in ANOTHER sector (distance %.2f, reach %s) — vanilla "
+                .. "ACCEPTS this: the ONLY distance gate is TooFarAway (simulationutility.lua:156-163), "
+                .. "so a same-sector escort is just the distance-0 case, NOT a requirement",
                 f.name, tonumber(f.distance) or -1, tostring(f.reach)))
         end
         if f.canFightKnown == true and f.canFight == false then
