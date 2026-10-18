@@ -15,11 +15,16 @@
  *
  * ```
  * ① 投递目标会话（若主人指定且活着）
+ *    ★★ A（2026-10-18）：先进**合并队列**（`pumpRungQueue` ✓）—— 等 mergeWindowMs 把同一批收齐，
+ *       1 条 → 老的单船路径（逐字不变 ✓）；N 条 → **一个块** + 一次投递 + 多组答案解析 ✓✓
+ *       （病根：多艘船同时空闲时各投一个块 ✗，而一轮只答得了一个 → 其余的静默 None ✗）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
  *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队 → 下①.9 ✓
  *      超时          → cancel({kind:'hook'}) → 下①.9 ✓
  *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下①.9 ✓
  *      在问主人       → **显式延期**（ASKED_OWNER：不派单、写清原因 ✓）—— 不是失败 ✓
+ *      没答到这艘船   → `UNANSWERED`（★ 合并块的常见情形 ✓）→ 下①.9 ✓，并由 index.ts 的
+ *                       B 项**短间隔重投** ✓（绝不 20 分钟静默 ✗）
  * ①.9 ★★ 兜底不许下单（live 模式）：会话**在线**却没答成 → 直接 None（fallbackNone）✓
  *       （只有「没有指挥官」或「会话明确离线/不在 registry」才允许下②单发 ✗）
  * ② 今天的单发事实调用（**保留**：没有指挥官 / 会话离线时才走 ★ 有**硬期限** ✓）
@@ -53,6 +58,15 @@ export interface Budgets {
     singleShotTimeoutMs: number;
     /** 会话第一次答不上来时，允许**再**投一次（同一批事实、只要求答案行 ✓）；0 = 不许重试 ✓ */
     retryOnceMs: number;
+    /**
+     * ★★ A：**合并收集窗口**（毫秒 ✓，2026-10-18）。
+     *
+     * 游戏侧是**每艘船一条 decide**（`data/scripts/net/fleet.lua:119` ✓），
+     * 同一个扫描里同时空闲的船会在**同一瞬间**各发一条 ✓。所以先等这么一小会儿
+     * 把同一批的决定收进**一个块** ✓，再投递一次（否则就是"各投一个、她只答得了一个" ✗✓）。
+     * `0` = 不合并（逐条投 ✓ —— 测试与旧行为都用它 ✓）。
+     */
+    mergeWindowMs: number;
 }
 export declare const BUDGETS: Budgets;
 /** 会话事件的**最小**结构（真事件比这富 ✓；我们只读这两个字段 ✓） */
@@ -132,6 +146,11 @@ export interface SessionAttempt {
     usage?: unknown;
     /** 会话答案的原文（审计 ✓） */
     raw?: string;
+    /**
+     * ★★ 这一轮**合并投递**里一共塞了几艘船 ✓（2026-10-18）。
+     *   `1` = 单船（与以前逐字相同 ✓）；`>1` = 一个块里 N 艘 ✓（这是"合并"的**证据** ✓）。
+     */
+    batchSize?: number;
 }
 export interface DispatchDeps {
     registry: RegistryLike;
@@ -217,5 +236,7 @@ export declare function withTimeout<T>(promise: Promise<T>, ms: number): Promise
  *   · 忙/挂死/在聊天的会话，**绝不会**让这一轮没有决策 ✓
  */
 export declare function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Promise<DispatchOutcome>;
+/** 测试用：清空合并队列 ✓（一个进程里多次 apply 必须互不串味 ✓） */
+export declare function resetBatchQueue(): void;
 export { makeTaskId, renderTaskBlock, validateAnswer };
 export type { TaskAnswer, TaskRequest };

@@ -15,11 +15,16 @@
  *
  * ```
  * ① 投递目标会话（若主人指定且活着）
+ *    ★★ A（2026-10-18）：先进**合并队列**（`pumpRungQueue` ✓）—— 等 mergeWindowMs 把同一批收齐，
+ *       1 条 → 老的单船路径（逐字不变 ✓）；N 条 → **一个块** + 一次投递 + 多组答案解析 ✓✓
+ *       （病根：多艘船同时空闲时各投一个块 ✗，而一轮只答得了一个 → 其余的静默 None ✗）
  *      空闲          → followup(任务块) → 等这一轮结束 → 校验 → 采纳 ✓
  *      忙（主人在聊天）→ steerWhenBusy=false（默认）→ 不插队 → 下①.9 ✓
  *      超时          → cancel({kind:'hook'}) → 下①.9 ✓
  *      答不上来/答错船 → 下①'（若允许重试一次，**同一批事实**、只要求答案行 ✓）→ 下①.9 ✓
  *      在问主人       → **显式延期**（ASKED_OWNER：不派单、写清原因 ✓）—— 不是失败 ✓
+ *      没答到这艘船   → `UNANSWERED`（★ 合并块的常见情形 ✓）→ 下①.9 ✓，并由 index.ts 的
+ *                       B 项**短间隔重投** ✓（绝不 20 分钟静默 ✗）
  * ①.9 ★★ 兜底不许下单（live 模式）：会话**在线**却没答成 → 直接 None（fallbackNone）✓
  *       （只有「没有指挥官」或「会话明确离线/不在 registry」才允许下②单发 ✗）
  * ② 今天的单发事实调用（**保留**：没有指挥官 / 会话离线时才走 ★ 有**硬期限** ✓）
@@ -42,7 +47,7 @@
  */
 
 import type { TaskAnswer, TaskRequest } from './task.js'
-import { field, makeTaskId, renderTaskBlock, validateAnswer } from './task.js'
+import { field, makeTaskId, renderTaskBatchBlock, renderTaskBlock, validateAnswer, validateAnswers } from './task.js'
 
 // ---------------------------------------------------------------------------
 // 时间预算（设计书 §3.4 的建议值 ✓）
@@ -59,6 +64,15 @@ export interface Budgets {
   singleShotTimeoutMs: number
   /** 会话第一次答不上来时，允许**再**投一次（同一批事实、只要求答案行 ✓）；0 = 不许重试 ✓ */
   retryOnceMs: number
+  /**
+   * ★★ A：**合并收集窗口**（毫秒 ✓，2026-10-18）。
+   *
+   * 游戏侧是**每艘船一条 decide**（`data/scripts/net/fleet.lua:119` ✓），
+   * 同一个扫描里同时空闲的船会在**同一瞬间**各发一条 ✓。所以先等这么一小会儿
+   * 把同一批的决定收进**一个块** ✓，再投递一次（否则就是"各投一个、她只答得了一个" ✗✓）。
+   * `0` = 不合并（逐条投 ✓ —— 测试与旧行为都用它 ✓）。
+   */
+  mergeWindowMs: number
 }
 
 export const BUDGETS: Budgets = {
@@ -67,6 +81,7 @@ export const BUDGETS: Budgets = {
   commitReserveMs: 1_000,
   singleShotTimeoutMs: 15_000,
   retryOnceMs: 8_000,
+  mergeWindowMs: 800,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +170,11 @@ export interface SessionAttempt {
   usage?: unknown
   /** 会话答案的原文（审计 ✓） */
   raw?: string
+  /**
+   * ★★ 这一轮**合并投递**里一共塞了几艘船 ✓（2026-10-18）。
+   *   `1` = 单船（与以前逐字相同 ✓）；`>1` = 一个块里 N 艘 ✓（这是"合并"的**证据** ✓）。
+   */
+  batchSize?: number
 }
 
 export interface DispatchDeps {
@@ -303,12 +323,13 @@ export async function dispatchDecision(deps: DispatchDeps, req: TaskRequest): Pr
       } else if (remaining < B.queueReserveMs) {
         say(`  [ladder] 只剩 ${remaining}ms（< 保留 ${B.queueReserveMs}ms）→ 不投递，直接下②单发 ✓`)
       } else {
-        sessionAttempt = await runSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs), say)
+        // ★ A（2026-10-18）：**不直接投**，先进「合并收集窗口」✓
+        sessionAttempt = await askSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs))
       }
     } else if (remaining < B.queueReserveMs) {
       say(`  [ladder] 剩余预算 ${remaining}ms < 保留 ${B.queueReserveMs}ms → 不投递，直接下②单发 ✓`)
     } else {
-      sessionAttempt = await runSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs), say)
+      sessionAttempt = await askSessionRung(deps, req, Math.max(0, remaining - B.commitReserveMs))
     }
   } else if (deps.commanderId === undefined) {
     say('  [ladder] 没有指定投递目标会话 → 直接走②单发（**与今天逐字相同** ✓）')
@@ -535,6 +556,284 @@ function parseSingleShotText(text: string): { action?: string; params: Record<st
   const params = v.ok ? v.answer.params : {}
   const reason = v.ok ? v.answer.reason : field(raw, 'reason')
   return { action: word, params, reason, why: undefined }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ A：合并投递的**收集队列**（2026-10-18，主人原话：「我感觉你总是会漏，
+//    尤其是多个决策同时来的时候」✓✓）
+//
+// 病根（真机日志 2026-10-18 08:50:58 ✓，逐字）：
+//   ▶ 收到 decide  ship=Scout-00001      ← 同一秒
+//   ▶ 收到 decide  ship=Trader-00001     ← 同一秒
+//   [session] 投递任务 t-805bcccf → 会话   （第一条投出去了）
+//   [ladder] 投递会话**正忙**（主人在聊 / 在别的任务上）
+//   [ladder] ★ 指挥官会话在线但本轮没答成（SESSION_BUSY）→ 兜底 = None（fallbackNone）
+//   ├ 待命裁定：Trader-00001 … 冷却 20 分钟   ← ★ 这艘船就静默 20 分钟 ✗✗
+//
+// 治法：所有"要投会话"的请求先进这个队列 ✓，由**一个** pump 串行处理 ✓：
+//   ① 等 mergeWindowMs 把同一批收齐 ✓；
+//   ② 取快照：1 条 → 走原来那条**逐字不变**的单船路径 ✓；
+//              N 条 → **一个合并块** + 一次投递 + 多组答案解析 ✓；
+//   ③ 每艘船只拿**自己那条**结论 ✓（没答到的 = `UNANSWERED`，交给 index.ts 的 B 去重投 ✓）。
+// ★ 一轮在飞时新来的请求**不会丢** ✗：它们留在队列里，本轮结束后立刻开下一轮 ✓
+//   （仍然一次只投一个块 ✓ —— TAKEOVER.md 的"同一刻只有一个决策者" ✓）。
+// ---------------------------------------------------------------------------
+
+interface RungWaiter {
+  deps: DispatchDeps
+  req: TaskRequest
+  /** 自己这一单的预算 ✓（等别人那一轮的时间也算在内 ✓） */
+  budgetMs: number
+  atMs: number
+  resolve: (a: SessionAttempt) => void
+}
+
+const rungWaiters: RungWaiter[] = []
+let rungPumpRunning = false
+
+/** 测试用：清空合并队列 ✓（一个进程里多次 apply 必须互不串味 ✓） */
+export function resetBatchQueue(): void {
+  while (rungWaiters.length > 0) rungWaiters.pop()
+  rungPumpRunning = false
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, Math.max(0, ms)))
+
+/** 把一个请求送进合并队列，等它自己那一份结论 ✓ */
+function askSessionRung(deps: DispatchDeps, req: TaskRequest, budgetMs: number): Promise<SessionAttempt> {
+  return new Promise<SessionAttempt>((resolve) => {
+    rungWaiters.push({ deps, req, budgetMs, atMs: nowMs(), resolve })
+    void pumpRungQueue()
+  })
+}
+
+async function pumpRungQueue(): Promise<void> {
+  if (rungPumpRunning) return
+  rungPumpRunning = true
+  try {
+    while (rungWaiters.length > 0) {
+      const head = rungWaiters[0]
+      const say = head.deps.log ?? ((): void => {})
+      const windowMs = budgetOf(head.deps.budgets).mergeWindowMs
+      if (windowMs > 0) await sleep(windowMs)
+      // ★ 收集窗口结束时把**这一刻**排队的全收下 ✓（后面来的留给下一轮 ✓ —— 绝不丢 ✗）
+      const batch = rungWaiters.splice(0, rungWaiters.length)
+      if (batch.length === 0) continue
+      // 各自的剩余预算（排队把预算耗光的 → 明确说 NO_BUDGET ✓，不投、但绝不静默 ✗）
+      const live = batch.filter((b) => {
+        const left = b.budgetMs - (nowMs() - b.atMs)
+        if (left > 0) return true
+        b.resolve({
+          answered: false,
+          code: 'NO_BUDGET',
+          message: `在合并队列里等到没有剩余预算（${b.budgetMs}ms）`,
+          steps: 0,
+          tookMs: nowMs() - b.atMs,
+          batchSize: batch.length,
+        })
+        return false
+      })
+      if (live.length === 0) continue
+      if (batch.length > 1) {
+        say(`  [batch] ★ 合并投递：本轮 ${batch.length} 艘船同时要决策 → **一个块** ✓（不各投一条 ✗）`)
+      }
+      let got: Map<string, SessionAttempt>
+      try {
+        got = live.length === 1
+          ? new Map([[live[0].req.taskId,
+            await runSessionRung(live[0].deps, live[0].req,
+              live[0].budgetMs - (nowMs() - live[0].atMs), say)]])
+          : await runSessionRungBatch(live, say)
+      } catch (error) {
+        got = new Map()
+        for (const b of live) {
+          got.set(b.req.taskId, {
+            answered: false,
+            code: 'SESSION_ERROR',
+            message: `投递/等待时异常：${String(error)}`,
+            steps: 0,
+            tookMs: nowMs() - b.atMs,
+            batchSize: live.length,
+          })
+        }
+      }
+      for (const b of live) {
+        b.resolve(got.get(b.req.taskId) ?? {
+          answered: false,
+          code: 'UNANSWERED',
+          message: `合并块里这艘船没有收到答案组（批 ${live.length} 艘）`,
+          steps: 0,
+          tookMs: nowMs() - b.atMs,
+          batchSize: live.length,
+        })
+      }
+    }
+  } finally {
+    rungPumpRunning = false
+  }
+}
+
+/**
+ * ★★ 合并块投递：**一次** followup、**一次**等待、**按 task= 分发** ✓（2026-10-18）。
+ *
+ * 与 `runSessionRung` 的关系：单船路径**原样保留** ✓（`pumpRungQueue` 里 1 条就走它 ✓）——
+ * 这里只处理 N ≥ 2 的那一半 ✓，所以单船语义（重试一次 / ASKED_OWNER / TASK_MISMATCH…）
+ * 一个字都没变 ✓✓。
+ */
+async function runSessionRungBatch(
+  waiters: RungWaiter[],
+  say: (l: string) => void,
+): Promise<Map<string, SessionAttempt>> {
+  const t0 = nowMs()
+  const n = waiters.length
+  const deps = waiters[0].deps
+  const out = new Map<string, SessionAttempt>()
+  const failAll = (code: string, message?: string): void => {
+    for (const w of waiters) {
+      if (out.has(w.req.taskId)) continue
+      out.set(w.req.taskId, {
+        answered: false, code, message, steps: 0, tookMs: nowMs() - t0, batchSize: n,
+      })
+    }
+  }
+
+  // ★ 期限取**最宽**的那条 ✓（每条船自己的预算已经按到达时间扣过 ✓）
+  const budgetMs = Math.max(...waiters.map((w) => Math.max(0, w.budgetMs - (nowMs() - w.atMs))))
+  if (budgetMs <= 0) {
+    failAll('NO_BUDGET', '剩余预算为 0，不投递 ✓')
+    return out
+  }
+
+  const release = deps.lock?.tryClaim()
+  if (deps.lock !== undefined && release === undefined) {
+    // 同一个会话同一刻只有一个块在飞 ✓（TAKEOVER.md 铁律 ✓）—— 不排队、不并发投 ✗
+    failAll('SESSION_BUSY_ELSEWHERE', '同一时刻已经有一个合并块在用这个会话 → 本轮不投递 ✓')
+    return out
+  }
+  const agent = deps.registry.get(deps.commanderId ?? '')
+  if (agent === undefined) {
+    release?.()
+    failAll('SESSION_GONE', '投递目标会话不在了 ✓')
+    return out
+  }
+  if (deps.subscribe === undefined) {
+    release?.()
+    failAll('NO_EVENT_CHANNEL', '拿不到 session/event 通道 → 不敢投递（会收不到答案 ✓）')
+    return out
+  }
+
+  const texts: string[] = []
+  let usage: unknown
+  let endReason: string | undefined
+  let resolveTurn: (() => void) | undefined
+  const turnPromise = new Promise<void>((resolve) => { resolveTurn = resolve })
+
+  const stop = deps.subscribe(deps.commanderId ?? '', (event) => {
+    const payload = ((event as any)?.data ?? {}) as Record<string, any>
+    if (event.type === 'assistant/message') {
+      const message = payload.message ?? (event as any).message
+      const blocks = message?.content
+      const text = Array.isArray(blocks)
+        ? blocks.filter((b: any) => b?.type === 'text').map((b: any) => b?.text ?? '').join('')
+        : ''
+      if (text.trim() !== '') {
+        texts.push(text)
+        say(`  [session] 合并块：她的第 ${texts.length} 条输出（${text.length} 字 ✓）`)
+        try { deps.onAssistantText?.(texts.length, text) } catch { /* 旁路失败不影响决策 ✓ */ }
+      }
+      if (payload.usage !== undefined) usage = payload.usage
+      else if ((event as any).usage !== undefined) usage = (event as any).usage
+      return
+    }
+    if (event.type === 'turn/end') {
+      const reason = payload.reason ?? (event as any).reason
+      if (reason !== undefined && reason !== null) {
+        const kind = typeof reason === 'object' ? (reason as any).kind : reason
+        if (kind !== undefined && kind !== 'completed' && kind !== 'user') {
+          endReason = typeof reason === 'string' ? reason : JSON.stringify(reason)
+        }
+      }
+      resolveTurn?.()
+      return
+    }
+  })
+
+  try {
+    const items = waiters.map((w) => w.req)
+    const block = renderTaskBatchBlock({ items })
+    say(`  [session] ★ 合并投递 ${n} 艘（task ${items.map((i) => i.taskId).join(', ')}）` +
+      `→ 会话（预算 ${Math.round(budgetMs)}ms ✓）；一个块列出全部船 ✓`)
+    deps.followup(agent, block, items[0])
+
+    const waited = await withTimeout(turnPromise, budgetMs)
+    const tookMs = nowMs() - t0
+    if (!waited.settled) {
+      try {
+        agent.cancel({ kind: 'hook', reason: 'avorion-copilot: merged decision budget expired (timeout)' })
+      } catch { /* 取消失败也不能让它抛上去 ✓ */ }
+      say(`  [session] 合并块 ${budgetMs}ms 内没结束 → 已 cancel({kind:'hook'}) ✓（**不重投** ✗）`)
+      failAll('TIMEOUT', `合并块在 ${budgetMs}ms 内没有给出结论`)
+      return out
+    }
+
+    const joined = texts.join('\n')
+    if (joined.trim() === '') {
+      if (endReason !== undefined) {
+        failAll('HOST_TURN_FAILED', `宿主结束了这一轮（无 assistant 文本）：${endReason}`)
+      } else {
+        failAll('EMPTY_REPLY', '这一轮没有任何文本')
+      }
+      return out
+    }
+
+    // ★ 每条船用**自己**的 allowedActions ✓（不同船的动作边界不同 ✓）
+    const specs = waiters.map((w) => ({
+      taskId: w.req.taskId,
+      ship: w.req.ship,
+      allowedActions: w.deps.allowedActions,
+    }))
+    const multi = validateAnswers(joined, specs)
+    say(`  [session] 合并块解析：看到 ${multi.groups} 组 / task= 回显对上 ${multi.echoedGroups} 组` +
+      `${multi.stray.length > 0 ? `；**别船/未知 task=** ${multi.stray.join(',')} 已丢弃 ✗` : ''}`)
+    for (const w of waiters) {
+      const v = multi.verdicts.get(w.req.taskId)
+      const steps = texts.length
+      if (v === undefined) {
+        out.set(w.req.taskId, {
+          answered: false, code: 'UNANSWERED',
+          message: '这一轮没有为这艘船写答案组',
+          steps, tookMs, usage, batchSize: n,
+        })
+        say(`  [session] ✘ ${w.req.ship} 这一轮**没答到** → UNANSWERED（稍后重投 ✓，不进 20 分钟冷却 ✓）`)
+        continue
+      }
+      if (v.ok) {
+        out.set(w.req.taskId, {
+          answered: true, answer: v.answer, steps, tookMs, usage, raw: joined, batchSize: n,
+        })
+        say(`  [session] ✔ ${w.req.ship} → ${v.answer.action}` +
+          `${v.echoed ? '（回显对上 ✓）' : '（她没回显 task，按顺序配 ✓）'}`)
+        continue
+      }
+      if (v.code === 'ASKED_OWNER') {
+        out.set(w.req.taskId, {
+          answered: false, code: 'ASKED_OWNER', question: v.question, steps, tookMs, usage, raw: joined, batchSize: n,
+        })
+        continue
+      }
+      out.set(w.req.taskId, {
+        answered: false, code: v.code, message: v.message, steps, tookMs, usage, raw: joined, batchSize: n,
+      })
+      say(`  [session] ✘ ${w.req.ship} 校验没过：${v.code}（${v.message ?? ''}）`)
+    }
+    return out
+  } catch (error) {
+    failAll('SESSION_ERROR', `投递/等待时异常：${String(error)}`)
+    return out
+  } finally {
+    try { stop?.() } catch { /* 退订失败不影响结果 ✓ */ }
+    release?.()
+  }
 }
 
 // ---------------------------------------------------------------------------

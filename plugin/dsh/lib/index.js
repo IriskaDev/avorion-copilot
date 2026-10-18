@@ -31,11 +31,11 @@ import { RpcPeer } from './rpc.js';
 import { registerFleetTools, ask } from './tools.js';
 import { loadSystemPrompt, setPromptNotifier, describePromptPaths } from './promptfile.js';
 // ★★ 投递阶梯（Phase A/B，2026-10-17 ✓）：目标会话 = **主人自己正在用的那个会话**
-import { dispatchDecision, BUDGETS, makeTaskId, } from './dispatch.js';
+import { dispatchDecision, BUDGETS, makeTaskId, resetBatchQueue, } from './dispatch.js';
 import { getCommanderSessionId, setCommanderSession, renewLease, getState as getCommanderState, isLeaseFresh, setCommanderNotifier, COMMANDER_FILE, } from './commander.js';
 import { PREV_RESULT_BUDGET_BYTES } from './task.js';
 // ★★ 待命裁定（2026-10-17 主人要求 ✓）：决策者判 None 后同船冷却期内不再征询 ✓
-import { recordStandby, standbyVerdict, goalFingerprintOf, clearStandby, resetStandbyCache, DEFAULT_NONE_COOLDOWN_MS, } from './standby.js';
+import { recordStandby, standbyVerdict, goalFingerprintOf, clearStandby, resetStandbyCache, DEFAULT_NONE_COOLDOWN_MS, DEFAULT_UNANSWERED_RETRY_MS, DEFAULT_UNANSWERED_MAX_MISSES, } from './standby.js';
 // ★★ 单发路径的**有界档案**（2026-10-17 ✓）：预取 + 裁剪 + 硬字节预算 ✓
 //   ★ 它与 agent 路径**共享数据、不共享渲染** ✓✓ —— 见 dossier.ts 的文件头（根因就在那儿 ✓）
 import { renderDossier, byteLen as dossierByteLen } from './dossier.js';
@@ -1058,6 +1058,9 @@ export function apply(ctx, config = {}) {
     // ★★ 待命裁定是**运行时状态**（每个插件实例从零开始 ✓）—— 每次 apply 清空，
     //   避免多实例/热重载之间串味（test/session-no-prefetch.mjs 的两个场景就靠它隔离 ✓）。
     resetStandbyCache();
+    // ★★ 合并投递的收集队列也是**运行时状态** ✓ —— 每次 apply 清空（否则上一次实例里
+    //   卡住的 waiter 会把新实例的第一批也一起吞掉 ✓；测试里两个场景互不串味 ✓）。
+    resetBatchQueue();
     const cfg = {
         port: config.port ?? DEFAULTS.port,
         provider: config.provider ?? DEFAULTS.provider,
@@ -1074,6 +1077,22 @@ export function apply(ctx, config = {}) {
         Number.isFinite(config.noneCooldownMs) && config.noneCooldownMs > 0
         ? config.noneCooldownMs
         : DEFAULT_NONE_COOLDOWN_MS;
+    // ★★ 2026-10-18：**漏答**不是决策 ✗ —— 短重试 + 连续 N 次才落 None ✓（C 项 ✓）
+    const unansweredRetryMs = typeof config.unansweredRetryMs === 'number' &&
+        Number.isFinite(config.unansweredRetryMs) && config.unansweredRetryMs > 0
+        ? config.unansweredRetryMs
+        : DEFAULT_UNANSWERED_RETRY_MS;
+    const unansweredMaxMisses = typeof config.unansweredMaxMisses === 'number' &&
+        Number.isFinite(config.unansweredMaxMisses) && config.unansweredMaxMisses >= 1
+        ? Math.floor(config.unansweredMaxMisses)
+        : DEFAULT_UNANSWERED_MAX_MISSES;
+    // ★★ A：合并投递的收集窗口（默认 800ms ✓；0 = 不合并）
+    const mergeWindowMs = typeof config.mergeWindowMs === 'number' &&
+        Number.isFinite(config.mergeWindowMs) && config.mergeWindowMs >= 0
+        ? config.mergeWindowMs
+        : BUDGETS.mergeWindowMs;
+    live(`  ├ 漏答策略：短重试 ${Math.round(unansweredRetryMs / 1000)}s × 连续 ${unansweredMaxMisses} 次 才落 None（` +
+        `明确 None 才按 ${Math.round(noneCooldownMs / 60000)} 分钟冷却 ✓）；合并窗口 ${mergeWindowMs}ms ✓`);
     // ★ 投递目标：① 显式 config（主人写在 profile 里 ✓）→ ② 落盘的选择（fleet_commander 指定过 ✓）
     //   都没有 = 不投递 ✓（= 今天逐字不变 ✓）。**绝不猜** ✗（猜错就塞进别人的聊天里了 ✓）。
     if (typeof config.commanderSession === 'string' && config.commanderSession.trim() !== '') {
@@ -1261,8 +1280,15 @@ export function apply(ctx, config = {}) {
      * ★★ decide 的外层：保证**任何出口都留下一条决策记录** ✓✓（主人要在 DSH 里看得见 ✓）。
      * 真正的逻辑在内层 decideInner 里，它边做边把过程写进 rec ✓。
      */
-    peer.handle('decide', async (data) => {
-        const req = (data ?? {});
+    peer.handle('decide', async (data) => runDecide((data ?? {})));
+    /**
+     * ★★ `decide` 的**唯一实现**（2026-10-18 抽出 ✓）：游戏调一次、B 的**漏答重投**也调它 ✓。
+     *
+     * ★ 为什么必须共用同一个函数 ✗→✓：重投如果自己再写一份"问会话 + 下单"，
+     *   就等于**第二套决策逻辑** ✓（本仓库反复吃过的亏 ✓）。共用它 = 重投真的**重投**，
+     *   而不是"另开一条捷径" ✓✓。
+     */
+    const runDecide = async (req) => {
         const rec = {
             at: new Date().toISOString(),
             ship: typeof req.ship === 'string' ? req.ship : '(none)',
@@ -1306,7 +1332,15 @@ export function apply(ctx, config = {}) {
             logger.info(`avorion-copilot: 决策记录 #${decisionLog.length} ` +
                 `${rec.ship} ok=${rec.ok}${rec.answer ? ' -> ' + rec.answer.action : ''}`);
         }
-    });
+    };
+    const unansweredRetry = new Map();
+    /** 这些 code = **没答到**（不是决策 ✗）→ 走短重试 ✓；其余一律按"她判了"处理 ✓ */
+    const MISS_CODES = new Set([
+        'SESSION_BUSY', 'SESSION_BUSY_ELSEWHERE', 'TIMEOUT', 'UNANSWERED',
+        'EMPTY_REPLY', 'NO_ACTION_LINE', 'TASK_MISMATCH', 'BAD_ACTION',
+        'HOST_TURN_FAILED', 'NO_EVENT_CHANNEL', 'SESSION_GONE', 'SESSION_ERROR', 'NO_BUDGET',
+        'ASKED_OWNER',
+    ]);
     // 内层：真正的决策逻辑（边做边填 rec ✓）
     const decideInner = async (req, rec) => {
         const ship = req.ship;
@@ -1335,14 +1369,18 @@ export function apply(ctx, config = {}) {
         rec.goalOptions = facts.goalOptions;
         // ★★ 待命裁定（2026-10-17 主人要求 ✓）：决策者判这艘船 None 后，冷却期内不再征询 ✓。
         //   判据只有两条（见 standby.ts）：冷却到期 / 目标指纹改变 → 恢复征询；否则直接 None ✓。
-        const standbyNow = standbyVerdict(ship, facts.goalText, facts.goalOptions, noneCooldownMs);
+        //   ★ 2026-10-18：冷却**分级** ✓ —— `unanswered`（漏答）用短冷却、`none`（真的判了）用长冷却 ✓。
+        const standbyNow = standbyVerdict(ship, facts.goalText, facts.goalOptions, { noneMs: noneCooldownMs, unansweredMs: unansweredRetryMs });
         if (standbyNow.kind === 'standby') {
-            const reason = `待命裁定：${ship} 上一轮被裁定待命（来源 ${standbyNow.entry.source}），` +
-                `冷却 ${Math.round(noneCooldownMs / 60000)} 分钟内不再征询（还剩约 ${standbyNow.minsLeft} 分钟）；` +
-                '目标改变、冷却到期或手动召回后恢复 ✓';
+            const oldKind = standbyNow.entry.kind;
+            const kindText = oldKind === 'unanswered'
+                ? `漏答重投冷却（${Math.round(unansweredRetryMs / 1000)}s，连续 ${unansweredMaxMisses} 次才落 None）`
+                : `待命裁定（明确 None）`;
+            const reason = `待命裁定：${ship} 上一轮是**${kindText}**（来源 ${standbyNow.entry.source}），` +
+                `还剩约 ${standbyNow.minsLeft} 分钟；目标改变、冷却到期或手动召回后恢复 ✓`;
             rec.source = 'fallbackNone';
             rec.decider = 'fallbackNone';
-            live(`  ├ 待命裁定：${ship} 仍在冷却期内（状态未变）→ 本轮直接 None，不投递、不跑模型 ✓`);
+            live(`  ├ 待命裁定：${ship} 仍在冷却期内（${kindText}，状态未变）→ 本轮直接 None，不投递、不跑模型 ✓`);
             return [true, { action: 'None', params: {}, reason }];
         }
         // ── ② 单发路径的重数据预取（惰性、幂等）──────────────────────────────
@@ -1966,6 +2004,8 @@ export function apply(ctx, config = {}) {
             retrySessionOnce,
             lock: fleetSessionLock,
             log: live,
+            // ★★ A（2026-10-18）：合并收集窗口 ✓（0 = 逐条投，旧行为 ✓）
+            budgets: { mergeWindowMs },
         };
         // ★ 「上一单的结果」行（若有记录 ✓）；超 200 字节就**不附加**并在流水里说明 ✓。
         //   2026-10-17：措辞去掉"你" ✗→"上一单"（因为上一单可能是单发/兜底定的，不是她定的 ✗✓），
@@ -2022,6 +2062,8 @@ export function apply(ctx, config = {}) {
                 deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
                 // ★ 上一单结果（2026-10-17 补 ✓）：下一轮就能看到"上次成没成"，不触发回投也看得见 ✓
                 prevResult: fitPrev(lastResultFor(ship)),
+                // ★★ B（2026-10-18）：漏答**必须可见** ✓ —— 块末尾一行「上次未答：X 艘」✓
+                unansweredBefore: unansweredRetry.size,
             });
         }
         // ★ 三条出口：① 她的答案算数 ② 单发的答案算数 ③ 两条都没有（明说的 None ✓）
@@ -2060,11 +2102,54 @@ export function apply(ctx, config = {}) {
         rec.agreement = outcome.agreement;
         rec.answer = answer;
         live(`  ├ 决策 [${outcome.source}] ${answer.action} ${JSON.stringify(answer.params)}  (${answer.reason ?? ''})`);
-        // ★★ 待命裁定记录（2026-10-17 主人要求 ✓）：决策者判 None（非 rendezvous）→
+        // ★★ 待命裁定记录（2026-10-17 主人要求 ✓ / 2026-10-18 分级 ✓）：决策者判 None（非 rendezvous）→
         //   记下目标指纹，冷却期内同船不再征询 ✓（状态改变/冷却到期/手动召回后恢复 ✓）。
+        //   ★★ C（2026-10-18）：**分清「漏答」与「判了 None」** ✗→✓：
+        //     · `fallbackNone` / `asked-owner` = **没有决策**（会话忙/超时/没答到这艘船/在问主人）✗
+        //       → `kind='unanswered'` → 短冷却 + 进重投队列 ✓（**绝不**罚 20 分钟 ✗）；
+        //     · 其余（`session` 明确 action=None / `single-shot` 判 None）= **真的判了** ✓
+        //       → `kind='none'` → 原来的 20 分钟冷却 ✓✓（这条一个字都没改 ✓）。
         if (answer.action === 'None' && outcome.source !== 'rendezvous') {
-            recordStandby(ship, outcome.source, answer.reason ?? '', goalFingerprintOf(facts.goalText, facts.goalOptions));
-            live(`  ├ 待命裁定：${ship} 被裁定待命（来源 ${outcome.source}）→ 冷却 ${Math.round(noneCooldownMs / 60000)} 分钟内不再征询 ✓`);
+            const missCode = outcome.session?.code;
+            // ★ 只有这两种 source = **没有决策** ✗（`session`/`single-shot` 的 None 都是**她/它真的判了** ✓）；
+            //   防御性地再看一眼「会话这一级是不是报了一个"没答到"的码」✓（见上面的 MISS_CODES ✓）
+            const isLeak = outcome.source === 'fallbackNone' || outcome.source === 'asked-owner'
+                || (outcome.source !== 'session' && outcome.source !== 'single-shot'
+                    && missCode !== undefined && MISS_CODES.has(missCode));
+            const missKind = isLeak ? 'unanswered' : 'none';
+            let misses = 0;
+            if (missKind === 'unanswered') {
+                const prior = unansweredRetry.get(ship);
+                misses = (prior !== undefined ? prior.misses : 0) + 1;
+                // ★ 会话忙（主人在聊天）不算她的失败 —— 但这种"没答到"同样不能罚 20 分钟 ✓；
+                //   计数器仍然记（否则会话一直忙 → 无限重投 ✓）。
+            }
+            const entry = recordStandby(ship, outcome.source, answer.reason ?? '', goalFingerprintOf(facts.goalText, facts.goalOptions), Date.now(), { kind: missKind, misses, maxMisses: unansweredMaxMisses });
+            if (missKind === 'unanswered' && entry.kind === 'unanswered') {
+                // ★ B：短重试 —— 记下来，到点**重新投递** ✓（不罚 20 分钟 ✗）
+                unansweredRetry.set(ship, {
+                    misses,
+                    atMs: unansweredRetry.get(ship)?.atMs ?? Date.now(),
+                    nextAtMs: Date.now() + unansweredRetryMs,
+                });
+                live(`  ├ ★ 漏答（不是决策 ✗）：${ship} 这一轮没答到（来源 ${outcome.source}` +
+                    `${missCode !== undefined ? ` / ${missCode}` : ''}；第 ${misses}/${unansweredMaxMisses} 次）` +
+                    `→ **${Math.round(unansweredRetryMs / 1000)}s 后重投** ✓（不进 ${Math.round(noneCooldownMs / 60000)} 分钟冷却 ✓）`);
+            }
+            else if (missKind === 'unanswered') {
+                unansweredRetry.delete(ship);
+                live(`  └ ★ 连续 ${misses} 次没答到 → 落到 None + ${Math.round(noneCooldownMs / 60000)} 分钟冷却 ✓` +
+                    '（会话一直答不上来，先别无限打扰主人 ✓）');
+            }
+            else {
+                unansweredRetry.delete(ship);
+                live(`  ├ 待命裁定：${ship} 被**明确判为待命**（来源 ${outcome.source}）→ ` +
+                    `冷却 ${Math.round(noneCooldownMs / 60000)} 分钟内不再征询 ✓`);
+            }
+        }
+        else if (answer.action !== 'None') {
+            // ★ 这一单真的定了动作 → 清掉漏答计数 ✓（下一次漏答重新从 1 数 ✓）
+            unansweredRetry.delete(ship);
         }
         logger.info(`avorion-copilot: ${ship} -> ${answer.action} ${JSON.stringify(answer.params)}` +
             `  来源=${outcome.source}` +
@@ -2185,6 +2270,7 @@ export function apply(ctx, config = {}) {
                     goalOptions: facts.goalOptions,
                     deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
                     prevResult,
+                    unansweredBefore: unansweredRetry.size,
                 });
                 prevFailHint = undefined;
                 const reResolved = resolveAnswer(reOutcome);
@@ -2220,6 +2306,94 @@ export function apply(ctx, config = {}) {
         }
         rec.receipt = receipt;
         return [true, answer];
+    };
+    // ---------------------------------------------------------------------------
+    // ★★ B：漏答**重投**（2026-10-18，主人原话「我感觉你总是会漏」✓✓）
+    //
+    // 为什么要有它 ✗→✓：`unansweredRetry` 里记着"这一轮没答到"的船 ✓，而**光靠游戏**是不行的 ✗：
+    //   `data/scripts/net/fleet.lua:31` 的 `REDECIDE_COOLDOWN = 300` 意味着**5 分钟**才重问一次 ✓，
+    //   主人要的是 **2~3 分钟**就重投 ✓。所以插件自己定时重投 ✓✓。
+    //
+    // ★ 三条纪律（每一条都对着一个坑 ✓）：
+    //   ① **会话忙不算她的失败** ✓ —— 主人在聊天时只推迟、**不投**、**不计数** ✓
+    //      （C 项：这不是决策，是漏 ✓）；
+    //   ② **船不空/不在名单就不碰** ✓ —— 绝不打断主人正在开的船、也不给已经在干活的船插单 ✗✓；
+    //   ③ **共用一个 `runDecide`** ✓ —— 重投 = 真的重走一遍决策（含 merge 合并块 ✓），
+    //      不是另开一条捷径 ✓✓。
+    // ---------------------------------------------------------------------------
+    // ★ 心跳间隔**跟重投间隔走** ✓（重投 3 分钟 → 30s 一跳；测试里重投 600ms → 200ms 一跳 ✓）
+    const RETRY_TICK_MS = Math.max(200, Math.min(30_000, Math.round(unansweredRetryMs / 4)));
+    let retryTickBusy = false;
+    const retryUnansweredTick = async () => {
+        if (retryTickBusy)
+            return;
+        retryTickBusy = true;
+        try {
+            if (unansweredRetry.size === 0)
+                return;
+            const now = Date.now();
+            for (const [ship, e] of [...unansweredRetry.entries()]) {
+                if (e.running === true)
+                    continue;
+                if (now < e.nextAtMs)
+                    continue;
+                // 太久了就不再重投（游戏侧下一轮空闲期会自己重问 ✓）—— 绝不无限刷 ✗
+                if (now - e.atMs > Math.max(unansweredRetryMs * 4, 10 * 60_000)) {
+                    unansweredRetry.delete(ship);
+                    live(`  ├ 漏答重投：${ship} 已超过重投窗口 → 放弃（等状态变化/游戏下一轮 ✓）`);
+                    continue;
+                }
+                // ① 会话忙 → 推迟，**不算漏、不计数** ✓
+                const target = targetSession();
+                const agent = target !== undefined ? agents?.get(target) : undefined;
+                if (target !== undefined && agent !== undefined && agent.status !== 'idle') {
+                    e.nextAtMs = now + Math.min(60_000, unansweredRetryMs);
+                    live(`  ├ 漏答重投：${ship} —— 投递会话正忙 → 推迟（**这不是漏** ✓，不计数 ✓）`);
+                    continue;
+                }
+                // ② 船已经忙 / 不在名单 → 取消重投 ✓（绝不碰主人正在开的船 ✗）
+                let skip;
+                try {
+                    const fr = await ask(peer, 'query', { what: 'fleet' }, 10);
+                    if (fr.ok) {
+                        const raw = (fr.data ?? {}).ships;
+                        const list = Array.isArray(raw)
+                            ? raw
+                            : (raw !== null && typeof raw === 'object' ? Object.values(raw) : []);
+                        const hit = list.find((s) => s.name === ship);
+                        if (hit === undefined)
+                            skip = '不在名单里';
+                        else if (hit.busy === true)
+                            skip = '已经忙起来了';
+                    }
+                }
+                catch { /* 拿不到快照就照旧试一次 ✓ */ }
+                if (skip !== undefined) {
+                    unansweredRetry.delete(ship);
+                    live(`  ├ 漏答重投：${ship} ${skip} → 取消重投 ✓`);
+                    continue;
+                }
+                e.running = true;
+                clearStandby(ship); // ★ 清掉短冷却，让 decideInner 真的重新征询 ✓
+                live(`  ├ ★ 漏答重投：${ship}（第 ${e.misses}/${unansweredMaxMisses} 次没答到）→ 现在重新投递 ✓`);
+                try {
+                    await runDecide({ ship, hasGoal: true });
+                }
+                catch (error) {
+                    live(`  ├ 漏答重投异常：${ship} ${String(error)}`);
+                }
+                finally {
+                    e.running = false;
+                    // decideInner 会更新/删除这条记录 ✓；它还在（仍未答到）就把下一次挪后 ✓
+                    const cur = unansweredRetry.get(ship);
+                    if (cur !== undefined && cur.nextAtMs <= Date.now())
+                        cur.nextAtMs = Date.now() + unansweredRetryMs;
+                }
+            }
+        }
+        finally {
+            retryTickBusy = false;
+        }
     };
     // ---- 我调游戏（DSH 主动查询 / 下单）---------------------------------------
     /** 查一次舰队快照（"眼睛" ✓ —— 不用截图 ✓） */
@@ -2257,6 +2431,14 @@ export function apply(ctx, config = {}) {
             peer.close();
         };
     }, 'dsh-avorion-copilot:rpc');
+    // ★★ B（2026-10-18）：漏答重投的**心跳** ✓（20s 一跳；只处理到点的条目 ✓）
+    ctx.effect(() => {
+        const timer = setInterval(() => { void retryUnansweredTick(); }, RETRY_TICK_MS);
+        // ★ 别让定时器把 Node 进程钉住（DSH 关闭时要能退 ✓）
+        if (typeof timer.unref === 'function')
+            timer.unref();
+        return () => clearInterval(timer);
+    }, 'dsh-avorion-copilot:unanswered-retry');
     // ★ 把游戏能力暴露成 DSH 工具（主人要的"会话接管"就靠它们 ✓✓）
     registerFleetTools(ctx, peer, decisionLog, {
         current: getCommanderSessionId,
