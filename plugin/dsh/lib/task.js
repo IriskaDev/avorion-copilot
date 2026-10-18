@@ -102,6 +102,8 @@ export function renderTaskBlock(req) {
     L.push('  · {what:"sectorFacts", x, y} → 星区事实');
     L.push('  · {what:"tradeRoutes"} → 框内路线；{what:"tradeEvaluate", boxes, deposits} → 多框×商品×本金一次算完（单位时间净利降序 + rejected）');
     L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测');
+    L.push('  · {what:"mountQuote", ship, material} → 炮塔底座材料升级**报价**（纯事实）；' +
+        '{what:"mountUpgrade", ship, material, confirm:true} → 真的执行（★ 先报价给主人看成本 ✓）');
     L.push('  · 侦察：predict{Scout, 21x21} → 未知/已知/总数 + revealsNothingNew');
     L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan');
     if (req.goalOptions.length > 0) {

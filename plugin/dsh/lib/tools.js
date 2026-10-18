@@ -118,7 +118,17 @@ opts = {}) {
             'PREDICTION_FAILED). Each box is area-analysed exactly ONCE and the numbers come from the SAME ' +
             'code as what=predict (so they match it verbatim). It computes only -- NO recommendation / ' +
             'orderHint / best pick; choosing is yours. Combination cap 60 (over it -> TOO_MANY_COMBINATIONS ' +
-            'with a shrink hint). Unknown numbers stay null (never 0). The old plan queries -- tradePlan | minePlan | ' +
+            'with a shrink hint). Unknown numbers stay null (never 0). ★★ what=mountQuote is the PURE-FACT ' +
+            'turret-base material upgrade quote: pass ship + material (iron|titanium|naonite|trinium|xanion|' +
+            'ogonite|avorion or 0-6). It returns every base ({index, material, materialValue, needsUpgrade}), ' +
+            'the target material, the resource+credit cost (quote/costs), affordable, and shortfall[] (= what ' +
+            'is missing when you cannot pay); it CHANGES NOTHING. what=mountUpgrade EXECUTES the same upgrade ' +
+            '(same code as the /copilot mounts command) but ONLY when confirm=true; without confirm it is a ' +
+            'preview quote that changes nothing. Its receipt mirrors the CLI result: ok/stage/changed/verified/' +
+            'wrong/paid/shape{blocksBefore,blocksAfter,blocksKept,boundingBoxKept}/turrets{before,after,' +
+            'designsRestored,designsDropped}/databaseSynced/lines[]. A piloted ship is ALLOWED (verified ' +
+            'in-game, Raven) but the response carries piloted=true + warning (a very short stutter is possible ' +
+            'at the write-back instant). The old plan queries -- tradePlan | minePlan | ' +
             'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
             'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
             '(list -> ship -> predict/tradeRoutes/tradeEvaluate) instead. what=dossier is the single-shot helper (no ' +
@@ -128,7 +138,7 @@ opts = {}) {
             what: {
                 type: 'string',
                 required: true,
-                description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | orderStatus | dossier | ' +
+                description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | orderStatus | dossier | ' +
                     'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
             },
             orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
@@ -166,6 +176,18 @@ opts = {}) {
                     'it do now". The identity fields are copied verbatim from the full card (same source).',
             },
             action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel | Refine (Travel predict: box = 1x1 destination, ship need NOT be inside; Refine: 31x31, box re-centred on the ship by the game)' },
+            material: {
+                type: 'string',
+                description: 'mountQuote/mountUpgrade only: the TARGET turret-base material -- iron|titanium|naonite|' +
+                    'trinium|xanion|ogonite|avorion or 0-6. It upgrades every turret base below that tier ' +
+                    '(bases already at or above it are left alone).',
+            },
+            confirm: {
+                type: 'boolean',
+                description: 'mountUpgrade only: MUST be true to actually spend resources/credits and write the new plan. ' +
+                    'Omitted or false = quote-only preview that changes NOTHING. Always call without confirm ' +
+                    'first and show the owner the cost.',
+            },
         },
         output: {
             schema: { type: 'string' },
@@ -183,11 +205,20 @@ opts = {}) {
             if (args.what === 'sectorFacts' && (args.x === undefined || args.y === undefined)) {
                 return 'what=sectorFacts needs the x and y parameters';
             }
-            // tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
+            if ((args.what === 'mountQuote' || args.what === 'mountUpgrade')
+                && (args.material === undefined || args.material === '')) {
+                return `what=${args.what} needs the material parameter ` +
+                    '(iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6)';
+            }
+            // ★ tradePlan runs a FULL area analysis in the game (PassageMap + flood fill),
             // which takes far longer than a plain query -- give it room (2026-10-16).
             // ★ tradeEvaluate = 每个框一次 run()（最多 6 框 ✓）+ 逐组合 predict（≤60 ✓）≈ 秒级；
             //   给 60 s 上限，避免"游戏算得完而 DSH 先超时"✗✓（2026-10-18 ✓）。
-            const timeout = args.what === 'tradePlan' ? 120 : args.what === 'tradeEvaluate' ? 60 : 10;
+            // ★ mountQuote/mountUpgrade = 整船重建 plan（大船几千块）+ 快照，CLI 预览同一套代码 →
+            //   同样给 60 s（RPC 是同步的，别让"游戏还在算"被 10 s 先掐断 ✗✓）。
+            const timeout = args.what === 'tradePlan' ? 120
+                : (args.what === 'tradeEvaluate' || args.what === 'mountQuote' || args.what === 'mountUpgrade') ? 60
+                    : 10;
             // ★★ 计划查询的**体积旋钮**（2026-10-17 ✓✓）：原样透传给游戏侧 ✓。
             //   ★ **一个都不默认** ✗ —— 缺省由**游戏侧**定（compact=true / top=4 ✓），
             //     这样"工具说明"与"游戏行为"只有一个真相来源 ✓（不会各改各的 ✓）。
@@ -200,7 +231,8 @@ opts = {}) {
                 duration: args.duration, safeMode: args.safeMode, escorts: args.escorts,
                 goodsToSell: args.goodsToSell, boxes: args.boxes,
                 compact: args.compact, top: args.top, full: args.full, brief: args.brief,
-                action: args.action, orderId: args.orderId,
+                action: args.action, material: args.material, confirm: args.confirm,
+                orderId: args.orderId,
             }, timeout);
             if (!r.ok)
                 return `query failed: ${r.why ?? 'unknown'}`;
