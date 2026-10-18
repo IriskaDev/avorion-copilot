@@ -402,53 +402,120 @@ function self.mountsCanPay(player, quote)
     return true, nil
 end
 
--- 执行器：**一次调用内**从副本算到写回，不跨调用保存半成品 ✓。
--- 返回 { ok, stage, shipName, lines, quote, changed, ... }
--- ★ confirmed=false 时**只报价、一个字节都不改** ✓（这是"绝不自动"的硬闸门）
-function self.mountsUpgrade(player, shipName, targetValue, confirmed)
-    local Mounts = include("copilot/mounts")
+-- ---------------------------------------------------------------------------
+-- ★★ RPC 与 CLI **共用**的准备/报价（2026-10-18 ✓✓，主人要求「你直接升就行了」）
+--
+-- 背景：升级逻辑早已存在（lib/copilot/mounts.lua + 本文件的 mountsUpgrade ✓，真机验过 ✓），
+--   但入口只有聊天命令 / 面板 ✗ —— 决策者（DSH 会话）手上没有 RPC 原子可用 ✗✓。
+-- 所以把「解析船 → 环境闸门 → 找底座 → 重建报价 → 可支付性」抽成**一个**函数 ✓：
+--   CLI 的 mountsUpgrade 与 RPC 的 mountQuote / mountUpgrade **都调它** ✓（绝不写第二套 ✗）。
+-- ★ 本函数**只读**：绝不 pay / setMovePlan / 改船 ✓。
+-- ---------------------------------------------------------------------------
 
-    local result = { ok = false, stage = "start", lines = {}, changed = 0 }
-    local function line(text) result.lines[#result.lines + 1] = tostring(text) end
+-- 逐材料/信用点缺口（纯读）：报价要多少、当前有多少、差多少 ✓
+-- ★ 只报事实：能否支付**以游戏 canPay 的答案为准**（mountsCanPay ✓）；这里不另造判据 ✗。
+function self.mountsShortfall(player, quote)
+    local Mounts = include("copilot/mounts")
+    local out = {}
+    if quote == nil then return out end
+
+    local money = tonumber(player.money) or 0
+    local needMoney = tonumber(quote.money) or 0
+    if money < needMoney then
+        out[#out + 1] = {
+            kind = "credits", need = needMoney, have = money, missing = needMoney - money,
+        }
+    end
+
+    local ok, resources = pcall(function() return { player:getResources() } end)
+    if ok and type(resources) == "table" then
+        for i = 1, #(quote.resources or {}) do
+            local need = tonumber(quote.resources[i]) or 0
+            local have = tonumber(resources[i]) or 0
+            if have < need then
+                out[#out + 1] = {
+                    kind = "resource",
+                    materialIndex = i - 1,
+                    material = Mounts.materialName(i - 1),
+                    need = need, have = have, missing = need - have,
+                }
+            end
+        end
+    end
+    return out
+end
+
+-- 底座事实（★ 可 JSON 序列化 ✓：只留 index / 材料 / 是否要升，绝不带 block 对象 ✗）
+function self.mountsBaseFacts(bases, targetValue)
+    local out = {}
+    for _, base in ipairs(bases or {}) do
+        out[#out + 1] = {
+            index = base.index,
+            material = base.materialName,
+            materialValue = base.materialValue,
+            needsUpgrade = (base.materialValue ~= nil and targetValue ~= nil
+                and base.materialValue < targetValue) or false,
+        }
+    end
+    return out
+end
+
+-- ★ 共用准备（只读）。返回 prep；**永远不**扣钱 / 写船 ✓。
+function self.mountsPrepare(player, shipName, targetValue)
+    local Mounts = include("copilot/mounts")
+    local prep = { ok = false, stage = "start", lines = {}, changed = 0 }
+    local function line(text) prep.lines[#prep.lines + 1] = tostring(text) end
 
     local target = tonumber(targetValue)
     if target == nil or target ~= math.floor(target) or target < 0 or target >= Mounts.NUM_MATERIALS then
         line("Invalid target material.")
-        return result
+        return prep
     end
-    local targetName = Mounts.materialName(target)
-    result.targetMaterial = target
+    prep.targetMaterial = target
+    prep.targetName = Mounts.materialName(target)
 
     local ship, shipErr = self.mountsResolveShip(player, shipName)
-    if ship == nil then line(shipErr) return result end
-    result.shipName = tostring(ship.name)
+    if ship == nil then
+        prep.stage = "ship"
+        line(shipErr)
+        return prep
+    end
+    prep.ship = ship
+    prep.shipName = tostring(ship.name)
 
-    -- ① 环境闸门（照抄原版）
+    -- ① 环境闸门（照抄原版修船坞 ✓）——
+    --   ★ 报价**照样算**（成本是纯事实 ✓），但 gateBlocked 让执行器绝不越过 ✗✓。
     local gateOk, gateMsg = self.mountsEnvironmentGate(ship)
+    prep.environmentOk = gateOk and true or false
+    prep.environmentMessage = gateMsg
     if not gateOk then
-        result.stage = "gate"
+        prep.stage = "gate"
+        prep.gateMessage = gateMsg
+        prep.gateBlocked = true
         line(gateMsg)
-        return result
     end
 
     local baseSet = self.mountsBaseSet()
     if next(baseSet) == nil then
         line("BlockType enum unavailable - cannot identify turret bases.")
-        return result
+        return prep
     end
+    prep.baseSet = baseSet
 
     -- ② 副本上找底座（含空底座）+ 只挑比目标低的
     local plan, copyErr = ship:getFullPlanCopy()
     if plan == nil then
         line("getFullPlanCopy failed: " .. tostring(copyErr))
-        return result
+        return prep
     end
+    prep.plan = plan
     local bases, collectErr = Mounts.collectBases(plan, baseSet)
-    result.baseCount = #bases
+    prep.bases = bases
+    prep.baseCount = #bases
     if #bases == 0 then
-        result.stage = "plan"
+        prep.stage = "plan"
         line(collectErr or "This ship has no turret bases.")
-        return result
+        return prep
     end
 
     local need = {}
@@ -457,13 +524,14 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
             need[#need + 1] = base.index
         end
     end
-    result.needCount = #need
-    result.basesBefore = bases
+    prep.need = need
+    prep.needCount = #need
     if #need == 0 then
-        result.stage = "plan"
+        prep.stage = "nothing"
+        prep.nothingToDo = true
         line("Nothing to do: all " .. tostring(#bases) .. " turret base(s) are already "
-            .. targetName .. " or better.")
-        return result
+            .. prep.targetName .. " or better.")
+        return prep
     end
 
     -- ③ ★ 路径 B：**按树拓扑序重建一份 plan**（原版 plangenerator.lua:429-431 的逐块复制）。
@@ -472,38 +540,45 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     --     证据见 docs/game/ops/mount-material-upgrade.md 的实测记录。
     local oldRes, oldMoney = Mounts.snapshot(plan)
     local newPlan, rebuild = Mounts.rebuildPlan(plan, baseSet, target, Material)
-    result.rebuild = rebuild
+    prep.rebuild = rebuild
+    prep.newPlan = newPlan
     if newPlan == nil or rebuild.failed > 0 then
-        result.stage = "plan"
+        prep.stage = "plan"
         line("Plan rebuild failed - nothing was written to the ship.")
         line("added=" .. tostring(rebuild.added) .. " failed=" .. tostring(rebuild.failed)
             .. " upgraded=" .. tostring(rebuild.upgraded))
         for i = 1, math.min(#rebuild.errors, 3) do line("  " .. rebuild.errors[i]) end
-        return result
+        return prep
     end
     if rebuild.upgraded ~= #need then
-        result.stage = "plan"
+        prep.stage = "plan"
         line("Plan rebuild upgraded " .. tostring(rebuild.upgraded) .. " base(s), expected "
             .. tostring(#need) .. " - aborting, nothing was written.")
-        return result
+        return prep
     end
 
     local newRes, newMoney = Mounts.snapshot(newPlan)
     local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
-    result.quote = quote
+    prep.quote = quote
     line("Upgrade " .. tostring(#need) .. " of " .. tostring(#bases) .. " turret base(s) to "
-        .. targetName .. ": " .. Mounts.formatResources(quote.resources)
+        .. prep.targetName .. ": " .. Mounts.formatResources(quote.resources)
         .. " + " .. tostring(quote.money) .. " credits")
 
     if quote.resourceUnits == 0 and quote.money == 0 then
-        result.stage = "plan"
+        prep.stage = "plan"
         line("ABORT: the rebuilt plan has the same value as the old one - nothing was written.")
-        return result
+        return prep
     end
 
+    -- ④ 可支付性（游戏 canPay 的答案 ✓）+ 逐材料缺口（纯读事实 ✓）
     local affordable, payMsg, payArgs = self.mountsCanPay(player, quote)
-    if not affordable then
-        result.stage = "pay"
+    prep.affordable = affordable and true or false
+    prep.payMessage = payMsg
+    prep.payArgs = payArgs
+    prep.shortfall = self.mountsShortfall(player, quote)
+
+    if not prep.affordable then
+        prep.stage = "pay"
         if payMsg ~= nil then
             local okFmt = pcall(function()
                 line(payMsg % _T, table.unpack(payArgs or {}))
@@ -512,8 +587,60 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
         else
             line("You cannot pay for this upgrade.")
         end
+        return prep
+    end
+
+    prep.ok = true
+    prep.stage = "preview"
+    return prep
+end
+
+-- 执行器：**一次调用内**从副本算到写回，不跨调用保存半成品 ✓。
+-- 返回 { ok, stage, shipName, lines, quote, changed, ... }
+-- ★ confirmed=false 时**只报价、一个字节都不改** ✓（这是"绝不自动"的硬闸门）
+-- ★ 前半段与 RPC 的 mountQuote **共用 mountsPrepare** ✓（报价逐字一致 ✓）。
+function self.mountsUpgrade(player, shipName, targetValue, confirmed)
+    local Mounts = include("copilot/mounts")
+    local prep = self.mountsPrepare(player, shipName, targetValue)
+    local result = {
+        ok = false,
+        stage = prep.stage or "start",
+        lines = prep.lines or {},
+        changed = 0,
+        shipName = prep.shipName,
+        targetMaterial = prep.targetMaterial,
+        baseCount = prep.baseCount,
+        needCount = prep.needCount,
+        basesBefore = prep.bases,
+        quote = prep.quote,
+        rebuild = prep.rebuild,
+        affordable = prep.affordable,
+        shortfall = prep.shortfall,
+    }
+    local function line(text) result.lines[#result.lines + 1] = tostring(text) end
+
+    -- ① 环境闸门：报价可以给（纯事实 ✓），**执行绝不越过** ✗✓
+    if prep.gateBlocked then
+        result.stage = "gate"
+        result.lines = { tostring(prep.gateMessage or "") }   -- 与旧版输出一致：只报拒绝原因 ✓
         return result
     end
+    -- ② "无事可做" / 计划重建失败 / 船解析失败 —— 什么都不写 ✓
+    if prep.stage ~= "preview" and prep.stage ~= "pay" then
+        return result
+    end
+    if prep.stage == "pay" or prep.quote == nil then
+        return result
+    end
+
+    local ship = prep.ship
+    local baseSet = prep.baseSet
+    local plan = prep.plan
+    local bases = prep.bases
+    local target = prep.targetMaterial
+    local targetName = prep.targetName
+    local newPlan = prep.newPlan
+    local quote = prep.quote
 
     if not confirmed then
         result.ok = true
@@ -648,6 +775,20 @@ function self.mountsUpgrade(player, shipName, targetValue, confirmed)
     result.changed = verified
     result.verified = verified
     result.wrong = wrong
+    -- ★ 结构化结果（RPC 要用 ✓；CLI 的 lines 一个字节不变 ✓）
+    result.shape = {
+        blocksBefore = blockCountBefore,
+        blocksAfter = blockCountAfter,
+        blocksKept = shapeKept,
+        boundingBoxKept = bboxKept,
+    }
+    result.turrets = {
+        before = turretsBefore,
+        after = turretsFinal,
+        designsRestored = designsMapped,
+        designsDropped = dropped,
+    }
+    result.databaseSynced = entrySynced
     line("Applied. Paid " .. Mounts.formatResources(quote.resources)
         .. " + " .. tostring(quote.money) .. " credits.")
     line("Verified: " .. tostring(verified) .. " base(s) now " .. targetName
@@ -667,6 +808,106 @@ function self.mountsReport(player, result)
     for _, text in ipairs(result.lines or {}) do
         mountSend(player, text)
     end
+end
+
+-- ★★ RPC 原子：mountQuote —— 炮塔底座材料升级**报价**（纯事实，绝不改任何东西 ✓）
+--
+-- 返回（JSON 可序列化 ✓）：
+--   ship / targetMaterial / targetMaterialName / baseCount / needCount
+--   bases[{index, material, materialValue, needsUpgrade}]   ← 每块底座
+--   quote{resources[7], money, resourceUnits} / costs[{material, amount}]
+--   affordable / shortfall[{kind, material, need, have, missing}]
+--   environmentOk / environmentMessage / nothingToDo / stage / lines[] / warning?
+function self.mountsQuoteRpc(player, shipName, targetValue)
+    local Mounts = include("copilot/mounts")
+    local prep = self.mountsPrepare(player, shipName, targetValue)
+
+    local fact = {
+        what = "mountQuote",
+        ship = prep.shipName,
+        targetMaterial = prep.targetMaterial,
+        targetMaterialName = prep.targetName,
+        baseCount = prep.baseCount,
+        needCount = prep.needCount,
+        bases = self.mountsBaseFacts(prep.bases, prep.targetMaterial),
+        quote = prep.quote,
+        costs = {},
+        affordable = prep.affordable == true,
+        shortfall = prep.shortfall or {},
+        environmentOk = prep.environmentOk,
+        environmentMessage = prep.environmentMessage,
+        environmentBlocked = prep.gateBlocked == true,
+        nothingToDo = prep.nothingToDo == true,
+        stage = prep.stage,
+        changed = 0,
+        lines = prep.lines or {},
+    }
+    if prep.quote ~= nil then
+        for i = 1, #(prep.quote.resources or {}) do
+            local amount = tonumber(prep.quote.resources[i]) or 0
+            if amount > 0 then
+                fact.costs[#fact.costs + 1] = {
+                    materialIndex = i - 1,
+                    material = Mounts.materialName(i - 1),
+                    amount = amount,
+                }
+            end
+        end
+        fact.resourceUnits = prep.quote.resourceUnits
+        fact.credits = prep.quote.money
+    end
+    -- ★ 驾驶中：**允许**（真机已验证安全：Raven `ddd792a` ✓），但把风险说清楚 ✓
+    if player.craft ~= nil and prep.shipName ~= nil
+        and tostring(player.craft.name) == prep.shipName then
+        fact.piloted = true
+        fact.warning = "船上有人驾驶 ✓ 允许（真机验证 ddd792a ✓）—— 写回瞬间可能有极短卡顿 ✓"
+    end
+    return fact
+end
+
+-- ★★ RPC 原子：mountUpgrade —— **只有 confirm=true 才执行** ✓；否则与 CLI 预览一样只报价 ✓
+--
+-- 结果与 CLI `/copilot mounts <材料> <船> confirm` **同结构** ✓：
+--   ok / stage / changed / verified / wrong / paid / shape / turrets / databaseSynced / lines[]
+-- ★ 安全闸门是同一处：mountsUpgrade 的 confirmed 参数 ✓（没有 confirm 绝不 pay/setMovePlan ✓）。
+function self.mountsUpgradeRpc(player, shipName, targetValue, confirmed)
+    local Mounts = include("copilot/mounts")
+    local result = self.mountsUpgrade(player, shipName, targetValue, confirmed == true)
+
+    local fact = {
+        what = "mountUpgrade",
+        ship = result.shipName,
+        targetMaterial = result.targetMaterial,
+        targetMaterialName = result.targetMaterial ~= nil
+            and Mounts.materialName(result.targetMaterial) or nil,
+        confirmed = (confirmed == true),
+        executed = (result.stage == "applied"),
+        ok = result.ok == true,
+        stage = result.stage,
+        baseCount = result.baseCount,
+        needCount = result.needCount,
+        bases = self.mountsBaseFacts(result.basesBefore, result.targetMaterial),
+        quote = result.quote,
+        affordable = result.affordable,
+        shortfall = result.shortfall or {},
+        changed = result.changed,
+        verified = result.verified,
+        wrong = result.wrong,
+        paid = result.paid,
+        shape = result.shape,
+        turrets = result.turrets,
+        databaseSynced = result.databaseSynced,
+        lines = result.lines or {},
+    }
+    if player.craft ~= nil and result.shipName ~= nil
+        and tostring(player.craft.name) == result.shipName then
+        fact.piloted = true
+        fact.warning = "船上有人驾驶 ✓ 允许（真机验证 ddd792a ✓）—— 写回瞬间可能有极短卡顿 ✓"
+    end
+    if confirmed ~= true and result.stage == "preview" then
+        fact.note = "PREVIEW ONLY -- nothing was changed. Pass confirm=true to apply."
+    end
+    return fact
 end
 
 -- /copilot mounts ... 的命令解析

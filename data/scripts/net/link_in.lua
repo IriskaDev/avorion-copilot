@@ -376,6 +376,31 @@ function CopilotLinkIn.onQuery(data)
         --   形状见 CopilotLinkIn.orderStatus 头上 ✓；`verify.pending=true` = 还没到采样点 ✓
         return CopilotLinkIn.orderStatus(player, data)
 
+    elseif what == "mountQuote" or what == "mountUpgrade" then
+        -- ★★ 炮塔底座材料升级的 RPC 原子（2026-10-18 加 ✓✓，主人要求「你直接升就行了」）
+        --
+        -- 为什么加：升级逻辑早就存在（lib/copilot/mounts.lua + cli.lua 的 mountsUpgrade ✓，
+        --   Lady/Raven 真机验过 ✓），但入口只有聊天命令 / 面板 ✗ —— 决策者跑不了 ✗✓。
+        -- ★ 这里**不重写逻辑** ✓：直接调 CopilotCli.mountsQuoteRpc / mountsUpgradeRpc，
+        --   它们与 CLI **共用 mountsPrepare / mountsUpgrade** ✓（报价逐字一致 ✓）。
+        -- ★ mountQuote = 纯事实（绝不改船 ✓）；mountUpgrade 没有 confirm=true 时只报价 ✓。
+        local mountShip = data.ship
+        if type(mountShip) ~= "string" or mountShip == "" then
+            return false, "BAD_REQUEST", "query " .. tostring(what) .. " needs data.ship"
+        end
+        local Mounts = include("copilot/mounts")
+        local mountTarget = Mounts.parseMaterial(data.material)
+        if mountTarget == nil then
+            return false, "BAD_REQUEST",
+                "query " .. tostring(what) .. " needs data.material " ..
+                "(iron|titanium|naonite|trinium|xanion|ogonite|avorion or 0-6)"
+        end
+        local Cli = include("copilot/cli")
+        if what == "mountQuote" then
+            return true, Cli.mountsQuoteRpc(player, mountShip, mountTarget)
+        end
+        return true, Cli.mountsUpgradeRpc(player, mountShip, mountTarget, data.confirm == true)
+
     elseif what == "goal" then
         local name = data.ship
         if type(name) ~= "string" or name == "" then
@@ -386,7 +411,7 @@ function CopilotLinkIn.onQuery(data)
 
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
-        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS }
+        return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS }
 
     elseif what == "orderSchema" then
         -- ★★ 已废弃（2026-10-17 ✓✓）：order 现在是**原子**的（一艘船 + 一个动作 + 最小参数 ✓），

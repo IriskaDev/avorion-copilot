@@ -1098,6 +1098,8 @@ M.WHATS = {
     "predict",          -- ★★ 原子：一个框 + 一个动作 + 参数 → 预测数字（单框 / 批量 N≤24 ✓；含 Travel ✓）
     "tradeRoutes",      -- ★★ 原子：某个框内的贸易路线 + 逐货数字（不含排序/推荐 ✗）
     "tradeEvaluate",    -- ★★ 原子：多框 × 多商品 × 多本金 → 单位时间净利矩阵（只计算、不推荐 ✓ 2026-10-18 加 ✓）
+    "mountQuote",       -- ★★ 原子：炮塔底座材料升级报价（纯事实、绝不改船 ✓ 2026-10-18 加 ✓）
+    "mountUpgrade",     -- ★★ 原子：炮塔底座材料升级（**只有 confirm=true 才执行** ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）
     "minePlan",         -- legacy：Mine 多区域 × 参数 × 层级加权
@@ -1174,6 +1176,26 @@ M.SECTOR_FACTS_PARAMS = {
     y = "number：必填 ✓（星区绝对 y ✓）",
     ship = "string：可选 ✓（带上这艘船的能力事实 ✓）",
     note = "每个星区事实新增 factionIndex/factionName/hasFaction/relation/isFriendly/hasStations ✓（原版语义，见上 ✓）",
+}
+-- ★★ 炮塔底座材料升级的 RPC 参数（2026-10-18 加 ✓✓ —— 主人要求「你直接升就行了」）
+--   与 CLI `/copilot mounts <材料> [船] [confirm]` **共用同一套函数** ✓（不写第二套逻辑 ✗）：
+--     · mountQuote   = 纯事实（每块底座、报价、够不够、缺什么），**绝不改船** ✓
+--     · mountUpgrade = **必须 confirm=true 才执行**；缺省只报价（与 CLI 预览逐字同源 ✓）
+--   ★ 驾驶中的船**允许**（真机已验证安全：Raven `ddd792a` ✓）—— 响应里带 piloted + warning ✓。
+M.MOUNT_QUOTE_PARAMS = {
+    ship = "string：必填 ✓（船名；必须是**本星区里你自己的船** ✓，跨星区没有实体 ✗）",
+    material = "string：必填 ✓ —— iron|titanium|naonite|trinium|xanion|ogonite|avorion 或 0-6（也认中文 ✓）",
+    note = "**纯事实、绝不改任何东西** ✓：bases[{index, material, materialValue, needsUpgrade}] + " ..
+        "quote{resources[7], money, resourceUnits} + affordable + shortfall[{kind, material, need, have, missing}]" ..
+        "（不够时**缺什么** ✓）+ environmentOk（原版修船坞闸门 ✓）。",
+}
+M.MOUNT_UPGRADE_PARAMS = {
+    ship = "string：必填 ✓（船名 ✓）",
+    material = "string：必填 ✓（同上 ✓）",
+    confirm = "boolean：**缺省 false = 只报价、绝不执行** ✗✓；**必须显式 true 才扣资源/信用点并写回** ✓",
+    note = "执行结果与 CLI `/copilot mounts <material> <ship> confirm` **同结构** ✓：" ..
+        "changed/verified/wrong/paid/shape/turrets/databaseSynced/lines ✓。" ..
+        "★ 驾驶中的船允许升级（真机 `ddd792a` ✓），但写回瞬间可能极短卡顿 → 返回 warning ✓。",
 }
 M.DOSSIER_PARAMS = {
     top = "number：每个计划保留前几个候选（缺省 6 ✓，上限 24 ✓）；顺手给 dossier 的每个计划一个**有界**视图 ✓",
