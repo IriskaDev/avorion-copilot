@@ -124,4 +124,5 @@
 3. 工具报错 → 把原因当事实，别重试同一个错；**不要靠截图**（`fleet_query` 才是正当的"看游戏"方式）。
 4. 计划没取到 = 简报缺口（`fleet_decisions` 看原因），**不是**"没有候选"，也不许用 safeMode 顶替。
 
-★ 铁律（R1-R10）与故障对照（症状→原因→处置）见作业手册 [`fleet-ops-manual.md`](fleet-ops-manual.md) §4 / §5。
+★ 铁律（R1-R10）与故障对照（症状→原因→处置）见作业手册 [`fleet-ops-manual.md`](fleet-ops-manual.md) §5 / §6；
+★ **回单与工具 JSON 的写法示例**（`escorts=` / `goodsToSell=` 等字段两条通道并排对照 + 三条端到端链路）见同文件 §3。

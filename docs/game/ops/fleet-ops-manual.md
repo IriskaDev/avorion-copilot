@@ -10,17 +10,18 @@
 - [0 文档说明](#0-文档说明)
 - [1 心智模型](#1-心智模型)
 - [2 原子字典](#2-原子字典)
-- [3 作业流程 P1-P8](#3-作业流程-p1-p8)
-- [4 铁律 R1-R10](#4-铁律-r1-r10)
-- [5 故障对照](#5-故障对照)
-- [6 附录：与其它文档的关系](#6-附录与其它文档的关系)
+- [3 ★ 用法示例（可照抄）](#3--用法示例可照抄)
+- [4 作业流程 P1-P8](#4-作业流程-p1-p8)
+- [5 铁律 R1-R10](#5-铁律-r1-r10)
+- [6 故障对照](#6-故障对照)
+- [7 附录：与其它文档的关系](#7-附录与其它文档的关系)
 
 ## 0 文档说明
 
 | 项 | 内容 |
 |---|---|
 | 给谁看 | ① **决策者**（DSH 会话 / 单发模型）：下单前照着走；② **主人**：审核动作与成本；③ 维护者：核对流程与原子是否一致 |
-| 怎么用 | 先读 §1（心智模型）→ 下单前对号入座 §3 的 P1-P8 → 违背 §4 铁律即停 → 出错查 §5 |
+| 怎么用 | 先读 §1（心智模型）→ ★ **要照着写就抄 §3 的示例**（回单 / 工具两套写法）→ 下单前对号入座 §4 的 P1-P8 → 违背 §5 铁律即停 → 出错查 §6 |
 | 权威来源 | 原版 Lua 源码 > [`../mechanics-source.md`](../mechanics-source.md) > 原子规范 [`atomic-rpc.md`](atomic-rpc.md) > 本手册 > 资料库。**一个事实只写一处**：本手册不复制段落，细节全部链接出去 |
 
 ## 1 心智模型
@@ -68,9 +69,311 @@
 > 以 live 工具描述为准（[`atomic-rpc.md`](atomic-rpc.md) 已同步）。
 > ★ `query:list` 在旧文档里也叫 `fleet`（[`atomic-rpc.md`](atomic-rpc.md) §A.1、[`tools-cheatsheet.md`](tools-cheatsheet.md) §2），以当前工具描述为准用 `list`。
 
-## 3 作业流程 P1-P8
+## 3 ★ 用法示例（可照抄）
 
-> 每个 P = 前置检查 → 命令序列 → 成功判据 → 失败怎么办。参数值见示例（可微调）；原子定义只在 §2。
+> 同一件事有**两条通道**，写法完全不同 —— 「字段清单有、写法示例没有」正是 L32 那次整单作废的病根（[`../lessons/orders.md`](../lessons/orders.md) L32）：
+> ★ **回单** = `fleet_task` 的答复，是**逐行文本**（`key=value`，一行一个字段）；★ **工具** = `fleet_query` / `fleet_order` 的**参数 JSON**。
+> 本节数字全是**本机真机读数**（2026-10-20，每段标明船与坐标）；照抄时只改船名 / 坐标 / 本金。
+
+### 3.1 回单：单船一组（逐字）
+
+块里只列了**一艘**船时，下面这一整段就是合法答复（字段按动作取舍，不必这么多行）：
+
+```text
+action=Salvage
+task=t-1a2b3c4d
+x=-197
+y=-54
+sizeX=15
+sizeY=15
+duration=1
+escorts=Combat-00001
+reason=打捞 14~18.75 件；带 Combat-00001 后基准 2%
+```
+
+- 第 1 行 `action=`，第 2 行 `task=`（★ **必须回显**，写错即判无效，见 [`../README.md`](../README.md) §2）。
+- 容错：`key:value`、`key=value`、`**key=value**`、全角冒号、行首 `- ` 都认；值两边的引号会被剥掉（`plugin/dsh/src/task.ts:112-116` ✓）。
+- 写完这几行**照常跟主人聊天** ✓ —— 舰队只看上面这些行。
+
+### 3.2 回单：多船多组（合并块）
+
+块头带 `count` / `ships` 属性（多艘合并块）时，**每艘一组**，组顺序随意，靠 `task=` 对上号：
+
+```text
+action=Mine
+task=t-1a2b3c4d
+x=-235
+y=-55
+size=15
+duration=1
+reason=Trinium 12.9~16.2 万；基准 3%
+
+action=Trade
+task=t-9f8e7d6c
+x=-365
+y=45
+sizeX=17
+sizeY=17
+goodName=Gold
+deposit=1000000
+reason=17x17 的 Gold：3 趟 123.9 万；基准 5%
+```
+
+- 不判的那艘**就别写它的组** ✓（它会被稍后重投，不会静默消失）；`task=` 写错 = **那组**作废 ✗（别船的答案绝不采纳）。
+- ⚠ 组是**按 `action=` 行切**的（`plugin/dsh/src/task.ts:352-364` ✓）：一组里别再冒出第二行 `action=`，多组之间**留空行最稳**。
+- 一组都不写、且最后一句是问号 → 本轮记「等主人裁决」（不替你编动作 ✓）。
+
+### 3.3 ★ 同一个字段，两种写法（并排）
+
+| 字段 | ★ 回单（逐行文本） | ★ 工具参数（JSON） | 一句话 |
+|---|---|---|---|
+| `escorts` | `escorts=Combat-00001`<br>`escorts=Raven,Combat-00001` | `escorts: ["Combat-00001"]`<br>`escorts: ["Raven","Combat-00001"]` | 回单是**逗号分隔的船名**（全角 `，`、顿号 `、` 也认，`task.ts:142-147` ✓）；**不是** `["…"]`、**不是** JSON |
+| `goodsToSell` | `goodsToSell=all`（`全部` / `全卖` 同义）<br>`goodsToSell=Drill:100,Oxygen:50` | `goodsToSell: ["Drill","Oxygen"]`<br>`goodsToSell: [{goodName:"Drill",amount:100}]` | 回单**必须带 `:数量`**；只写 `Drill,Oxygen` 会被**静默丢掉 → 退回默认全卖** ✗（`task.ts:491-500` ✓） |
+| `safeMode` | `safeMode=false`（`开`/`关`、`是`/`否`、`1`/`0` 都认，`task.ts:128-136` ✓） | `safeMode: false` | R2：基准 <10% **绝不**开 |
+| `duration` | `duration=1` | `duration: 1` | 小时；Mine/Salvage 可给 |
+| 框（正方形） | `sizeX=15` + `sizeY=15`（或 `size=15`） | `sizeX: 15, sizeY: 15`（`fleet_order` 的采集类给 `size: 15`） | 采集/打捞 15、侦察 21、精炼 31（固定） |
+| 框（长方形） | `sizeX=29` + `sizeY=11`（或 `shape=29x11`） | `sizeX: 29, sizeY: 11` | `29x11 ≠ 11x29`（L22） |
+| 负坐标 | `x=-197` | `x: -197` | 负号直接写 |
+
+> ★ **`escorts` 是本节最贵的一个坑**：回单写 `escorts=["Combat-00001"]` 时，引号被剥掉、**方括号留着** → 船名变成 `[Combat-00001]`（真机回执原文：`escorts:[{"name":"[Combat-00001]"}]`）→ 对不上护航名单 → 护航静默丢失、风险也算不出来。整条教训见 L32。
+
+### 3.4 工具调用：JSON（与回单对照）
+
+`fleet_query`（读）—— 单框预测带护航：
+
+```json
+{ "what": "predict", "ship": "Salvager-00001", "action": "Salvage",
+  "x": -197, "y": -54, "sizeX": 15, "sizeY": 15, "duration": 1,
+  "escorts": ["Combat-00001"] }
+```
+
+回单里**同一件事**：
+
+```text
+action=Salvage
+task=t-1a2b3c4d
+x=-197
+y=-54
+sizeX=15
+sizeY=15
+duration=1
+escorts=Combat-00001
+```
+
+`fleet_order`（写）—— 同一组参数真正下单：
+
+```json
+{ "ship": "Salvager-00001", "action": "Salvage",
+  "x": -197, "y": -54, "size": 15, "duration": 1,
+  "escorts": ["Combat-00001"] }
+```
+
+> 两条通道的**参数名基本一样**（`x` / `sizeX` / `sizeY` / `duration` / `escorts` …），差别只在**类型**：回单全是字符串，工具里 `escorts` 是数组、`safeMode` 是布尔。
+> ★ **别把工具写法抄进回单**（`escorts: ["…"]` 在回单里 = 一个全是括号的船名 ✗），也**别把回单写法抄进工具**（`escorts: "A,B"` 不是数组 ✗）。
+
+### 3.5 ★ 三条端到端链路（照抄就能跑）
+
+#### 链路① 采矿（Mine）
+
+真机上下文：`Miner-00002` @ `(-228,-48)`，`captainClass:"Miner"`，`turretCategories:{Mining:4,Armed:1}`，货舱 39/3521。
+
+**第 1 步 · 名册**
+
+```json
+{ "what": "list" }
+```
+
+真机节选：`Miner-00002` @ `(-228,-48)`、`busy:true`（当时它正在采矿，所以本链路只拿它的**读数**演示；真要下单必须先 `busy:false`，L9）。
+
+**第 2 步 · 这船能干嘛**
+
+```json
+{ "what": "ship", "ship": "Miner-00002", "brief": true }
+```
+
+真机节选：`captainClass:"Miner"`、`turretCount:5`、`turretCategories:{Mining:4,Armed:1}`、`hyperspace.reach:4.1`、`cargoUsed:39`。
+
+**第 3 步 · ★ 贴角量 4 框**（采集贴角 = 框心朝反方向挪 ±7，同一张 15×15 覆盖 ×4）：
+
+```json
+{ "what": "predict", "ship": "Miner-00002", "action": "Mine",
+  "boxes": [ {"x":-235,"y":-55,"sizeX":15,"sizeY":15},
+             {"x":-221,"y":-55,"sizeX":15,"sizeY":15},
+             {"x":-235,"y":-41,"sizeX":15,"sizeY":15},
+             {"x":-221,"y":-41,"sizeX":15,"sizeY":15} ] }
+```
+
+真机结果（4 框都 `containsShip:true`）：
+
+| 框心 | `baseAttackChance` | `value.valueLow` | `value.valueHigh` | 材料 |
+|---|---|---|---|---|
+| `(-235,-55)` | **3%** | 129,580 | 161,975 | Trinium（topTier 4） |
+| `(-221,-55)` | 66% | 198,548 | 248,185 | Trinium |
+| `(-235,-41)` | **3%** | 118,024 | 147,530 | Trinium |
+| `(-221,-41)` | 32% | 198,548 | 248,185 | Trinium |
+
+→ 取 `(-235,-55)`：3% 过闸门，且产出比另一张 3% 的框高。
+
+**第 4 步 · 下单**
+
+```json
+{ "ship": "Miner-00002", "action": "Mine", "x": -235, "y": -55, "size": 15, "duration": 1 }
+```
+
+**第 5 步 · 看回执**：只认 `preflight.ok` 与 `verify.ok`（结构见链路③第 6-7 步）；`accepted:true` 只代表**进了队列** ✗。
+（★ 这一单真机没下 —— 当时这船 `busy:true`；参数与数字是真的，派单前把 `busy` 等到 `false` ✓。）
+
+#### 链路② 贸易（Trade）
+
+真机上下文：`Trader-00001`，`captainClass:"Merchant"`、`cargoUsed:0`、`cargoCapacity:3498`。
+
+**第 1 步 · 名册 → 读它此刻在哪**
+
+```json
+{ "what": "list" }
+```
+
+真机教训：本鱼第一次把框心打在旧的 `(-369,39)`，而船已经到了 `(-365,45)` → `29x11` 那个框直接回 `SHIP_NOT_IN_AREA`（`containsShip:false`；原版 `simulation.lua:546` 要求框含船 ✓）。
+
+**第 2 步 · 形状 × 位置 × 本金一次算完**
+
+```json
+{ "what": "tradeEvaluate", "ship": "Trader-00001",
+  "boxes": [ {"x":-365,"y":45,"sizeX":17,"sizeY":17},
+             {"x":-365,"y":45,"sizeX":29,"sizeY":11},
+             {"x":-365,"y":45,"sizeX":11,"sizeY":29} ],
+  "deposits": [1000000] }
+```
+
+真机前四名（本金 100 万，`results` 已按 `profitPerHour` 降序）：
+
+| 框 | 商品 | `flightsFrom` | `baseAttackChance` | `netProfitLow` | `profitPerHour` |
+|---|---|---|---|---|---|
+| `17x17` | Gold | 3 | 5% | **1,239,767** | 1,836,692 |
+| `17x17` | Carbon | 3 | 4% | 948,416 | 1,459,102 |
+| `11x29` | Carbon | 3 | 4% | 948,416 | 1,459,102 |
+| `29x11` | Carbon | 3 | 4% | 874,598 | 1,399,357 |
+
+→ 取 `17x17` / Gold（每趟 42.75~47.50 万 × 3 趟）。
+
+**第 3 步 · 立刻下单**（清单会变，别隔回合；★ 真机这一次 `Trader-00001` 还在跑上一单 `busy:true`，所以只量不下单 —— 参数照抄即可，下单前确认 `busy:false`）
+
+```json
+{ "ship": "Trader-00001", "action": "Trade", "x": -365, "y": 45,
+  "sizeX": 17, "sizeY": 17, "goodName": "Gold", "deposit": 1000000 }
+```
+
+**第 4 步 · 看回执**：`preflight.ok:false` = **什么都没下**（它带 `checks[]`，如 `SHIP_STATE` / `SHIP_IN_AREA` / `CAPTAIN_OK`）；`NO_ROUTE:` = 路线名/形状对不上，先读 `noRoute.siblingBoxes`（L22）；最后看 `verify`。
+
+#### 链路③ 带护航打捞（Salvage）
+
+真机上下文：`Salvager-00001`，`captainClass:"Scavenger"`、`turretCategories:{Armed:4,Salvaging:4}`、货舱满 4988/3423。
+
+**第 1 步 · 裸跑一框**
+
+```json
+{ "what": "predict", "ship": "Salvager-00001", "action": "Salvage",
+  "x": -197, "y": -54, "sizeX": 15, "sizeY": 15, "duration": 1 }
+```
+
+真机：`baseAttackChance:0.8`（80%）、`items:{from:14,to:18.75}`、`scrapLow:171,739`、`box.containsShip:true`。
+
+**第 2 步 · 先判需不需要护航**：80% 远超闸门 → 需要；`Combat-00001` 同星区，在它自己的 reach 内 → **不用** `fleet_escort` 挪船，直接写进订单（R6）。
+
+**第 3 步 · 带护航重测（★ 必须核 `escortsApplied`）**
+
+```json
+{ "what": "predict", "ship": "Salvager-00001", "action": "Salvage",
+  "x": -197, "y": -54, "sizeX": 15, "sizeY": 15, "duration": 1,
+  "escorts": ["Combat-00001"] }
+```
+
+真机：`escortsApplied:["Combat-00001"]`、`baseAttackChance:0.02`（**80% → 2%**）、`items` 不变（14~18.75）。
+
+**第 4 步 · 批量量框 + 顶层 `escorts`**（批量时顶层会被每框继承，但要逐框核对）：
+
+```json
+{ "what": "predict", "ship": "Salvager-00001", "action": "Salvage",
+  "duration": 1, "escorts": ["Combat-00001"],
+  "boxes": [ {"x":-197,"y":-54,"sizeX":15,"sizeY":15},
+             {"x":-211,"y":-54,"sizeX":15,"sizeY":15},
+             {"x":-197,"y":-68,"sizeX":15,"sizeY":15},
+             {"x":-211,"y":-68,"sizeX":15,"sizeY":15} ] }
+```
+
+真机（同一批 4 框；船当时在打捞，已漂到 `(-200,-58)`）：
+
+| 框心 | `escortsApplied` | `containsShip` | `baseAttackChance` |
+|---|---|---|---|
+| `(-197,-54)` | `["Combat-00001"]` | true | **2%** |
+| `(-211,-54)` | `["Combat-00001"]` | false | — `SHIP_NOT_IN_AREA` |
+| `(-197,-68)` | `["Combat-00001"]` | false | — |
+| `(-211,-68)` | `["Combat-00001"]` | false | — |
+
+→ 只有**含船**那一框给出数字。贴角只能贴**船实际所在**的那个角：船一动，其余三个角全废（L28：派单前重测）。
+
+**第 5 步 · 下单（工具）**（★ 真机这次同样没下：船在打捞 `busy:true`；下面这份回执节选来自**更早的同船同框那一单**，可以当格式样张 ✓）
+
+```json
+{ "ship": "Salvager-00001", "action": "Salvage", "x": -197, "y": -54,
+  "size": 15, "duration": 1, "escorts": ["Combat-00001"] }
+```
+
+同一单的**回单**（过一会儿船又空闲时，下一位决策者可能直接回单）：
+
+```text
+action=Salvage
+task=t-1a2b3c4d
+x=-197
+y=-54
+sizeX=15
+sizeY=15
+duration=1
+escorts=Combat-00001
+reason=打捞 14~18.75 件；带 Combat-00001 后 2%
+```
+
+**第 6 步 · 看回执**（下面是**真机回执节选**，同一艘船、同一个框那一单）：
+
+```json
+{ "accepted": true, "executed": true, "orderId": 1,
+  "preflight": { "ok": true,
+    "checks": [ {"name":"SHIP_STATE","ok":true,"detail":"pos=(-204,-61) busy=false cargo=4988"},
+                {"name":"SHIP_IN_AREA","ok":true,"detail":"(-204,-61) is inside [-204,-61]-[-190,-47]"},
+                {"name":"DURATION_OK","ok":true,"detail":"1 is inside the command's [0.5, 5]"},
+                {"name":"CAPTAIN_OK","ok":true,"detail":"captain present (class=Scavenger)"} ],
+    "warnings": [ {"code":"ESCORT_ARMAMENT_UNKNOWN",
+                   "detail":"cannot read the armament of escort '[Combat-00001]' (canFight unknown) — not a failure, just unread"} ] },
+  "escorts": [ {"name":"[Combat-00001]"} ],
+  "risk": { "known": false, "baseAttackChanceKnown": false, "baseAttackChance": null,
+            "unknownReason": "…simulationutility.lua:656: attempt to index local 'entry' (a nil value)" },
+  "verify": { "pending": true } }
+```
+
+★ 这一单就是 **L32 的现场**：护航名被写成 `[Combat-00001]` → `ESCORT_ARMAMENT_UNKNOWN` + `risk.known:false`（`baseAttackChance` 是 **null**，不是 0）。
+`verify.pending:true` **不等于**成功 —— 再查一次才落定：
+
+**第 7 步 · 真正验证**
+
+```json
+{ "what": "orderStatus", "ship": "Salvager-00001" }
+```
+
+真机 `verify` 原文：
+
+```json
+{ "accepted": true, "started": true, "orderId": 2, "action": "Salvage",
+  "verify": { "ok": true, "evidence": "busy", "busy": true, "afterStartSec": 6.3,
+              "moved": false,
+              "positionBefore": {"x":-204,"y":-61}, "position": {"x":-204,"y":-61},
+              "cargoUsedBefore": 4988, "cargoUsed": 4988, "cargoUsedDelta": 0 } }
+```
+
+`ok:true` 的硬证据是 **`busy:true`**（船真的动起来了 ✓）；`busy:false` + 位置没动 = 没跑 ✗。
+
+## 4 作业流程 P1-P8
+
+> 每个 P = 前置检查 → 命令序列 → 成功判据 → 失败怎么办。**可照抄的写法与真机数字在 §3**；原子定义只在 §2。
 
 ### P1 采矿（Mine）
 
@@ -144,7 +447,7 @@
 | 成功判据 | 回执 `changed=true` + `migrated{}` 报告目标/名单/配置已迁移 |
 | 失败怎么办 | `SHIP_BUSY` → 先 `recall`；`NAME_TAKEN` / `NAME_TOO_LONG` / `NAME_BAD_CHARACTER` → 换名 |
 
-## 4 铁律 R1-R10
+## 5 铁律 R1-R10
 
 > 每条 ≤2 行；出处给到具体文件与编号。违背任何一条 = 停止下单。
 
@@ -161,7 +464,7 @@
 | R9 | 不许给闲船编活（`action=None` 也是决策）；战斗舰允许闲置 | [`lessons/orders.md`](../lessons/orders.md) L5 |
 | R10 | 读回执、失败重投；缺数不猜、不用 safeMode 顶替 | [`lessons/orders.md`](../lessons/orders.md) L10 · [`rules/owner-rules.md`](../rules/owner-rules.md) §3 |
 
-## 5 故障对照
+## 6 故障对照
 
 > 症状 → 原因 → 处置，每行一条。工具报错就把它给的原因当事实，别猜。
 
@@ -181,10 +484,12 @@
 | 升级报「附近有敌/刚挨打」 | 原版环境闸门 | 脱离战斗再试（P7） |
 | 回执 `verify.ok = false` | 订单排队但没动 | 查 `orderStatus` |
 | 忙船改名 `SHIP_BUSY` | 在跑后台命令 | 先 `recall`（P8） |
+| 回执 `ESCORT_ARMAMENT_UNKNOWN` + `risk.known:false` | 护航名写成了 `[Combat-00001]` / `["…"]`（Lua/JSON 写法 ✗） | 回单改成逗号分隔的船名（§3.3、L32） |
+| 回单被判 `NO_ACTION_LINE` / `TASK_MISMATCH` | 没写 `action=` 行 / `task=` 回显错 | 按 §3.1、§3.2 的逐字格式重写（别抄工具 JSON） |
 
-## 6 附录：与其它文档的关系
+## 7 附录：与其它文档的关系
 
-> 哪份管什么；本手册只做「入口 + 流程 + 铁律 + 故障」，机制事实一律不回抄。
+> 哪份管什么；本手册只做「入口 + 示例 + 流程 + 铁律 + 故障」，机制事实一律不回抄。
 
 | 文件 | 管什么 |
 |---|---|
