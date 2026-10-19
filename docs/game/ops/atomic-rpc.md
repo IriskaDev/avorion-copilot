@@ -108,7 +108,7 @@
 ### B.3 贸易按框：`tradeRoutes` —— 某框内的贸易路线
 
 - **入参**：`{ what="tradeRoutes", ship, x, y, sizeX, sizeY }`
-- **出参**：`{ box:{…,containsShip}, routes:[{name, lowest, highest, basePrice, unitSize, profitPerSize, from, to}, …] }`（每条路线的**逐货数字**，不含预测——预测走 `predict`）。
+- **出参**：`{ box:{…,containsShip}, shipPosition:{x,y,cellX,cellY}, routes:[{name, lowest, highest, basePrice, unitSize, profitPerSize, from, to}, …] }`（每条路线的**逐货数字**，不含预测——预测走 `predict`）。`containsShip` 与 `predict` **同一判据**（闭区间 + 原始坐标 `simulation.lua:548` ✓，`link_in.lua:2331` ✓）；`shipPosition` 同 `predict` 那个（`x/y` 原始、`cellX/cellY` 格 ✓）。
 - **耗时/体积**：一次 `run()`（Trade 最贵那步）；体积 = 路线表（≤4 条，原版只给 4 条 `:634`）。
 - **错误**：`NO_ROUTE`、`BAD_REQUEST`、`NO_ANALYSIS_RUN`。
 - **它不做策略** ✗：不挑路线、不算预付金、不排序。挑哪条、给多少预付金，由决策者拿这些数字自己定（或再用 `predict` 逐条算预测）。
