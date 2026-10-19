@@ -29,6 +29,8 @@ local function check(name, ok, extra)
 end
 
 local SHIP, SHIP_X, SHIP_Y = "Trader-00001", -412, 73
+-- ★ 小数坐标覆盖（船在**跳跃途中**时 getShipPosition 返回小数 ✓ —— 2026-10-20 边界口径用 ✓）
+local RAW_X, RAW_Y = nil, nil
 local nRun, nPred = 0, 0        -- ★ 昂贵调用的计数（衡量"一框算一框" ✓）
 
 -- ---------------------------------------------------------------------------
@@ -125,7 +127,7 @@ function NumMaterials() return 7 end
 local player = {
     index = 1,
     craft = nil,                                  -- ★ 玩家没在开船 ✓（list 里 piloted=nil ✓）
-    getShipPosition = function(self, name) return SHIP_X, SHIP_Y end,
+    getShipPosition = function(self, name) return RAW_X or SHIP_X, RAW_Y or SHIP_Y end,
     getKnownSector = function(self, x, y) return {} end,
     getValue = function(self, key)
         if key == "copilot_auto_ships" then return "Trader-00001\nMiner-00001\n" end
@@ -316,6 +318,84 @@ check("⑧ order 回执带 risk 字段 ✓（口径 = predict，见 _order_risk_
     rO5 and type(rO5.risk) == "table", rO5 and type(rO5.risk))
 check("⑧ order 回执只带最小参数（area/config，不含 routeNames/推荐 ✗）",
     rO5 and rO5.recommendation == nil and rO5.routeNames == nil, "")
+
+-- ---------------------------------------------------------------------------
+-- ⑩ ★ 边界口径（2026-10-20 主人原话「只要在框中，贴边是没有问题的」✓）：
+--   · 船停在**整数**星区 → 四个贴角框都必须 containsShip:true ✓（闭区间，两端都算 ✓）
+--   · 框外一格 → false ✓
+--   · 船在跳跃途中（坐标是**小数**）→ 与原版 simulation.lua:548 同口径比**原始坐标** ✓：
+--     0.4 在**下界之上**算含船 ✓；0.4 在**上界之外**算不含 ✓（先 floor 会把它误判成含船 ✗）
+-- ---------------------------------------------------------------------------
+print("== ⑩ 边界：四方向贴边 true / 外一格 false / 小数坐标按原版原始坐标比 ==")
+nRun, nPred = 0, 0
+local okE, rE = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Trade",
+    boxes = {
+        { x = SHIP_X + 8, y = SHIP_Y + 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+        { x = SHIP_X - 8, y = SHIP_Y + 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+        { x = SHIP_X - 8, y = SHIP_Y - 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+        { x = SHIP_X + 8, y = SHIP_Y - 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+    },
+})
+check("⑩ 四贴角框 ok=true", okE == true, rE)
+if okE == true then
+    for i, label in ipairs({ "左下角", "右下角", "右上角", "左上角" }) do
+        check("⑩ 贴" .. label .. " containsShip=true ✓（闭区间，边界算在内 ✓）",
+            rE.boxes[i] and rE.boxes[i].box and rE.boxes[i].box.containsShip == true,
+            rE.boxes[i] and rE.boxes[i].box and tostring(rE.boxes[i].box.containsShip))
+    end
+    check("⑩ 四框都真的算了（run 恰好 4 次 ✓）", nRun == 4, nRun)
+    check("⑩ 回执带 shipPosition（可核对原版用的原始坐标 ✓）",
+        type(rE.shipPosition) == "table" and rE.shipPosition.x == SHIP_X and rE.shipPosition.cellX == SHIP_X,
+        type(rE.shipPosition))
+end
+
+-- 框外一格 → false ✓
+local okOut, rOut = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Trade",
+    boxes = {
+        { x = SHIP_X + 10, y = SHIP_Y + 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+        { x = SHIP_X + 8, y = SHIP_Y + 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+    },
+})
+check("⑩ 框外一格 ok=true（批量不整体失败 ✓）", okOut == true, rOut)
+if okOut == true then
+    check("⑩ 框外一格 containsShip=false + SHIP_NOT_IN_AREA ✓",
+        rOut.boxes[1] and rOut.boxes[1].box.containsShip == false and rOut.boxes[1].error == "SHIP_NOT_IN_AREA",
+        rOut.boxes[1] and tostring(rOut.boxes[1].error))
+    check("⑩ 同批的贴角框仍是 true ✓（不连坐 ✗）",
+        rOut.boxes[2] and rOut.boxes[2].box.containsShip == true,
+        rOut.boxes[2] and tostring(rOut.boxes[2].box.containsShip))
+end
+
+-- 小数坐标（船在跳跃途中）→ 与原版同口径（原始坐标，闭区间）✓
+RAW_X, RAW_Y = SHIP_X + 0.4, SHIP_Y + 0.4
+nRun, nPred = 0, 0
+local okF, rF = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Trade",
+    boxes = {
+        -- 船在这个框的**上/右边界之外** 0.4 格 → 原版判不含 ✓（floor 会误判成含 ✗）
+        { x = SHIP_X - 8, y = SHIP_Y - 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+        -- 船在这个框的**下/左边界之上** 0.4 格 → 原版判含 ✓
+        { x = SHIP_X + 8, y = SHIP_Y + 8, sizeX = 17, sizeY = 17, goodName = "Drill", deposit = 1000000 },
+    },
+})
+check("⑩ 小数坐标 ok=true（批量 ✓）", okF == true, rF)
+if okF == true then
+    check("⑩ 小数坐标在上/右界外 0.4 → containsShip=false ✓（= simulation.lua:548 原始坐标比较 ✓）",
+        rF.boxes[1] and rF.boxes[1].box.containsShip == false,
+        rF.boxes[1] and tostring(rF.boxes[1].box.containsShip))
+    check("⑩ 小数坐标在下/左界上 0.4 → containsShip=true ✓",
+        rF.boxes[2] and rF.boxes[2].box.containsShip == true,
+        rF.boxes[2] and tostring(rF.boxes[2].box.containsShip))
+    check("⑩ shipPosition 回显原始小数（x=SHIP_X+0.4 ✓）",
+        type(rF.shipPosition) == "table" and math.abs(rF.shipPosition.x - (SHIP_X + 0.4)) < 1e-9,
+        type(rF.shipPosition) == "table" and tostring(rF.shipPosition.x))
+    check("⑩ shipPosition.cellX 是 floor 出来的格（=SHIP_X ✓）",
+        type(rF.shipPosition) == "table" and rF.shipPosition.cellX == SHIP_X,
+        type(rF.shipPosition) == "table" and tostring(rF.shipPosition.cellX))
+end
+RAW_X, RAW_Y = nil, nil
 
 -- ---------------------------------------------------------------------------
 -- ⑨ 体积量级（替身环境下的 JSON 字节数 —— 与真实响应同形状 ✓）

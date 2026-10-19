@@ -48,6 +48,7 @@ end
 
 local SHIP, SHIP_X, SHIP_Y = "Salvager-00001", -381, 57
 local DEST_X, DEST_Y = -374, 64          -- Travel 的目的地（7 跳 ✓）
+local RAW_X, RAW_Y = nil, nil            -- ★ 小数坐标覆盖（船在跳跃途中 ✓ —— 边界口径用 ✓）
 local AVAIL = 0                          -- 0 = Available / 1 = InBackground
 local CAP = 4000
 local CARGO = {}                         -- good 对象 → 数量 ✓
@@ -66,6 +67,7 @@ local LinkIn = nil
 
 local function reset()
     SHIP_X, SHIP_Y = -381, 57
+    RAW_X, RAW_Y = nil, nil
     AVAIL = 0
     CARGO, DEMAND, SUPPLY = {}, {}, {}
     CAPTAIN_CLASS = "Scavenger"
@@ -299,7 +301,7 @@ local player = {
     craft = nil,
     getShipPosition = function(self, name)
         if ESCORTS[name] ~= nil then return ESCORTS[name].x, ESCORTS[name].y end
-        return SHIP_X, SHIP_Y
+        return RAW_X or SHIP_X, RAW_Y or SHIP_Y
     end,
     getShipAvailability = function(self, name)
         if ESCORTS[name] ~= nil then return ESCORTS[name].avail or 0 end
@@ -728,6 +730,56 @@ reset()
 local ok25, code25 = LinkIn.orderStatus(Player(), { ship = "NoSuchShip-1" })
 check("P15 ok=false ✓", ok25 == false, tostring(ok25))
 check("P15 错误码 NO_ORDER ✓", code25 == "NO_ORDER", tostring(code25))
+
+-- ===========================================================================
+-- P16：★ 边界口径 —— preflight 的 SHIP_IN_AREA 与 predict 的 containsShip **同判据** ✓
+--   主人原话（2026-10-20）：「只要在框中，贴边是没有问题的」✓
+--   原版 = 闭区间 + **原始坐标**（simulation.lua:548 / :825-826 ✓，不取整 ✓）
+--   predict 侧同一口径的断言在 _atomic_selftest.lua ⑩ ✓
+-- ===========================================================================
+print("== P16: Mine 四个贴角框 → SHIP_IN_AREA 全部通过 ✓ ==")
+for _, c in ipairs({ { 7, 7 }, { -7, 7 }, { -7, -7 }, { 7, -7 } }) do
+    reset()
+    local okC, rC = order("Mine", { x = SHIP_X + c[1], y = SHIP_Y + c[2], size = 15, duration = 1 })
+    local nearOk = false
+    for _, ck in ipairs((rC.preflight or {}).checks or {}) do
+        if ck.name == "SHIP_IN_AREA" and ck.ok == true then nearOk = true end
+    end
+    check(string.format("P16 贴角(%+d,%+d) accepted=true ✓（边界算在内 ✓）", c[1], c[2]),
+        okC == true and rC.accepted == true, rC and tostring(rC.preflight and rC.preflight.code))
+    check(string.format("P16 贴角(%+d,%+d) 预检记了 SHIP_IN_AREA 通过 ✓", c[1], c[2]), nearOk, codesOf(rC.preflight))
+end
+
+print("== P16b: 框外一格 → SHIP_NOT_IN_AREA ✓（不下单 ✓）==")
+reset()
+local okB, rB = order("Mine", { x = SHIP_X + 9, y = SHIP_Y + 7, size = 15, duration = 1 })
+check("P16b accepted=false ✓", okB == true and rB.accepted == false, rB)
+check("P16b preflight.code = SHIP_NOT_IN_AREA ✓", rB.preflight.code == "SHIP_NOT_IN_AREA",
+    tostring(rB.preflight.code))
+check("P16b 没发起区域分析 ✓", #INVOKED == 0, table.concat(INVOKED, ","))
+
+print("== P16c: 船在跳跃途中（小数坐标）→ 与 predict 同一判据（原始坐标 ✓）==")
+reset()
+RAW_X, RAW_Y = SHIP_X + 0.4, SHIP_Y + 0.4
+-- 这个框的上/右边界正好是船所在整数格 → 原始坐标在界外 0.4 → 原版拒 ✓（floor 会误判成含 ✗）
+local okC, rC = order("Mine", { x = SHIP_X - 7, y = SHIP_Y - 7, size = 15, duration = 1 })
+check("P16c 上/右界外 0.4 → SHIP_NOT_IN_AREA ✓（= simulation.lua:825 原始坐标比较 ✓）",
+    okC == true and rC.accepted == false and rC.preflight.code == "SHIP_NOT_IN_AREA",
+    rC and tostring(rC.preflight and rC.preflight.code))
+check("P16c 预检报的位置是**原始坐标**（含小数 ✓）",
+    type(rC.preflight.reason) == "string"
+    and rC.preflight.reason:find(tostring(SHIP_X + 0.4), 1, true) ~= nil,
+    rC and tostring(rC.preflight and rC.preflight.reason))
+-- 这个框的下/左边界正好是船所在整数格 → 原始坐标在界内 0.4 → 通过 ✓
+local okD, rD = order("Mine", { x = SHIP_X + 7, y = SHIP_Y + 7, size = 15, duration = 1 })
+check("P16c 下/左界上 0.4 → accepted=true ✓", okD == true and rD.accepted == true,
+    rD and tostring(rD.preflight and rD.preflight.code))
+check("P16c 回执 pf.state 同时给原始坐标与格 ✓",
+    type(rD.preflight.state) == "table"
+    and math.abs((rD.preflight.state.rawX or 0) - (SHIP_X + 0.4)) < 1e-9
+    and rD.preflight.state.x == SHIP_X,
+    rD and tostring(rD.preflight.state and rD.preflight.state.rawX))
+RAW_X, RAW_Y = nil, nil
 
 -- ===========================================================================
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
