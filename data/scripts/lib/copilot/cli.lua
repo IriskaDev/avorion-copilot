@@ -171,7 +171,7 @@ local function copilotProbe(player)
     tryNative("native[裸名]",
         "copilotprobe", "luaopen_copilotprobe")
 
-    -- 8) 原生 TCP 通道（见 PROTOCOL.md / NATIVE.md）
+    -- 8) 原生 TCP 通道（见 docs/dev/protocol.md / docs/dev/native.md）
     --
     --    游戏里已经确认的事实（见 DLL 日志 + 服务端日志）：
     --      * 建表成功、闭包可调用（l_numprobe ENTER 打印了）

@@ -1,4 +1,4 @@
-# PROTOCOL.md —— 游戏 ⇄ DSH 的 TCP 协议（v2 草案 · 待主人再审）
+# protocol.md —— 游戏 ⇄ DSH 的 TCP 协议（v2 草案 · 待主人再审）
 
 > **相对 v1 的变化**：加入 **`id`（必填）** 与 **`type`（`request`/`response`）**，
 > 把单向决策流升级为**双向 RPC**。
@@ -117,7 +117,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 
 > ★ `orderSchema` 是**关键设计** ✓：游戏侧用原版的
 > `getConfigurableValues(owner, ship)` / `getAreaSize` / `isAreaFixed` / `isShipRequiredInArea`
-> （见 `LLM-OPS.md` §3.3）**自己声明**命令参数结构 ✓✓。
+> （见 `../game/llm-ops.md` §3.3）**自己声明**命令参数结构 ✓✓。
 > **DSH 因此不必硬编码任何命令形状** ✓ —— 加命令、改参数，DSH 侧零改动 ✓✓。
 
 ### 4.3 答复
@@ -134,7 +134,7 @@ TCP 是字节流，**不能假设"一次读 = 一条消息"**：
 
 ## 5. 快照结构（`fleet` / `ship` / `state` 共用）
 
-**全部字段用今晚实测验证过的 API 取** ✓（见 `LLM-OPS.md` 的实测纠正表）：
+**全部字段用今晚实测验证过的 API 取** ✓（见 `../game/llm-ops.md` 的实测纠正表）：
 
 ```json
 {

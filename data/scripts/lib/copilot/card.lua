@@ -10,7 +10,7 @@ package.path = package.path .. ";data/scripts/?.lua"
 -- 本文件是 **lib**：只能 `return` 命名空间表，**不许定义全局生命周期回调**
 -- （否则会污染 include 它的脚本 ✓）。
 --
--- ★ 只用**实测验证过**的 API（见 LLM-OPS.md 的实测纠正表）：
+-- ★ 只用**实测验证过**的 API（见 docs/game/llm-ops.md 的实测纠正表）：
 --   * 空闲：`player:getShipAvailability(name) == ShipAvailability.InBackground`
 --   * 船长：`ShipDatabaseEntry:getCaptain()`  ← 在 entry 上可用（实测 ✓）
 --   * ✗ 不要用 `entry:getAvailability()`（返回数字）
@@ -1009,7 +1009,7 @@ function M.shipCard(player, name)
         -- ★★ 深度事实（2026-10-17 补 ✓✓ —— 主人要"往地图中心推进"，所以把
         --    "待在这里 vs 往里走"变成**可比较的数字** ✓，而不是让决策层去猜 ✓）。
         --
-        --    原版提供的三个**可 Lua 直调**的函数（证据见 MECHANICS.md §0 ✓）：
+        --    原版提供的三个**可 Lua 直调**的函数（证据见 docs/game/mechanics-source.md §0 ✓）：
         --      Balancing_GetSectorRichnessFactor(x, y)  星区富饶度（gate.lua:92 等大量用例 ✓）
         --      Balancing_GetMaterialProbability(x, y)   该坐标的材料概率（resourcetrader.lua:152 ✓）
         --      Balancing_InsideRing(x, y)               是否在**中心屏障环**内（repairdock.lua:867 ✓）
@@ -1079,7 +1079,7 @@ function M.shipCard(player, name)
     --      于是把"顺序猜出来的 None"标成"已知" ✓，那正是对主人的**谎报** ✓✓
 
     -- ③ 合法动作与它们的约束 ✓
-    --    来源：LLM-OPS.md 的调研（四条后台命令的区域规则、船长要求、距离要求 ✓）
+    --    来源：docs/game/llm-ops.md 的调研（四条后台命令的区域规则、船长要求、距离要求 ✓）
     --    ★ 形状故意做成**自解释**的，模型不用再猜 ✓
     card.actions = {
         Mine = {

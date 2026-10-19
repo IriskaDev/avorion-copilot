@@ -8,9 +8,9 @@
 
 | 事实 | 证据 |
 |---|---|
-| 银河 **1000×1000** 星区，坐标范围 ±500，中心 **(0,0)**；距离是**欧氏距离** | `lib/galaxy.lua:387-389`、`:23-26`（转引 `GAME-GOALS-AND-OPS.md` §A1） |
+| 银河 **1000×1000** 星区，坐标范围 ±500，中心 **(0,0)**；距离是**欧氏距离** | `lib/galaxy.lua:387-389`、`:23-26`（转引 `../goals-and-ops.md` §A1） |
 | 中心**屏障环**半径：`blockRingMin = 147`、`blockRingMax = 150` | `lib/galaxy.lua:8-9` ✓ |
-| 过屏障只能靠 8 钥匙传送门或 Avorion 超空间核心；`Balancing_InsideRing(x,y)` 判断是否在环内 | `MECHANICS.md` §0/§11；`GAME-GOALS-AND-OPS.md` §A7（转引） |
+| 过屏障只能靠 8 钥匙传送门或 Avorion 超空间核心；`Balancing_InsideRing(x,y)` 判断是否在环内 | `../mechanics-source.md` §0/§11；`../goals-and-ops.md` §A7（转引） |
 
 ## 2. 材料阶梯与"带心"
 
@@ -39,7 +39,7 @@
   - ✗ **死代码注记**：`:247` 的「屏障外禁 Avorion」写成 `distFromCenter > Balancing_GetBlockRingMin()`，
     左边是**归一化值 0~1.414**、右边是**原始 147** → **永远为假、永不触发**
     （正确写法见 `lib/plangenerator.lua:94-98`）。实际效果仍由带心公式兜住（Avorion 只在 0~75），
-    **所以不用改判断，但别依赖这一行**（`GAME-GOALS-AND-OPS.md` §A3.5，其作者已复核）。
+    **所以不用改判断，但别依赖这一行**（`../goals-and-ops.md` §A3.5，其作者已复核）。
 
 ## 3. ★ 采矿"自身 +1 级"门槛（为什么能力卡里某些矿 `dps=0`）
 
@@ -49,9 +49,9 @@
 | 低一级激光打高一级矿，伤害按"每差一级 ×0.25"衰减 | `lib/galaxy.lua:404-410` ✓ |
 | 星区"推荐采矿 DPS" = `3.0 × (1 + (材料强度−1) × 0.1)` | `lib/galaxy.lua:206-214` ✓ |
 
-→ 能力卡里某材料 `dps = 0` 就是"采不动"，**原因**是上面这条 +1 规则（`PROMPT-INSERT-PROPOSAL.md` §3 F3）。
+→ 能力卡里某材料 `dps = 0` 就是"采不动"，**原因**是上面这条 +1 规则（`../ops/prompt-insert-proposal.md` §3 F3）。
 
-## 4. "越靠中心越富、越强、越险"—— 具体刻度（转引 `GAME-GOALS-AND-OPS.md` §A4）
+## 4. "越靠中心越富、越强、越险"—— 具体刻度（转引 `../goals-and-ops.md` §A4）
 
 | 量 | 边缘 → 中心 | 证据（`lib/galaxy.lua`） |
 |---|---|---|

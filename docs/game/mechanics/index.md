@@ -72,7 +72,7 @@
 
 ## 10. 背景与资料库
 
-- [`../../../GAME-GOALS-AND-OPS.md`](../../../GAME-GOALS-AND-OPS.md)：主线（Swoks → 8 钥匙 → Guardian）、
+- [`../goals-and-ops.md`](../goals-and-ops.md)：主线（Swoks → 8 钥匙 → Guardian）、
   派系声望、经济与工厂、世界 Boss、裂隙 DLC、13 个后台命令全集。
   → **背景**，不是决策依据；本 mod 的后台命令不涉及派系战斗与登船。
 

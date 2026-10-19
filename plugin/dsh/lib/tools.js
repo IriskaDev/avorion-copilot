@@ -18,7 +18,7 @@
  * independent of who owns the lease: read / order / set goal.
  *
  * NOTE: kept ASCII-only on purpose -- PowerShell 5.1 here-strings mangle Chinese text
- * occasionally (see NATIVE.md), and a broken plugin would need a DSH restart to detect.
+ * occasionally (see docs/dev/native.md), and a broken plugin would need a DSH restart to detect.
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { readDecisionFile, deciderOf } from './index.js';

@@ -25,6 +25,7 @@
 | [`ops/chat-commands.md`](ops/chat-commands.md) | `/copilot` 聊天命令**历史留档**（已退役，替代入口对照） |
 | [`ops/mount-material-upgrade.md`](ops/mount-material-upgrade.md) | 炮塔底座材料升级可行性调研 + 真机证据 |
 | [`ops/station-operations.md`](ops/station-operations.md) | 空间站运营调研（可读性矩阵 / 原子候选 / 投入产出） |
+| [`ops/prompt-insert-proposal.md`](ops/prompt-insert-proposal.md) | 提示词插入提案（层①②③怎么分；**提案未落地** ✓，等主人点头） |
 
 ### mechanics（机制）
 
@@ -64,8 +65,13 @@
 | [`lessons/trade.md`](lessons/trade.md) | L22-L25 框形状逐字照抄 / 本金 30~50% / 比每趟 × 趟数 / 量三种形状 |
 | [`lessons/mining.md`](lessons/mining.md) | L26 采矿一次批量 predict 6~8 框（同区风险 3%~66%） |
 | [`lessons/materials.md`](lessons/materials.md) | L27 材料升级先 quote；换设计会降级 |
+| [`lessons/trade-order-routes.md`](lessons/trade-order-routes.md) | 贸易下单的路线名必须逐字照抄（NO_ROUTE 的排查） |
 
-> `docs/dev/*`（9 篇）**不在此图** —— 它们归工程索引 [`AGENTS.md`](../../AGENTS.md) 管。
+> `docs/dev/*`（**12 篇**）**不在此图** —— 它们归工程索引 [`AGENTS.md`](../../AGENTS.md) 管
+> （含 [`../dev/protocol.md`](../dev/protocol.md) TCP 协议、[`../dev/native.md`](../dev/native.md) ABI、
+> [`../dev/verify-manual.md`](../dev/verify-manual.md) 自行验证手册）。
+> 顶层 4 篇（本文件 + [`mechanics-source.md`](mechanics-source.md) / [`goals-and-ops.md`](goals-and-ops.md) /
+> [`llm-ops.md`](llm-ops.md)）见 §5「单一来源与资料库」✓。
 
 ## 2. ★ 决策者第一屏（先读这一节，读到这儿就够下单）
 
@@ -117,16 +123,16 @@
 | 船的「类型/称号」是哪个字段 | [`mechanics/ship-identity.md`](mechanics/ship-identity.md) |
 | 「你的船没有炮塔」这句话在说什么 / 炮塔数口径 | [`mechanics/weapons-and-combat-readiness.md`](mechanics/weapons-and-combat-readiness.md) |
 | 参考策略（**不具约束力**，仅供参考、可自行判断） | [`rules/reference-strategy.md`](rules/reference-strategy.md) |
-| 游戏本身的目标是什么 / 背景设定 | [`../../GAME-GOALS-AND-OPS.md`](../../GAME-GOALS-AND-OPS.md) |
-| 机制单一来源 / 提示词里已写了什么 | [`../../MECHANICS.md`](../../MECHANICS.md)（权威来源） |
-| 决策变量与陷阱（字段口径核对） | [`../../LLM-OPS.md`](../../LLM-OPS.md) |
-| 提示词插入提案（层①②③怎么分） | [`../../PROMPT-INSERT-PROPOSAL.md`](../../PROMPT-INSERT-PROPOSAL.md) |
+| 游戏本身的目标是什么 / 背景设定 | [`goals-and-ops.md`](goals-and-ops.md) |
+| 机制单一来源 / 提示词里已写了什么 | [`mechanics-source.md`](mechanics-source.md)（权威来源） |
+| 决策变量与陷阱（字段口径核对） | [`llm-ops.md`](llm-ops.md) |
+| 提示词插入提案（层①②③怎么分） | [`ops/prompt-insert-proposal.md`](ops/prompt-insert-proposal.md) |
 | 以前踩过什么坑 / 决策教训与成功模式（错题本） | [`lessons/README.md`](lessons/README.md) |
 
 ## 4. 引用与标记约定
 
 - 原版源码路径以游戏目录的 `data/scripts/` 为根；本 mod 路径以**仓库根**为根。
-- `✓` = 实读该源码行核对过；**没有** `✓` = 转引自 `MECHANICS.md` / `LLM-OPS.md` / `GAME-GOALS-AND-OPS.md`（那些文件的作者已核对），**行号可能漂移 ±几行**。
+- `✓` = 实读该源码行核对过；**没有** `✓` = 转引自 `mechanics-source.md` / `llm-ops.md` / `goals-and-ops.md`（那些文件的作者已核对），**行号可能漂移 ±几行**。
 - `⚠未验证` = 没有可靠证据，别当事实用。
 - `✗矛盾` = 来源之间互相冲突 —— 本树会**指出冲突**并说明哪一边有源码支撑，绝不静默选一个。
 - ★ **拿不准就别猜**：先查工具（[`ops/tools-cheatsheet.md`](ops/tools-cheatsheet.md)），再回来读对应文件；仍拿不准就把缺口说明出来。
@@ -135,14 +141,14 @@
 
 | 文件 | 是什么 | 谁读 |
 |---|---|---|
-| [`../../MECHANICS.md`](../../MECHANICS.md) | 机制**单一来源** ✓（插件提示词里的机制段由它派生；**不要改它**，引用即可） | 维护者 / 审计 |
+| [`mechanics-source.md`](mechanics-source.md) | 机制**单一来源** ✓（插件提示词里的机制段由它派生；**不要改它**，引用即可） | 维护者 / 审计 |
 | `docs/game/`（本树） | 上面那份事实的**可导航重排** ✓ + 规则层 + 工具层 + 作业手册 | 决策模型**按需**取 |
-| [`../../GAME-GOALS-AND-OPS.md`](../../GAME-GOALS-AND-OPS.md) | 游戏背景资料库（主线、派系、经济、Boss、裂隙、命令全集） | 想了解"游戏本身"时 |
-| [`../../LLM-OPS.md`](../../LLM-OPS.md) | 决策变量与陷阱清单（调研结论） | 想核对某个字段口径时 |
-| [`../../PROMPT-INSERT-PROPOSAL.md`](../../PROMPT-INSERT-PROPOSAL.md) | 提示词插入提案（机制/背景分层怎么摆） | 改提示词时 |
+| [`goals-and-ops.md`](goals-and-ops.md) | 游戏背景资料库（主线、派系、经济、Boss、裂隙、命令全集） | 想了解"游戏本身"时 |
+| [`llm-ops.md`](llm-ops.md) | 决策变量与陷阱清单（调研结论） | 想核对某个字段口径时 |
+| [`ops/prompt-insert-proposal.md`](ops/prompt-insert-proposal.md) | 提示词插入提案（机制/背景分层怎么摆） | 改提示词时 |
 | [`../../plugin/AGENT-DESIGN.md`](../../plugin/AGENT-DESIGN.md) | 插件/会话投递的设计书 | 改插件代码时 |
 
-**冲突时以谁为准**：原版 Lua 源码 > `MECHANICS.md` > 本树 > 资料库。发现冲突写在对应文件里，别默默选一个。
+**冲突时以谁为准**：原版 Lua 源码 > `mechanics-source.md` > 本树 > 资料库。发现冲突写在对应文件里，别默默选一个。
 
 ## 6. ★ 文档地图核对与维护规则
 
@@ -153,4 +159,9 @@
 3. **每个文件在本图恰好出现一次**，不多不漏；`docs/dev/*` 只归 [`AGENTS.md`](../../AGENTS.md)，不在本图。
 4. 一句话用途必须与文件当前主题一致（文件大改后回来更新这行）。
 
-**当前核对结果**：本图 §1 共列 **27 个 `docs/game/` 下的 `.md`**（ops 7 / mechanics 11 / rules 2 / lessons 7），与磁盘实存**逐一一致**；另 `docs/dev/` 9 篇由 `AGENTS.md` 覆盖；`mechanics/` 下 2 张 PNG 是 [`ship-identity.md`](mechanics/ship-identity.md) 的内嵌截图，不单列。核对手段 = 链接检查脚本 + `glob` 枚举。
+**当前核对结果（2026-10-19 复核）**：`docs/game/` 下共 **37 个 `.md`** ——
+ops **8** / mechanics **12** / rules **2** / lessons **11** / 顶层 **4**（本文件 + `mechanics-source.md` /
+`goals-and-ops.md` / `llm-ops.md`，见 §5）；§1 列 ops+mechanics+rules+lessons 共 33 行，与磁盘**逐一一致** ✓。
+另 `docs/dev/` **12 篇**由 [`AGENTS.md`](../../AGENTS.md) 覆盖；`mechanics/` 下 2 张 PNG 是
+[`ship-identity.md`](mechanics/ship-identity.md) 的内嵌截图，不单列。
+核对手段 = [`tools/check-links.mjs`](../../tools/check-links.mjs)（`node tools/check-links.mjs` → `ALL LINKS OK`）+ `glob` 枚举。

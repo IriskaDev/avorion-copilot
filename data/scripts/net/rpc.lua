@@ -1,6 +1,6 @@
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"
--- CopilotRpc —— **对称 RPC 框架**（游戏侧）。协议见 PROTOCOL.md。
+-- CopilotRpc —— **对称 RPC 框架**（游戏侧）。协议见 docs/dev/protocol.md。
 --
 -- 本层的本质只有一句话（主人说的）：
 --   **让对面能调我的功能，也让我能调对面的功能。** ✓

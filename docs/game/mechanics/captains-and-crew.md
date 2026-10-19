@@ -10,7 +10,7 @@
 | **必须有船长** | `isShipUsable`：船可用 → 不在裂隙 → 是船 → ★ **有船长（硬）** → 船员满足 → 能源够 → 未受损 → 未受攻击 | `player/background/simulation/simulationutility.lua:28-89` ✓（`NoCaptain` 在 `:57-61`；注释 `:29` 说明前四项**不可忽略**） |
 | **Trade 额外要求 Merchant** | 否则预测直接报 "I don't know enough about trading…" | `tradecommand.lua:750-755` ✓ |
 | Sell 的货物门槛 | `stolen/illegal` → 必须 **Smuggler**；`dangerous/suspicious` → **Smuggler 或 Merchant** | `sellcommand.lua:389-395` ✓ |
-| 缺船长怎么办 | 本 mod 的决策链会**自动补一个船长**（`CaptainGenerator` + `entry:setCaptain`） | `LLM-OPS.md` §3.2（本 mod 行为） |
+| 缺船长怎么办 | 本 mod 的决策链会**自动补一个船长**（`CaptainGenerator` + `entry:setCaptain`） | `../llm-ops.md` §3.2（本 mod 行为） |
 
 ## 2. 船长职业（10 类）
 

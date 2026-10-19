@@ -91,7 +91,7 @@
 
 | 层 | 谁是权威 | 压缩可以安全地忘掉什么 |
 |---|---|---|
-| **主人的规则与游戏机制** | ★ **提示词文件 / `MECHANICS.md`** ✓（**永不进历史** ✗） | 什么都不能忘 ✗ —— 它们是**每轮重新注入**的 ✓ |
+| **主人的规则与游戏机制** | ★ **提示词文件 / `../docs/game/mechanics-source.md`** ✓（**永不进历史** ✗） | 什么都不能忘 ✗ —— 它们是**每轮重新注入**的 ✓ |
 | **每船的长期目标** | ★ 游戏侧 per-ship goal 存储 ✓ | 什么都不能忘 ✗（同上 ✓） |
 | **这一单要答什么** | ★ **任务块本身**（自包含 ✓） | 更早的任务块可以变成摘要 ✓（所以**不许**依赖"上一条是任务"✗✓） |
 | **历史决策/产出/主人的点评** | DSH 会话历史 ✓（+ 插件自己的 `brain-memory.json` ✓） | 可以摘要 ✓；跨会话/重启必须活下来的才放 `brain-memory.json` ✓ |
@@ -653,7 +653,7 @@ plugin/dsh/test/commander-dispatch-proto.mjs← 投递阶梯离线原型（7/7�
   （另有一次：本鱼写的探针与另一个 agent 同名，发现后**已把它恢复成对方的已提交版本**，
   现在 `plugin/dsh/test/agent-toolcall-probe.mjs` 与 `abe9940` 逐字一致、工作树干净）。
   而且当时 `git status` 显示**另一个 agent 正在同一时刻改** `plugin/dsh/src/*`、`plugin/dsh/lib/*`、
-  `link_in.lua`、`MECHANICS.md`、`plugin/dsh/test/order-payload.mjs`（工作树里全是它的未提交改动）。
+  `link_in.lua`、`../docs/game/mechanics-source.md`、`plugin/dsh/test/order-payload.mjs`（工作树里全是它的未提交改动）。
   → **这两个失败要由那轮改动的主人去解释**，本鱼不认领、也不擅自去修。
 
 **★未验证清单（一条都别当已知）**：

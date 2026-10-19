@@ -8,7 +8,7 @@
 // 用法：  node native/test-peer.mjs [port]        （默认 8765）
 // 日志：  控制台 + %APPDATA%/Avorion/moddata/copilot/rpc_peer.log
 //
-// 协议（PROTOCOL.md v2）：
+// 协议（docs/dev/protocol.md v2）：
 //   帧    = uint32LE 长度 + UTF-8 JSON
 //   信封  = { id, type: "request"|"response", cmd, data?, ok?, code?, message? }
 //   铁律  = 答复的 id 与 cmd 都与请求相同；每个 request 都被答复

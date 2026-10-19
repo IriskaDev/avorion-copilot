@@ -19,7 +19,7 @@ DSH（DeepSeek Harness）侧用 `fleet_*` 工具读事实、下后台命令、�
 3. **决策投递闭环**：名单里的船空闲时，把一条 `<fleet_task>` 投进**你指定的那个 DSH 会话**，
    会话里答出 `action=` 行后由插件映射回游戏下单（`plugin/README.md` §一次决策的流程）。
 
-传输是 **游戏 DLL 主动连 `127.0.0.1:8765`**，插件侧监听（`PROTOCOL.md:163`）。
+传输是 **游戏 DLL 主动连 `127.0.0.1:8765`**，插件侧监听（`docs/dev/protocol.md:163`）。
 这样不触发 Windows 防火墙弹窗，也不需要给游戏开端口。
 
 状态（如实）：实体层与 RPC 已可用；战略层的运营大脑仍是增量开发中，见
@@ -33,7 +33,7 @@ DSH（DeepSeek Harness）侧用 `fleet_*` 工具读事实、下后台命令、�
 | DSH 桌面版（DeepSeek Harness） | **0.2.0-rc.2** | `docs/dev/install-and-deploy.md:58` |
 | Node.js | **v26.2.0**（插件运行在 DSH 宿主里；`node` 命令本机实测） | `node --version` |
 | Lua 源码（编译基准） | **5.2.1**（★ 不能换版本，见 §3.2） | `docs/dev/build-and-native.md:15-22` |
-| Visual Studio 2022（MSVC）+ Windows SDK | 任意近期版本 | `NATIVE.md:179-196` |
+| Visual Studio 2022（MSVC）+ Windows SDK | 任意近期版本 | `docs/dev/native.md:179-196` |
 
 ★ 仓库里**没有**任何 `*.dll`（`.gitignore` 排除了它）。想跑起来必须自己编一次
 `copilot.dll`，见 §3.2 —— 这是本仓库最容易踩空的一步。
@@ -83,7 +83,7 @@ Get-Content "$env:APPDATA\Avorion\mods\modconfig.lua" | Select-String 'copilot'
 （`docs/dev/build-and-native.md:7-13`）。
 
 1. 下载 **Lua 5.2.1** 源码，解到 `<仓库>\native\lua-src\lua-5.2.1\`（该目录被 `.gitignore` 排除）。
-2. 用「x64 Native Tools Command Prompt for VS 2022」打开 PowerShell，然后按 `NATIVE.md:179-196` 编译：
+2. 用「x64 Native Tools Command Prompt for VS 2022」打开 PowerShell，然后按 `docs/dev/native.md:179-196` 编译：
 
 ```powershell
 $repo = "$env:USERPROFILE\avorion-copilot"
@@ -115,7 +115,7 @@ Test-Path "D:\SteamLibrary\steamapps\common\Avorion\bin\copilot.dll"   # 期望 
 
 ★ 编译基准**必须是 Lua 5.2.1**：宿主 exe 里写的就是 5.2.1，用 5.2.3/5.2.4 编会堆损坏，
 进游戏约一分钟后进程消失（`0xC0000374`），实测记录见 `docs/dev/build-and-native.md:20-22`。
-★ `NATIVE.md:180-181` 那两行示例路径里写的是 `lua-5.2.4`，属旧文未同步 —— 按 5.2.1 走。
+★ `docs/dev/native.md:180-181` 那两行示例路径里写的是 `lua-5.2.4`，属旧文未同步 —— 按 5.2.1 走。
 
 ### 3.3 插件侧：把插件注册进 DSH 桌面版
 
@@ -170,7 +170,7 @@ Get-NetTCPConnection -LocalPort 8765 -State Listen | Select-Object LocalAddress,
 |---|---|
 | `data/**.lua` | 重载存档，或重启游戏（热重载入口已退役，`docs/dev/hot-reload-and-vm-boundaries.md`） |
 | `native/*.c` → `copilot.dll` | 重新编译 + 覆盖游戏 `bin\copilot.dll` + **重启游戏** |
-| `plugin/dsh/src/**.ts` | 重编到 `lib/`：`pwsh -File plugin/dsh/scripts/build.ps1`（脚本会自建编译期链接、编完删掉，见该文件头注释），然后重启 DSH |
+| `plugin/dsh/src/**.ts` | 重编到 `lib/`：`powershell -NoProfile -ExecutionPolicy Bypass -File plugin/dsh/scripts/build.ps1`（脚本会自建编译期链接、编完删掉，见该文件头注释），然后重启 DSH |
 | `plugin/dsh/prompt/system.md` | **不用重启**（运行时可覆盖，`docs/dev/install-and-deploy.md:49-54`） |
 
 ## 4. 第一次跑
@@ -223,9 +223,9 @@ fleet_recall { ship: "Miner-00001" }
 |---|---|---|---|
 | 1 | 游戏里没有 Copilot 图标 / 面板 | `Get-Item "$env:APPDATA\Avorion\mods\copilot" \| Select-Object LinkType,Target`；`Get-Content "$env:APPDATA\Avorion\mods\modconfig.lua" \| Select-String copilot` | `Junction` + 目标正确；modconfig 里能看到 `copilot`（不在就回 §3.1 的启用步骤，且改完要重启） |
 | 2 | 面板在，但完全没有 RPC（`fleet_query` 报 `not connected to the game`） | `Select-String "$env:APPDATA\Avorion\moddata\copilot\rpc_trace.log" -Pattern 'hb connected' \| Select-Object -Last 3` | 有 `hb connected=true`。若一直是 `false`，看 §6 第 3、4 条；日志文件根本没有 → DLL 没加载（第 4 条） |
-| 3 | 8765 没有监听 | `Get-NetTCPConnection -LocalPort 8765 -State Listen` | 有 `127.0.0.1:8765`。空 → 插件没被加载：检查 profile `package.json` 的 `dependencies`/`bundles` 与 `cordis.patch.yml`，改完**完全退出 DSH 再开**；端口被别的进程占住时 DSH 会报 `EADDRINUSE`（`PROTOCOL.md:174`） |
+| 3 | 8765 没有监听 | `Get-NetTCPConnection -LocalPort 8765 -State Listen` | 有 `127.0.0.1:8765`。空 → 插件没被加载：检查 profile `package.json` 的 `dependencies`/`bundles` 与 `cordis.patch.yml`，改完**完全退出 DSH 再开**；端口被别的进程占住时 DSH 会报 `EADDRINUSE`（`docs/dev/protocol.md:174`） |
 | 4 | 日志里 `require('copilot')` 失败 / 原生通道不可用 | `Test-Path "D:\SteamLibrary\steamapps\common\Avorion\bin\copilot.dll"` | `True`。`False` → 回 §3.2 编译并复制；注意**不要**用仓库里 `native/` 下的残留 DLL，游戏只认 `bin\` 那份（`docs/dev/build-and-native.md:42`） |
-| 5 | 进星区约一分钟后游戏进程直接消失（`0xC0000374`） | 查服务端日志 `Avorion\galaxies\<存档>\serverlog*.txt`（客户端日志里看不到，`NATIVE.md:211`） | 若是这个码：编译基准不是 Lua **5.2.1**，用 5.2.1 重编（`docs/dev/build-and-native.md:26-31`） |
+| 5 | 进星区约一分钟后游戏进程直接消失（`0xC0000374`） | 查服务端日志 `Avorion\galaxies\<存档>\serverlog*.txt`（客户端日志里看不到，`docs/dev/native.md:211`） | 若是这个码：编译基准不是 Lua **5.2.1**，用 5.2.1 重编（`docs/dev/build-and-native.md:26-31`） |
 | 6 | 代码改了但行为没变（插件侧） | `Get-Item "$env:USERPROFILE\.dsh\profiles\desktop\node_modules\@dsh-external\dsh-avorion-copilot" \| Select-Object LinkType,Target` | `Target` 指向**本仓库** `plugin/dsh`。指向旧的备份目录 = junction 陈旧，删了重建再重启 DSH（`docs/dev/install-and-deploy.md:42-47`） |
 
 ## 7. 目录结构（一句话版）
@@ -236,9 +236,9 @@ copilot/
 ├── native/                   原生 TCP 模块源码（copilot.dll）+ 测试台脚本（不开游戏也能验）
 ├── build/                    ★ 唯一的编译产物目录（obj/lib/exp/dll/lua.exe，已在 .gitignore）
 ├── plugin/dsh/               DSH 插件本体（RPC 服务 + fleet_* 工具 + 客户端 UI），lib/ 已入库
-├── docs/dev/                 工程侧：安装、构建、测试、热重载、git 规矩
-├── docs/game/                游戏侧：机制 / 规则 / 教训 / 作业手册
-└── AGENTS.md  PROTOCOL.md  NATIVE.md  VERIFY.md   入口索引、TCP 协议、ABI 实测、验证手册
+├── docs/dev/                 工程侧：安装、构建、测试、Lua/VFS、git、状态（协议在 docs/dev/protocol.md）
+├── docs/game/                游戏侧：机制（mechanics-source.md 是单一来源）/ 规则 / 教训 / 作业手册
+└── AGENTS.md                 工程入口索引（根目录只放它和本文件 ✓）
 ```
 
 ## 8. 来源与许可
@@ -257,4 +257,4 @@ copilot/
 2. [`AGENTS.md`](AGENTS.md) —— 工程侧索引（我要改哪一块 → 读哪个文件）。
 3. [`docs/game/README.md`](docs/game/README.md) —— 游戏侧二级索引；要做舰队决策从它的 §2 开始。
 4. [`docs/dev/testing-and-verification.md`](docs/dev/testing-and-verification.md) —— 验证手段；
-   截图一律用游戏内 F12（`VERIFY.md` §2），GDI 抓屏会得到黑图。
+   截图一律用游戏内 F12（`docs/dev/verify-manual.md` §2），GDI 抓屏会得到黑图。

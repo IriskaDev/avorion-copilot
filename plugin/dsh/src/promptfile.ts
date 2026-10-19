@@ -12,7 +12,7 @@
  *       ③ 编译内置的兜底常量（文件读不到时用 ✓ —— **绝不因为文件问题拖垮决策** ✓✓）
  *   · ★ 每次决策前**重新读**（带 mtime+size 缓存 ✓）→ **改完立刻生效，不用重启 DSH** ✓✓
  *
- * ★ 注意：机制段（`{{MECHANICS}}`）仍然只有一份来源 —— mod 仓库的 MECHANICS.md ✓，
+ * ★ 注意：机制段（`{{MECHANICS}}`）仍然只有一份来源 —— mod 仓库的 docs/game/mechanics-source.md ✓，
  *   由 scripts/render-mechanics.mjs 生成 src/mechanics.ts，再在这里**替换进占位符** ✓。
  */
 import fs from 'node:fs'

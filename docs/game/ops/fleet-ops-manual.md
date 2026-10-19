@@ -21,7 +21,7 @@
 |---|---|
 | 给谁看 | ① **决策者**（DSH 会话 / 单发模型）：下单前照着走；② **主人**：审核动作与成本；③ 维护者：核对流程与原子是否一致 |
 | 怎么用 | 先读 §1（心智模型）→ 下单前对号入座 §3 的 P1-P8 → 违背 §4 铁律即停 → 出错查 §5 |
-| 权威来源 | 原版 Lua 源码 > [`MECHANICS.md`](../../../MECHANICS.md) > 原子规范 [`atomic-rpc.md`](atomic-rpc.md) > 本手册 > 资料库。**一个事实只写一处**：本手册不复制段落，细节全部链接出去 |
+| 权威来源 | 原版 Lua 源码 > [`../mechanics-source.md`](../mechanics-source.md) > 原子规范 [`atomic-rpc.md`](atomic-rpc.md) > 本手册 > 资料库。**一个事实只写一处**：本手册不复制段落，细节全部链接出去 |
 
 ## 1 心智模型
 
@@ -196,5 +196,5 @@
 | [`../lessons/README.md`](../lessons/README.md) + 子文件 | **教训**（错题本 + 成功模式，append-only） |
 | [`../../../.dsh/skills/fleet-decision/SKILL.md`](../../../.dsh/skills/fleet-decision/SKILL.md) | **决策卡**：先按它做，机制/流程细节按本手册 + 路由表 |
 | [`../README.md`](../README.md) | **二级索引**（游戏侧全部内容入口，含完整文档地图） |
-| [`../../../MECHANICS.md`](../../../MECHANICS.md) 等 | **单一来源 / 资料库**（冲突时原版源码 > MECHANICS.md > 本手册 > 资料库） |
+| [`../mechanics-source.md`](../mechanics-source.md) 等 | **单一来源 / 资料库**（冲突时原版源码 > ../mechanics-source.md > 本手册 > 资料库） |
 | [`../../../AGENTS.md`](../../../AGENTS.md) | **工程索引**（dev 侧，游戏侧只一行指向 [`../README.md`](../README.md)） |

@@ -1,9 +1,9 @@
-# PROMPT-INSERT-PROPOSAL.md —— 提示词插入提案
+# prompt-insert-proposal.md —— 提示词插入提案
 
-> ★ **权威说明**：决策口径以 [`docs/game/`](docs/game/README.md) 为准，本文件是历史/资料库。
+> ★ **权威说明**：决策口径以 [`docs/game/`](../README.md) 为准，本文件是历史/资料库。
 
 > **这是一份提案，不是改动。** 本文件只说明「要加什么、加在哪、为什么能过守卫」，
-> **不直接修改** [`MECHANICS.md`](MECHANICS.md) 或 [`plugin/dsh/prompt/system.md`](plugin/dsh/prompt/system.md)。
+> **不直接修改** [`../mechanics-source.md`](../mechanics-source.md) 或 [`plugin/dsh/prompt/system.md`](../../../plugin/dsh/prompt/system.md)。
 > 等主人点头后再动手，改完按文末「操作清单」跑生成/校验脚本。
 
 ---
@@ -13,10 +13,10 @@
 | 层 | 内容 | 条数 | 每轮都读？ |
 |---|---|---|---|
 | **① 进提示词 BRIEF**（= 每轮注入的机制段） | 材料带心阶梯、采矿门槛、后台无战斗、屏障环 | **4 条，约 +4 行** | ✅ 是 |
-| **② 只进 MECHANICS.md 正文**（详情，agent/人审计用） | 深度刻度数值表、船长/船员表、13 命令全集、死代码注记 | 5 个小节 | ❌ 否 |
-| **③ 仅进 GAME-GOALS-AND-OPS.md**（背景库） | 主线任务、派系声望、经济工厂、世界 Boss、裂隙 | — | ❌ 否 |
+| **② 只进 ../mechanics-source.md 正文**（详情，agent/人审计用） | 深度刻度数值表、船长/船员表、13 命令全集、死代码注记 | 5 个小节 | ❌ 否 |
+| **③ 仅进 ../goals-and-ops.md**（背景库） | 主线任务、派系声望、经济工厂、世界 Boss、裂隙 | — | ❌ 否 |
 
-**一句话**：提示词（BRIEF）**只加 4 行**，其余全部下沉到 MECHANICS.md 正文或资料库。
+**一句话**：提示词（BRIEF）**只加 4 行**，其余全部下沉到 ../mechanics-source.md 正文或资料库。
 理由是提示词**每轮决策都读一次**，塞满上下文模型就没法思考；而带心阶梯 / 采矿门槛 /
 无战斗边界是少数几个「每轮都真的用得上、且点单查数补不了」的全局事实。
 
@@ -50,7 +50,7 @@
 > 屏障环 147~150（`galaxy.lua:8-9` ✓）我把它**并入 F1 那行的一句话**（不单开一条），
 > 因为它是终局边界、早期每轮用不上，一句话点到即止。
 
-### 层 ② —— 只进 MECHANICS.md 正文（详情，不进提示词）
+### 层 ② —— 只进 ../mechanics-source.md 正文（详情，不进提示词）
 
 | # | 事实 | file:line | 建议插入位置 |
 |---|---|---|---|
@@ -60,7 +60,7 @@
 | F8 | 后台命令全集 13 个（12 真实 + Prototype），其中 6 个未暴露（Refine/Procure/Supply/Expedition/Maintenance/Escort） | `commandtype.lua:8-25` ✓ | 新小节「后台命令全集」 |
 | F9 | `galaxy.lua:247` 「屏障外禁 Avorion」死代码注记（单位写错，被带公式兜住，实际无影响） | `galaxy.lua:246-249` ✓（对比 `plangenerator.lua:94-98` 才是对的） | §0 脚注或新小节 |
 
-### 层 ③ —— 仅进 GAME-GOALS-AND-OPS.md（背景，不进 MECHANICS 也不进提示词）
+### 层 ③ —— 仅进 ../goals-and-ops.md（背景，不进 MECHANICS 也不进提示词）
 
 主线任务链（Swoks→8 钥匙→Guardian，`storyquestutility.lua:44-143` ✓）、派系声望（`lib/relations.lua`）、
 经济/工厂/贸易路线详表、船长 10 类 + 船员 8 类全表、世界 Boss、裂隙 DLC、游戏自带任务清单。
@@ -68,11 +68,11 @@
 
 ---
 
-## 4. 具体要加进 MECHANICS.md 的逐字草案
+## 4. 具体要加进 ../mechanics-source.md 的逐字草案
 
 ### 4.1 BRIEF（浓缩版）改动 —— 2 处
 
-**改动 A：替换「深度」两行**（当前 [`MECHANICS.md`](MECHANICS.md) 第 253-254 行）
+**改动 A：替换「深度」两行**（当前 [`../mechanics-source.md`](../mechanics-source.md) 第 253-254 行）
 
 现文：
 ```
@@ -100,7 +100,7 @@
 ### 4.2 正文改动 —— 5 处（详情，不逐字锁死，供决定）
 
 1. **§0 追加「深度刻度表」**：一张表列出 F5 的数值与 `galaxy.lua` 证据（替代现在那句定性的「越靠中心越富/越险」的**展开版**，原文保留作导语）。
-2. **§0 追加「材料带心 + 知识解锁」表**：F6 的 7 行带心/存在范围/知识解锁（就是 GAME-GOALS-AND-OPS.md §A3.2 那张表）。
+2. **§0 追加「材料带心 + 知识解锁」表**：F6 的 7 行带心/存在范围/知识解锁（就是 ../goals-and-ops.md §A3.2 那张表）。
 3. **§9 追加「子系统槽位」**：F7 一行。
 4. **新小节「后台命令全集」**（建议放在 §1 之前或 §10 之后）：F8，列出 13 个命令 + 明确「已暴露 6 / 未暴露 6」。
 5. **§0 脚注「死代码注记」**：F9，写明 `galaxy.lua:247` 单位写错成死代码、被带公式兜住、决策不必改判断。
@@ -137,7 +137,7 @@
 
 ## 7. 操作清单（等主人批准后，再执行）
 
-1. 编辑 [`MECHANICS.md`](MECHANICS.md)：按 §4.1 改 BRIEF 两处 + §4.2 加 5 处正文。
+1. 编辑 [`../mechanics-source.md`](../mechanics-source.md)：按 §4.1 改 BRIEF 两处 + §4.2 加 5 处正文。
 2. `node plugin/dsh/scripts/render-mechanics.mjs` → 重新生成 `src/mechanics.ts`。
 3. `node plugin/dsh/scripts/check-mechanics.mjs` → 确认 5 关全绿。
 4. （可选）`node plugin/dsh/scripts/render-prompt.mjs` → 若 system.md 一字未动，此步可跳过；跑一下也无害。

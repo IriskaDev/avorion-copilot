@@ -10,7 +10,7 @@
  *   net.close()               关闭
  *   net.state()               返回内部状态字符串，便于诊断
  *
- * 帧格式见 PROTOCOL.md：
+ * 帧格式见 docs/dev/protocol.md：
  *     uint32 小端长度 | 载荷字节
  *
  * 关键约束：**任何调用都不得长时间阻塞游戏主线程**。
@@ -20,7 +20,7 @@
  *   - 收包维护累积缓冲与状态机（TCP 是字节流，一次读不等于一条消息）
  *
  * Lua C API 来自编进本 DLL 的 Lua 5.2.4 核心，操作的是宿主传进来的 lua_State
- * （见 NATIVE.md：ABI 已实测匹配）。
+ * （见 docs/dev/native.md：ABI 已实测匹配）。
  */
 #include <winsock2.h>
 #include <ws2tcpip.h>

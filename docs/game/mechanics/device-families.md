@@ -145,10 +145,10 @@
    这句对**净化激光**成立，但对**粗（Raw）激光不成立**：Raw 有 8% 精炼税 + 货舱下限门（`minecommand.lua:872-877`）、
    且召回时粗料落舱。`card.lua:371`（Salvage）同理，还漏了「捡到的交易货物占舱」。
    **本文未改 card.lua**（它另有 owner），此处只做**冲突标注**。
-3. **`MECHANICS.md` / `index.md` 的「不占货舱」说法是简化**：
-   - `MECHANICS.md:87`「精采矿；会装满货舱的是另一种采矿设备」、`docs/game/mechanics/index.md:47` 同——方向对，
+3. **`../mechanics-source.md` / `index.md` 的「不占货舱」说法是简化**：
+   - `../mechanics-source.md:87`「精采矿；会装满货舱的是另一种采矿设备」、`docs/game/mechanics/index.md:47` 同——方向对，
      但「另一种设备」= 原版的 **Raw（R-）** 一档，且后台命令里 Raw 也是被内部精炼（非真的装满货舱，只在**召回**时落舱）。
-     细节见本文 §2/§4/§6，**不改写 MECHANICS.md**（它是生成源，见仓库 `MECHANICS.md:8-10`）。
+     细节见本文 §2/§4/§6，**不改写 ../mechanics-source.md**（它是生成源，见仓库 `../mechanics-source.md:8-10`）。
 
 ---
 

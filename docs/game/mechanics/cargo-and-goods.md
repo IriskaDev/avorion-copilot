@@ -8,7 +8,7 @@
 | 事实 | 证据 |
 |---|---|
 | ★ `entry:getCargo()` 返回**两个值**：**货物表**（`good → amount`）与**货舱总容量** | `minecommand.lua:137` ✓（`local cargo, cargoBaySize = entry:getCargo()`）、`expeditioncommand.lua:393`（转引） |
-| 剩余空间用 `entry:getFreeCargoSpace()` | `minecommand.lua:598`（转引 `MECHANICS.md` §1.2） |
+| 剩余空间用 `entry:getFreeCargoSpace()` | `minecommand.lua:598`（转引 `../mechanics-source.md` §1.2） |
 | 本 mod 能力卡给的是**扁平字段**（不是 `hold{}` 块）：`cargoUsed` / `cargoKinds` / `cargoCapacity` / `cargoUsedPercent` / `freeCargoSpace` / `holdHasGoods` / `cargoState` / `cargoNote` | `data/scripts/lib/copilot/card.lua:204-248` ✓ |
 | `hold{}` 块（`used` / `capacity` / `free` / `usedPercent` / `isHoldFull` / `blocksTradeLoading`）出现在 **Sell 计划**里 | `data/scripts/net/link_in.lua:3044-3071` ✓ |
 | ✗矛盾（小）：提示词说"**卡片的** `hold{}` 块" | `plugin/dsh/prompt/system.md:49-51` —— 卡片实际没有 `hold{}`，只有上面那些扁平字段（`card.lua:204-248` ✓）。**读卡片时按扁平字段读**。 |
@@ -17,7 +17,7 @@
 
 | 形式 | 产出去哪 | 货舱是约束吗 | 证据 |
 |---|---|---|---|
-| ★ **本 mod 下发的 Mine / Salvage = 精炼型** | 资源**直接进派系全局资源** | **不是**（`freeCargoSpace = 0` 完全不影响） | 主人权威说明（`LLM-OPS.md` ★★★ 采矿机制一节，2026-10-16）；本 mod 卡片同口径 `card.lua:360-363` ✓、`:245` ✓ |
+| ★ **本 mod 下发的 Mine / Salvage = 精炼型** | 资源**直接进派系全局资源** | **不是**（`freeCargoSpace = 0` 完全不影响） | 主人权威说明（`../llm-ops.md` ★★★ 采矿机制一节，2026-10-16）；本 mod 卡片同口径 `card.lua:360-363` ✓、`:245` ✓ |
 | **另一种采矿/打捞形式（另一种设备）** | 装进**货舱**（原矿/废金属） | 是 | `minecommand.lua:287-339` ✓（raw mining 时召回把矿装进货舱）、`salvagecommand.lua:346-394` ✓（raw 废金属进货舱，且**最多占空余货舱的一半** ✓`:368-376`） |
 | **Trade** | **要装货**，所以货舱**是**硬约束 | 是 | `tradecommand.lua:773-798` ✓（`transportedPerFlight` 受 `freeCargoSpace / good.size` 限制） |
 | **Sell** | 把**已经在船上**的货卖掉 | — | `sellcommand.lua:434-438` ✓ |
@@ -33,7 +33,7 @@
 | 货舱满了（或货占着舱位）→ Trade **装不进新货**，每班运得少、赚得少 | `tradecommand.lua:773-798` ✓ |
 | ★ 本 mod 的**硬闸**：给 Trade 下单时若船上还有货 → **直接拒绝** `HOLD_HAS_GOODS`，提示"先 Sell 再贸易" | `data/scripts/net/link_in.lua:448-456` ✓ |
 | Trade 被伏击召回后**货可能留在船上**（这时再贸易会被上面那条挡住） | `tradecommand.lua:455-490` ✓ |
-| ★ 「有货」**≠**「满舱」 | 实机：以为 Salvager"舱库装满了"，实际 **1110 单位 / 11 种 / 44%**（`MECHANICS.md` §1.2）—— 看 `usedPercent` / `cargoUsedPercent`，别靠感觉 |
+| ★ 「有货」**≠**「满舱」 | 实机：以为 Salvager"舱库装满了"，实际 **1110 单位 / 11 种 / 44%**（`../mechanics-source.md` §1.2）—— 看 `usedPercent` / `cargoUsedPercent`，别靠感觉 |
 
 ## 4. Sell：卖什么、怎么给货
 
@@ -63,4 +63,4 @@ transportedPerFlight = min(货舱能装, floor(deposit / buyPrice), 合同剩余
 每航班利润 = transportedPerFlight × (salePrice − buyPrice)
 ```
 证据：`tradecommand.lua:773-798` ✓。★ `deposit`（预付款）**不是成本** —— 正常结束时**全额退还**
-（`tradecommand.lua:135-142`，转引 `MECHANICS.md` §4）；它只决定"每班装多少"和"风险小时数"。
+（`tradecommand.lua:135-142`，转引 `../mechanics-source.md` §4）；它只决定"每班装多少"和"风险小时数"。

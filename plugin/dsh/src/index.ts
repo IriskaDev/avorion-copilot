@@ -3,7 +3,7 @@
  *
  * ## 本版（RPC 版）
  *
- * 传输从「文件桥」换成「**TCP + 对称 RPC**」✓（协议见 mod 仓库的 PROTOCOL.md v2）。
+ * 传输从「文件桥」换成「**TCP + 对称 RPC**」✓（协议见 mod 仓库的 docs/dev/protocol.md v2）。
  * 本质就是主人点透的那句话：
  *   **让 DSH 能调游戏的功能，也让游戏能调 DSH 的功能。** ✓
  *
@@ -911,7 +911,7 @@ const DEFAULTS = {
  *   ② 插件自带: <插件目录>\prompt\system.md                          ← 随仓库走 ✓
  *   ③ 编译兜底: src/prompt-default.ts（由 prompt/system.md 生成 ✓）
  *
- * 读法与替换都在 src/promptfile.ts ✓；机制段仍是单一来源（mod 仓库的 MECHANICS.md ✓）。
+ * 读法与替换都在 src/promptfile.ts ✓；机制段仍是单一来源（mod 仓库的 docs/game/mechanics-source.md ✓）。
  * ★ 顺带消掉了老坑：正文不再是 TS 模板字符串 → 再也不会因反引号把 SYSTEM_PROMPT 提前结束 ✗✓。
  */
 

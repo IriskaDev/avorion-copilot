@@ -1,16 +1,16 @@
 # 构建与编译 / 原生 DLL / ABI
 
 > 上一级：仓库根 [`AGENTS.md`](../../AGENTS.md)（工程入口索引）。
-> ★ **动 DLL 前务必先读** [`NATIVE.md`](../../NATIVE.md)（全部 ABI 实测结论）；
-> TCP 协议见 [`PROTOCOL.md`](../../PROTOCOL.md)。
+> ★ **动 DLL 前务必先读** [`native.md`](native.md)（全部 ABI 实测结论）；
+> TCP 协议见 [`protocol.md`](protocol.md)。
 
 ## 原生 TCP 通道（已打通并实测）
 
 把 **Lua 5.2.1**（宿主同版本 ✓）源码编进 `copilot.dll`，用**我们自己那份**
 Lua C API 操作宿主传进来的 `lua_State`（exe 导出 0 个符号，按名字够不着）。
 已有 `connect/connected/state/send/recv/recv_json/encode/decode/close/diag/readfile`，
-表自动 JSON 编解码（cJSON），4 字节小端长度分帧。协议见 [`PROTOCOL.md`](../../PROTOCOL.md)，
-全部踩坑与实测结论见 [`NATIVE.md`](../../NATIVE.md)（**动 DLL 前务必先读它**）。
+表自动 JSON 编解码（cJSON），4 字节小端长度分帧。协议见 [`protocol.md`](protocol.md)，
+全部踩坑与实测结论见 [`native.md`](native.md)（**动 DLL 前务必先读它**）。
 
 ## ⚠️ ★ 编译基准必须是 `lua-5.2.1`
 
@@ -19,7 +19,7 @@ Lua C API 操作宿主传进来的 `lua_State`（exe 导出 0 个符号，按名
   `AvorionServer.exe` / `Avorion.exe` 里都写着 `$LuaVersion: Lua 5.2.1`。
   **2026-10-14 修正**：此前写的是 5.2.3 ✗，**错配导致服务端堆损坏
   （`0xC0000374`，进游戏约 1 分钟后必崩）**；改成 5.2.1 后连续运行 7 分钟 +
-  4 次大星区（2000+ 实体）存档无碍 ✓✓。详见 `NATIVE.md` 的更正段落。
+  4 次大星区（2000+ 实体）存档无碍 ✓✓。详见 `native.md` 的更正段落。
 - ⚠️ 宿主在 `require` 返回后会 `FreeLibrary` 我们 → `luaopen` 里要 `keep_resident` 自增引用计数
 - ⚠️ 编译要加 `/utf-8`，否则源码里的中文被按 GBK 解码、字符串字面量被撑破
 
@@ -58,4 +58,4 @@ Lua C API 操作宿主传进来的 `lua_State`（exe 导出 0 个符号，按名
 本项目的 API 核查全部靠它（`entitydbg.lua` / `entity.lua` / `minecommand.lua` 等）。
 
 **唯一"看不见"的是 C++ 引擎内部** —— 而我们通过自己编译的 Lua 5.2.1（与宿主同版本 ✓）+ C API
-（见 `NATIVE.md`）已经能直接问游戏要数据，不需要反编译它 ✓。
+（见 `native.md`）已经能直接问游戏要数据，不需要反编译它 ✓。

@@ -14,7 +14,7 @@
 | 尺寸给错会被**静默钳制**，并回一句 "Area size for %1% changed." | `simulation.lua:540-543` ✓ |
 
 **★ 事实推论（不是建议）**：船在星区 S 里时，框心只要离 S 不超过 half，框就必然仍含船
-→ **框心是一个可以自由挪的变量，船不需要动**（`MECHANICS.md` §1.1 的推论，同上一行口径）。
+→ **框心是一个可以自由挪的变量，船不需要动**（`../mechanics-source.md` §1.1 的推论，同上一行口径）。
 
 ## 2. 各命令的区域尺寸与形状
 
@@ -35,7 +35,7 @@
 |---|---|
 | 伏击概率吃的是**框里**的星区 | `SimulationUtility.calculateAttackProbability(ownerIndex, shipName, area, …)`（`simulationutility.lua:617` ✓，内部遍历 `area.analysis.reachableCoordinates` ✓`:701-713`） |
 | 产出/路线/材料/需求来自 `areaanalysis.run(..., area, ...)` 对**框里**星区的统计 | `data/scripts/net/link_in.lua` 的 `tradePlan`/`jobPlan`/`sellPlan`/`scoutPlan` 共用 `runTwoPhaseScan` |
-| ★ **实机（2026-10-17）**：**同船同星区**，Salvage 偏移 `(0,0)` 显示伏击概率 **0.04**、`(0,-4)` 显示 **0.02** | `MECHANICS.md` §1.1 的实测记录 |
+| ★ **实机（2026-10-17）**：**同船同星区**，Salvage 偏移 `(0,0)` 显示伏击概率 **0.04**、`(0,-4)` 显示 **0.02** | `../mechanics-source.md` §1.1 的实测记录 |
 | 换框**不需要** Travel，也不改船的位置 | 由上两条直接推出 |
 | Trade 的形状会改变"哪些星区落进框里" → 路线/需求/价格/风险随之不同 | `getAreaSize` 决定 `numSectors`；路线来自 `area.analysis` |
 
@@ -47,7 +47,7 @@
 | 细扫 | 在**最好的 `SCAN_FINE_PARENTS = 3`** 个粗扫框周围，用**步长 1**、`SCAN_FINE_WINDOW = 5` 的窗口密排 | `link_in.lua:770-772` ✓、`runTwoPhaseScan` `:881-960` ✓ |
 | 预算 | 粗扫默认 20 s（软预算，只在框与框之间检查）；细扫另有 3 s 切片 | `link_in.lua:606` ✓、`:772` ✓ |
 | 每条候选带什么 | **绝对星区坐标** `x`/`y`（= 框心 ✓）、`offset`（相对船的偏移 ✓）、`shape`/`sizeX`/`sizeY`、`origin`（粗扫 or 细扫） | `link_in.lua:1198` ✓、`plugin/dsh/src/index.ts:1711-1721` ✓（喂给模型的字段） |
-| 为什么要给绝对值 | 决策模型是**单次、无工具**的调用，不指望它做加法 | `MECHANICS.md` §1.1 |
+| 为什么要给绝对值 | 决策模型是**单次、无工具**的调用，不指望它做加法 | `../mechanics-source.md` §1.1 |
 
 ★ **别自己加 offset**：候选里的 `x`/`y` 已经是算好的框心，直接抄
 （`plugin/dsh/prompt/system.md:18-19` 的原话；同一个口径也在 `link_in.lua:1881` 的 `orderHint` 里 ✓）。
@@ -70,4 +70,4 @@
   - 风险口径 `riskKind`：Sell 的 `sellAmbushChance`、Mine/Salvage 的 `jobAmbushChance`、
     Trade 的 `tradeAmbushChance` —— **不是一回事**（`plugin/dsh/prompt/system.md:26-28`）。
   - 超过风险闸门的候选**照样列出**并标 `acceptable=false` / `exceedsRiskLimit=true`，**不会被静默丢掉**
-    （`MECHANICS.md` §10；`link_in.lua:599-601` ✓ 的 `riskWarning`）。
+    （`../mechanics-source.md` §10；`link_in.lua:599-601` ✓ 的 `riskWarning`）。

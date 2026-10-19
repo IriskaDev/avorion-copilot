@@ -1,4 +1,4 @@
-# MECHANICS.md —— 给"决策大脑"的机制说明书
+# mechanics-source.md —— 给"决策大脑"的机制说明书
 
 **这份文档是给决策模型看的，不是算法说明书。**
 它只写**事实与机制的后果**，不写"应该按什么顺序做什么" ✗。
@@ -84,7 +84,7 @@
 | 区域固定？ | 否 | `:506-507` |
 | 配置项 | `duration`（`from=0.5`，`to=2`；Miner 船长按 tier/level 加长）、`safeMode`、`immediateDelivery` | `:510-529` |
 | 产出 | 各材料产量 `results.yields[i]`（i ↔ `Material(i-1)`） | `:1042-1061` |
-| **产出去哪** | ★ **直接进全局资源，不占船货舱** ✓（**精采矿**；会装满货舱的是**另一种采矿设备/形式** ✗） | 主人权威说明 ✓（见 `LLM-OPS.md` 同条） |
+| **产出去哪** | ★ **直接进全局资源，不占船货舱** ✓（**精采矿**；会装满货舱的是**另一种采矿设备/形式** ✗） | 主人权威说明 ✓（见 `llm-ops.md` 同条） |
 | "这船挖得动什么" | 由**炮塔**决定：`MineCommand:getMiningProperties()` 用 `entry:getTurrets()` | `:545` |
 | 预测 | `MineCommand:calculatePrediction`，需要先挂 `area.analysis` | `:729`、`:797`/`:816` |
 | 配置 `collected` | 每材料收不收（**必需**，缺了会 `attempt to index field 'collected'`） | `:964` |

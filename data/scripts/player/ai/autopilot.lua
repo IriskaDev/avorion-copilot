@@ -226,7 +226,7 @@ function Copilot.setState(player, newState)
     player:sendChatMessage("Server", ChatMessageType.Information, msg)
 end
 
--- ★ 船长是硬门槛（LLM-OPS.md 记的实测结论）：所有后台命令都要求船上有船长。
+-- ★ 船长是硬门槛（docs/game/llm-ops.md 记的实测结论）：所有后台命令都要求船上有船长。
 --
 -- 为什么必须在这里挡：原版采矿/打捞 AI 在没有船长时会**立刻自我移除**，
 -- 而我们下一 tick 又会把脚本挂回去 —— 于是每 2 秒刷一次「需要一名船长」，

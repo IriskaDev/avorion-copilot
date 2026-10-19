@@ -7,10 +7,10 @@
 
 | 事实 | 证据 |
 |---|---|
-| 它是**整段任务期间**"会被伏击"的概率（0~1），不是"每小时"也不是"损失概率" | `MECHANICS.md` §11；`simulationutility.lua:793-798` ✓ |
+| 它是**整段任务期间**"会被伏击"的概率（0~1），不是"每小时"也不是"损失概率" | `../mechanics-source.md` §11；`simulationutility.lua:793-798` ✓ |
 | ★ **不同命令的概率不是一回事**（比较前先看 `riskKind` 标签）：Sell 的 `sellAmbushChance`、Mine/Salvage 的 `jobAmbushChance`（本框、本档）、Trade 的 `tradeAmbushChance` | `plugin/dsh/prompt/system.md:26-28`；本 mod 计划里的 `riskKind` 字段 |
-| ⚠ 预测里**没有**"沉船/损失概率"字段 —— 被伏击的实际后果由星区里的实时战斗决定，`onAttacked` 基本是空实现 | `LLM-OPS.md` §3.4 末尾；`salvagecommand.lua:407-409` ✓（空） |
-| ⚠ `attackLocation`（"在哪被打"）**不可信**：走全局随机、每次调用重抽、服务端启动时还会重算 → **只信 `attackChance.value`** | `LLM-OPS.md` §2.2；原版注释 `minecommand.lua:850-852` ✓ |
+| ⚠ 预测里**没有**"沉船/损失概率"字段 —— 被伏击的实际后果由星区里的实时战斗决定，`onAttacked` 基本是空实现 | `../llm-ops.md` §3.4 末尾；`salvagecommand.lua:407-409` ✓（空） |
+| ⚠ `attackLocation`（"在哪被打"）**不可信**：走全局随机、每次调用重抽、服务端启动时还会重算 → **只信 `attackChance.value`** | `../llm-ops.md` §2.2；原版注释 `minecommand.lua:850-852` ✓ |
 
 ## 2. 概率是怎么算出来的（原版 `calculateAttackProbability`）
 
@@ -37,7 +37,7 @@
 | 外围（**交战**） | `0.8` | `:626` ✓ |
 
 → 最后 `attackProbability = sum / samples`（`:795-798` ✓）。
-★ 代码**不区分友好度**：非交战的友方地盘也按 `0.4` 计（`LLM-OPS.md` §3.4 的提醒）。
+★ 代码**不区分友好度**：非交战的友方地盘也按 `0.4` 计（`../llm-ops.md` §3.4 的提醒）。
 
 **② 时长**
 
@@ -54,7 +54,7 @@ attackProbability  = max(baseProbability, attackProbability)
 |---|---|---|
 | 每艘 **Commodore** 护航 | `baseProbability × 0.85`（逐艘连乘）；主船自己是 Commodore 再 `−0.15` | `:801-807` ✓、`:826-828` ✓ |
 | ★ 够硬的护航 | 该护航在**采样星区里"不会挨打"的比例 < 50%**（`dangerousSectors < samples/2`）→ `baseProbability × 0.75`（每艘各乘一次） | `:810-816` ✓ |
-| 船长 perk | `Stealthy / Intimidating / Cunning / Careful` 减、`Reckless / Arrogant` 加（数值见 `CaptainUtility.getPerkAttackProbabilities`） | `:830-852` ✓、`LLM-OPS.md` §3.4 |
+| 船长 perk | `Stealthy / Intimidating / Cunning / Careful` 减、`Reckless / Arrogant` 加（数值见 `CaptainUtility.getPerkAttackProbabilities`） | `:830-852` ✓、`../llm-ops.md` §3.4 |
 | `safeMode`（只有 Mine / Salvage 有） | ★ **把概率改成：`<0.1 → 0`，否则 `×0.1`** | `minecommand.lua:843-847` ✓ |
 
 ## 3. safeMode 的**全部**真实效果（为什么它毁收益）
@@ -63,7 +63,7 @@ attackProbability  = max(baseProbability, attackProbability)
 |---|---|
 | 只走**友方星区**（`materials`/`asteroids` 换成 `safeMaterials`/`safeAsteroids`，无主与交战星区清零） | `minecommand.lua:820-841` ✓ |
 | ★ **主动把选择权重从更肥的派系星区挪开**：`outerFactionSectorWeight/3`、`centralFactionSectorWeight/1.5` | `minecommand.lua:823-824` ✓ |
-| 原版自己都写着：「The captain avoids dangerous sectors, such as those with pirate activity. **However, these contain more resources.**」 | `minecommand.lua:1260`（转引 `MECHANICS.md` §11） |
+| 原版自己都写着：「The captain avoids dangerous sectors, such as those with pirate activity. **However, these contain more resources.**」 | `minecommand.lua:1260`（转引 `../mechanics-source.md` §11） |
 | 概率被改写（见上表） | `minecommand.lua:843-847` ✓ |
 
 → 所以 safeMode 是**用收益换风险**的开关。**能不能开、什么时候开是玩家的规矩**：
@@ -92,7 +92,7 @@ attackProbability  = max(baseProbability, attackProbability)
 | Refine（不支持） | ★ `onRecall` **空** → 一无所获 | `refinecommand.lua:176-178` ✓ |
 
 ★ Trade 的**伏击发生时刻**：`random(0.1, 0.85) × flightTime ×（多班则 ×2）` → 基本落在**第一或第二班**内
-（`tradecommand.lua:86-102`，转引 `MECHANICS.md` §4）；Sell 是 `random(0.1, 0.75) × duration` ✓`:144`。
+（`tradecommand.lua:86-102`，转引 `../mechanics-source.md` §4）；Sell 是 `random(0.1, 0.75) × duration` ✓`:144`。
 
 **★ 后果（事实推论）**
 
@@ -108,14 +108,14 @@ attackProbability  = max(baseProbability, attackProbability)
 | ≥0.10 / ≥0.05 | 有风险 / 不喜欢这局面 |
 | 0 | 绿：不会被袭击 |
 
-来源：`LLM-OPS.md` §3.4（由 `getAttackAssessmentLines` 反推，**不是**我们的规则）；
+来源：`../llm-ops.md` §3.4（由 `getAttackAssessmentLines` 反推，**不是**我们的规则）；
 ★ 玩家自己的闸门是 **≤0.10**（见 [`../rules/owner-rules.md`](../rules/owner-rules.md)），两者别混。
 
 ## 6. 危险货物会额外拖累
 
 `getSpecialCargoCategories(cargo)` ✓`simulationutility.lua:1026-1041` 分出 `stolenOrIllegal` /
 `dangerousOrSuspicious`；非 Smuggler 时命令耗时 **×1.15**（Trade/Travel）、Mine/Salvage 的
-`specialGoodsFactor = 0.85` 砍产出（`LLM-OPS.md` §3.6，行号见该文）。
+`specialGoodsFactor = 0.85` 砍产出（`../llm-ops.md` §3.6，行号见该文）。
 
 ## 7. ★★ Travel 的风险是**另一套模型**（不是 §2 那套）
 

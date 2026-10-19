@@ -273,7 +273,7 @@ function CopilotLinkIn.onQuery(data)
         --   「不是往中心两跳，而是评估威胁后当前是否支持往中心走，支持的话又往中心走多少」
         --   → 所以这里**只给可比的数字** ✓✓，**不给任何"该不该去/去多远"的结论** ✗✗。
         --
-        --   同一组原版函数与卡片 depth 段一致（证据见 MECHANICS.md §0 ✓）：
+        --   同一组原版函数与卡片 depth 段一致（证据见 docs/game/mechanics-source.md §0 ✓）：
         --     Balancing_GetSectorRichnessFactor(x,y)  富饶度 ✓
         --     Balancing_GetMaterialProbability(x,y)   材料概率 ✓
         --     Balancing_InsideRing(x,y)               是否在中心屏障环内 ✓
@@ -631,7 +631,7 @@ local COMMAND_TYPES = {
     Refine  = "77110b44-b327-4747-b618-69a82a5789cf",
 }
 
--- 各命令的默认区域边长（与 LLM-OPS.md 的调研一致 ✓）
+-- 各命令的默认区域边长（与 docs/game/llm-ops.md 的调研一致 ✓）
 local DEFAULT_SIZE = { Mine = 15, Salvage = 15, Trade = 17, Travel = 1, Sell = 15, Scout = 21, Refine = 31 }   -- ★ Scout 原版 getAreaSize = 21x21（scoutcommand.lua:416 ✓ 实读）
 -- ★ Refine 原版 getAreaSize = {x=31,y=31}（refinecommand.lua:318-320 ✓ 实读）；且 isAreaFixed=true（:326-328 ✓）
 --   → 框心会被 startAreaAnalysis 按船**重算**（simulation.lua:790-801 ✓），调用方给的框心不作数 ✓。
@@ -1296,7 +1296,7 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
 
     -- ④ 动作特有的前置
     if action == "Travel" then
-        -- ★ 原版**服务端**也会拒（不是只有客户端 ✗✓ —— MECHANICS.md 旧说法要改 ✓）：
+        -- ★ 原版**服务端**也会拒（不是只有客户端 ✗✓ —— docs/game/mechanics-source.md 旧说法要改 ✓）：
         --   `TravelCommand:initialize`（travelcommand.lua:67-90 ✓）:
         --     :71-73  `area.lower == 船所在星区` → "The ship is already in this sector."
         --     :75-77  `#area.analysis.route <= 2` → "This route is too short."   ← **1 跳就中** ✓

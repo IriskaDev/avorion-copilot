@@ -1,5 +1,5 @@
 /**
- * rpc.ts —— DSH 侧的**对称 RPC 框架**（协议见 mod 的 PROTOCOL.md v2）。
+ * rpc.ts —— DSH 侧的**对称 RPC 框架**（协议见 mod 的 docs/dev/protocol.md v2）。
  *
  * 与游戏侧的 `data/scripts/net/rpc.lua` 一一对应，也与 `native/test-peer.mjs`
  * 同构 —— 后者的等价逻辑**已在真实游戏上验证过** ✓（hello 往返 ✓ query fleet 拿到数据 ✓）。

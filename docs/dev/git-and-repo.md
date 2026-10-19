@@ -18,7 +18,7 @@ D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\   ← 仓库根
 | 排除 | 体积 | 为什么排除 |
 |---|---|---|
 | `native/_shots/` | ~55 MB | agent 验证时截的图 |
-| `native/lua-src/` | ~5.6 MB | Lua 源码副本（从 lua.org 下载；构建步骤见 `NATIVE.md`） |
+| `native/lua-src/` | ~5.6 MB | Lua 源码副本（从 lua.org 下载；构建步骤见 `native.md`） |
 | `native/harness/*.exe` | ~1.3 MB | 独立测试台，可重编 |
 | `*.dll` `*.obj` `*.lib` `*.exp` `*.pdb` | — | 构建产物（**包括实验探针 `copilotprobe.dll`**） |
 | `*.log` 及若干临时 txt | — | 运行期产物 |

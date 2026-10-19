@@ -12,7 +12,7 @@ meta =
 
     type = "mod",
 
-    description = "An AI co-pilot that plays alongside you. In-sector it autopilots the ship you're flying; a strategic layer that manages your fleet and economy in the background is in development (see TODO.md).",
+    description = "An AI co-pilot that plays alongside you. In-sector it autopilots the ship you're flying; a strategic fleet/economy layer is in development (status: docs/dev/current-status.md).",
 
     authors = {"DSH"},
 

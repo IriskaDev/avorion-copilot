@@ -252,7 +252,7 @@ function reply(cmd, data) {
   return {}
 }
 
-// 分帧协议：4 字节小端长度 + JSON ✓（与 PROTOCOL.md 一致 ✓，抄自 rendezvous-flow ✓）
+// 分帧协议：4 字节小端长度 + JSON ✓（与 docs/dev/protocol.md 一致 ✓，抄自 rendezvous-flow ✓）
 function encode(msg) {
   const body = Buffer.from(JSON.stringify(msg), 'utf8')
   const head = Buffer.alloc(4)

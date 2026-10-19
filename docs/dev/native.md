@@ -1,4 +1,4 @@
-# NATIVE.md —— 原生扩展（DLL）实测结论
+# native.md —— 原生扩展（DLL）实测结论
 
 本文件记录 **实测** 事实，不是推断。每一条都标注了验证方式。早期文档里「Lua 沙箱无法加载原生代码」
 的说法**已被推翻**，别再引用。
@@ -323,7 +323,7 @@ static int l_readfile(lua_State *L) { ... fopen/fseek/fread ... lua_pushlstring 
 ```
 
 原设计配合 `/copilot reload`（2026-10-18 起该入口**已退役** ✗ → 现在改代码一律
-**重载存档 / 重启游戏** ✓，见 [`docs/dev/hot-reload-and-vm-boundaries.md`](docs/dev/hot-reload-and-vm-boundaries.md) 顶部）。
+**重载存档 / 重启游戏** ✓，见 [`hot-reload-and-vm-boundaries.md`](hot-reload-and-vm-boundaries.md) 顶部）。
 `readfile` 本身仍是可复用的能力 ✓；注意：**重编 DLL 本身仍然必须重启**——`keep_resident` 让 DLL 在进程里卸不掉。
 ---
 

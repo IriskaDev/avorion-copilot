@@ -184,7 +184,7 @@ function CopilotOps.cardSummary(card)
 end
 
 -- ---------------------------------------------------------------------------
--- 补硬门槛：船长（LLM-OPS.md：所有后台命令都要求船长）
+-- 补硬门槛：船长（docs/game/llm-ops.md：所有后台命令都要求船长）
 -- ---------------------------------------------------------------------------
 
 function CopilotOps.ensureCaptain(player, name, card)

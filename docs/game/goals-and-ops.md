@@ -1,9 +1,9 @@
-# GAME-GOALS-AND-OPS.md —— Avorion 2.5.13 游戏目标与舰队操作全集（资料库）
+# goals-and-ops.md —— Avorion 2.5.13 游戏目标与舰队操作全集（资料库）
 
-> ★ **权威说明**：决策口径以 [`docs/game/`](docs/game/README.md) 为准，本文件是历史/资料库。
+> ★ **权威说明**：决策口径以 [`docs/game/`](README.md) 为准，本文件是历史/资料库。
 
 > **性质**：给人 / 给 agent 看的**参考库**，不是提示词来源。
-> 机制事实的**单一来源**仍是 [`MECHANICS.md`](MECHANICS.md)（提示词里的机制段由它生成）。
+> 机制事实的**单一来源**仍是 [`mechanics-source.md`](mechanics-source.md)（提示词里的机制段由它生成）。
 > 本文是对两份 pro 模型报告——「游戏目标与进程」「舰队操作全集」——的**合并、复核与分层**。
 >
 > **版本锚点**：`Documentation/Enums.html:523` 写 *"Avorion Version: 2.5.13 0417ab29738c"*。
@@ -155,7 +155,7 @@ end
 - 科技等级 `Balancing_GetTechLevel`：`lerp(dist,0,500,52,1)` → 中心 52、边缘 1。`galaxy.lua:108-117`。
 - 海盗等级 `Balancing_GetPirateLevel`：`(1 - dist/max)×32`，max=√(500²+500²)≈707 → 中心 32、边缘 0。`galaxy.lua:391-402`。
 
-**(c) 越险**：风险模型本体是 `calculateAttackProbability`（见 [`LLM-OPS.md`](LLM-OPS.md)），驱动它的底层事实就是上面的 (b)。
+**(c) 越险**：风险模型本体是 `calculateAttackProbability`（见 [`llm-ops.md`](llm-ops.md)），驱动它的底层事实就是上面的 (b)。
 
 > 决策相关性：**正文（不塞提示词）**。模型每候选已拿到具体 attackChance / value；这些数值是「为什么」，给人审计。
 
@@ -197,7 +197,7 @@ end
 - 货物 100+ 种，5 大链 basic/consumer/industrial/military/technology，带 illegal/suspicious/dangerous/stolen 标签。`lib/goodsindex.lua`。
 - 工厂造价：最低 250 万 +（产值-原料值）×3500。`productions.lua:79-100`。
 - 空间站类型全集（`lib/factionpacks.lua:21-53`）：shipyard / repairdock / resourcedepot / tradingpost / equipmentdock / smugglersmarket / scrapyard / mines / factories / fighterfactory / turretfactory / solarpowerplant / farm / ranch / collector / biotope / casino / habitat / militaryoutpost / headquarters / researchstation / travelhub / riftresearchcenter。
-- 贸易路线：必须 Merchant 船长；路线来自区域分析，会**耗尽（deplete）**；单路线货值随两端 richness 缩放。`tradecommand.lua`（详见 MECHANICS.md §4）。
+- 贸易路线：必须 Merchant 船长；路线来自区域分析，会**耗尽（deplete）**；单路线货值随两端 richness 缩放。`tradecommand.lua`（详见 mechanics-source.md §4）。
 
 ## A10. 船长与船员
 
@@ -280,7 +280,7 @@ end
 - 产出结算：命令内 `addYield` → `self.yields` 待领取；玩家「领取」时 `takeYield` → `transformYield` → 钱/资源进 `faction:receive`、物品进 `faction:getInventory()`。`sim/simulation.lua:392-420`。
 - **结束/召回/伏击三态**：`finishCommand`（finalize→onFinish 全量→移除）；`recall`（finalize→onRecall 部分/退款→移除）；`startAttack`（船瞬移到伏击区→挂 `piratesattackentity`/`factionattackentity`→护航 aggressive→调 `onAttacked`→**recall**）。`sim/simulation.lua:632-668、670-728、1093-1147`。
 
-## B3. 已覆盖的 6 个命令（已在 MECHANICS.md，此处只留速记）
+## B3. 已覆盖的 6 个命令（已在 mechanics-source.md，此处只留速记）
 
 | 命令 | 一句话 | 关键证据 |
 |---|---|---|

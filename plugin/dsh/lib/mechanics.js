@@ -1,5 +1,5 @@
-// ★ 本文件由 MECHANICS.md 的「浓缩版」段落生成 —— 不要手改 ✗
-//   单一来源: D:/SteamLibrary/steamapps/common/Avorion/mods/copilot/MECHANICS.md
+// ★ 本文件由 docs/game/mechanics-source.md 的「浓缩版」段落生成 —— 不要手改 ✗
+//   单一来源: D:\\SteamLibrary\\steamapps\\common\\Avorion\\mods\\copilot\\docs\\game\\mechanics-source.md
 //   重新生成: node scripts/render-mechanics.mjs ｜ 校验: node scripts/check-mechanics.mjs
 export const MECHANICS_BRIEF = `可用命令（都是后台命令：船长带队离开你的星区，期间联系不上；产出/结算见下）：
 - Mine    精采矿：区域 15x15，船须在区内。产出进全局资源，不占货舱。配置 duration(0.5~2+,Miner 船长加长)/safeMode/collected。

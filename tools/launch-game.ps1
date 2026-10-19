@@ -12,8 +12,8 @@
 #  规矩（踩过的坑，别改 ✗）:
 #    · ★ 必须用 `Start-Process explorer.exe -ArgumentList "steam://rungameid/445220"` ——
 #      直接从本进程 Start-Process 那个 steam:// URI 会让游戏挂在 DSH 的 job object 下，
-#      DSH 一退出游戏就被杀 ✓（VERIFY.md 有记录 ✓）。
-#    · 登录点击坐标 ≈ (150,317)（1920x1080 全屏 ✓ 见 VERIFY.md ✓）。
+#      DSH 一退出游戏就被杀 ✓（docs/dev/verify-manual.md 有记录 ✓）。
+#    · 登录点击坐标 ≈ (150,317)（1920x1080 全屏 ✓ 见 docs/dev/verify-manual.md ✓）。
 #    · 退出会丢 player value（名单/目标 ✓）→ 本脚本**先警告**再动手 ✓。
 #
 #  最后一行一定是机器可判定的结论 ✓: `LAUNCH-OK roster=N` / `LAUNCH-FAIL <原因>` ✓✓

@@ -12,7 +12,7 @@
 | ① 提示词（`plugin/dsh/prompt/system.md`） | 身份 / **答案契约** / 硬规矩一句话 / **"不确定就去读 docs/game/README.md"** / 路径 | ✅ 每轮 |
 | ② `docs/game/README.md` 二级索引 | 路由表 + 硬规矩细节 + 产出格式（决策者第一屏） | 需要时 |
 | ③ `docs/game/mechanics/*`、`docs/game/rules/*`、`docs/game/ops/*` | 全部机制、规则、工具细节 | 按需（逐级） |
-| ④ `MECHANICS.md`、`GAME-GOALS-AND-OPS.md`、`LLM-OPS.md` | 单一来源 / 资料库 / 调研 | 审计或深挖时 |
+| ④ `../mechanics-source.md`、`../goals-and-ops.md`、`../llm-ops.md` | 单一来源 / 资料库 / 调研 | 审计或深挖时 |
 
 **★ 尺寸目标**：改完后**整份 `plugin/dsh/prompt/system.md` 控制在 ~2000 字符以内**（现在约 9.4 KB / ≈3100 汉字，
 其中机制段 `{{MECHANICS}}` 展开后约 2.5 千字）。理由很实在：提示词**每轮决策都读一次**，
@@ -85,8 +85,8 @@ node plugin/dsh/scripts/check-mechanics.mjs   # 5 道守卫
 - 守卫② `check-mechanics.mjs:49`：`system.md` **必须含 `{{MECHANICS}}`** → 见上表第 2 行。
 - 守卫⑤ `check-mechanics.mjs:153-164`：`src/` 里**必须有文件引用 `MECHANICS_BRIEF`** → 若你顺势让
   `src/mechanics.ts` 退休，这条守卫也要一起改；**否则机制段的单一来源就断了**。
-- 守卫① `check-mechanics.mjs:27-42`：`MECHANICS.md` 的 BRIEF ↔ `src/mechanics.ts` 必须逐字一致 →
-  **本次改动不必碰 `MECHANICS.md`**，所以这一条应保持绿。
+- 守卫① `check-mechanics.mjs:27-42`：`../mechanics-source.md` 的 BRIEF ↔ `src/mechanics.ts` 必须逐字一致 →
+  **本次改动不必碰 `../mechanics-source.md`**，所以这一条应保持绿。
 - 守卫③ `:69-81` 与守卫④ `:83-150`：新块里**不要**出现"必须照抄 / 照它的 orderHint 下单"这类措辞，
   也不要塞"当 X 就做 Y"的策略句（§2 的块已自查过）。
 - ★ 模板字符串里**不许出现反引号与 `${`**（`docs/dev/install-and-deploy.md` 记过两次构建事故）。

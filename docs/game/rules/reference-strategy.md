@@ -20,12 +20,12 @@
 
 | 说法 | 出处 | 说明 |
 |---|---|---|
-| 伏击概率 **≥0.20** 时原版会「相当高，**请求护航**」 | `LLM-OPS.md` §3.4（由 `getAttackAssessmentLines` 反推） | 是**原版的建议线**，**不是**主人的闸门；主人自己的闸门是 ≤0.10 |
-| safeMode 的官方说明：「The captain avoids dangerous sectors… **However, these contain more resources.**」 | `minecommand.lua:1260`（转引 `MECHANICS.md` §11） | 是**机制说明**，不是"该开/不该开"的指令 |
+| 伏击概率 **≥0.20** 时原版会「相当高，**请求护航**」 | `../llm-ops.md` §3.4（由 `getAttackAssessmentLines` 反推） | 是**原版的建议线**，**不是**主人的闸门；主人自己的闸门是 ≤0.10 |
+| safeMode 的官方说明：「The captain avoids dangerous sectors… **However, these contain more resources.**」 | `minecommand.lua:1260`（转引 `../mechanics-source.md` §11） | 是**机制说明**，不是"该开/不该开"的指令 |
 
 ## 3. 资料库里的"核心循环"（背景，不是命令）
 
-> 摘自 [`GAME-GOALS-AND-OPS.md`](../../../GAME-GOALS-AND-OPS.md) §C（那是**对报告的复核**，不是主人下的规矩）。
+> 摘自 [`../goals-and-ops.md`](../goals-and-ops.md) §C（那是**对报告的复核**，不是主人下的规矩）。
 
 - 主线唯一硬目标：Swoks → Hermit → 凑 8 把 XSTN-K → 开传送门过屏障 → 杀 (0,0) Guardian（**背景**）。
 - 该报告描述的核心循环：**向中心推进**，每进一档先拿对应材料的**建舰知识** + 够强的**采矿激光**

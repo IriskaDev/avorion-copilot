@@ -1,11 +1,11 @@
 // 校验「文档 ↔ 提示词」没有漂移 ✓✓，并且**主人的原则没有被违反** ✓
-//   · MECHANICS.md 的 BRIEF 段落  vs  src/mechanics.ts 的 MECHANICS_BRIEF
+//   · docs/game/mechanics-source.md 的 BRIEF 段落  vs  src/mechanics.ts 的 MECHANICS_BRIEF
 //   · prompt/system.md（提示词本体）vs  src/prompt-default.ts（编译兜底）
 //   · 提示词里**不许有"叫模型照抄"的指令** ✗
 //   · ★ 提示词里**不许有策略/时机建议** ✗✓ —— 主人原话：
 //       「你只给她一个大目标，以及游戏当前的机制，让她自己判断」
 //       「不要直接把这种具体的策略写出来」
-// 用法: node scripts/check-mechanics.mjs [MECHANICS.md 路径]
+// 用法: node scripts/check-mechanics.mjs [docs/game/mechanics-source.md 路径]
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,9 +13,10 @@ import { extractBrief } from './render-mechanics.mjs'
 import { normalise, repoRoot } from './render-prompt.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
+// ★ 2026-10-19 起根目录不再放 MECHANICS.md：单一来源在 docs/game/mechanics-source.md
 const MD = process.argv[2]
   || process.env.COPILOT_MECHANICS_MD
-  || 'D:/SteamLibrary/steamapps/common/Avorion/mods/copilot/MECHANICS.md'
+  || path.resolve(here, '../../../docs/game/mechanics-source.md')
 const TS = path.join(repoRoot, 'src/mechanics.ts')
 const PROMPT_MD = path.join(repoRoot, 'prompt/system.md')
 const PROMPT_TS = path.join(repoRoot, 'src/prompt-default.ts')
@@ -24,9 +25,9 @@ const SRC = path.join(repoRoot, 'src')
 const fail = (m) => { console.error('✗ ' + m); process.exitCode = 1 }
 const ok = (m) => console.log('✓ ' + m)
 
-// ── ① 机制：MECHANICS.md ↔ src/mechanics.ts ────────────────────────────────
+// ── ① 机制：docs/game/mechanics-source.md ↔ src/mechanics.ts ────────────────────────────────
 if (!fs.existsSync(MD)) {
-  console.error('✗ 找不到 MECHANICS.md: ' + MD)
+  console.error('✗ 找不到 docs/game/mechanics-source.md: ' + MD)
   console.error('  （这是**权威来源**；用参数或 COPILOT_MECHANICS_MD 指定路径 ✓）')
   process.exit(1)
 }
@@ -39,7 +40,7 @@ const got = (m ? m[1] : '').replace(/\s+$/, '')
 if (normalise(want) !== normalise(got)) {
   fail('机制文档与 mechanics.ts **不一致** ✗（跑 node scripts/render-mechanics.mjs ✓）')
   console.error('  文档: ' + want.length + ' 字符 / mechanics.ts: ' + got.length + ' 字符')
-} else ok('MECHANICS.md ↔ src/mechanics.ts 一致（' + want.length + ' 字符）')
+} else ok('docs/game/mechanics-source.md ↔ src/mechanics.ts 一致（' + want.length + ' 字符）')
 
 // ── ② 提示词文件 ↔ 编译兜底 ───────────────────────────────────────────────
 if (!fs.existsSync(PROMPT_MD)) {

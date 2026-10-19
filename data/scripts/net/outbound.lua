@@ -5,7 +5,7 @@ package.path = package.path .. ";data/scripts/?.lua"
 -- 职责边界：把「要说什么」变成「可以发的表」。**不做传输**（send 由 CopilotNet 负责），
 -- **不做业务决策**（该不该发是 link_out 的事）。
 --
--- 协议见 PROTOCOL.md v2：
+-- 协议见 docs/dev/protocol.md v2：
 --   * 信封 = 元信息：`id` / `type` / `cmd`（答复再加 `ok` / `code` / `message`）
 --   * **`data`** = 载荷：**由 `cmd` 决定其形状** ✓（request 和 response 都叫 data ✓）
 --   * 答复的 `id` 与 **`cmd` 都与请求相同** ✓（`type` 说明问/答，`cmd` 说明在谈什么事 ✓）
@@ -16,7 +16,7 @@ CopilotOut = CopilotOut or {}
 
 local self = CopilotOut
 
--- 协议版本（与 PROTOCOL.md 同步）
+-- 协议版本（与 docs/dev/protocol.md 同步）
 self.VER = 2
 
 -- id 生成：单条连接内唯一即可。连接重建时清零（见 reset）

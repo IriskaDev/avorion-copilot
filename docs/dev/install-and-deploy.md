@@ -24,8 +24,9 @@ C:\Users\IriskaDev\AppData\Roaming\Avorion\mods\copilot
 
 ```
 mods/copilot/
-├── modinfo.lua / data/ / native/    ← 游戏读的部分 ✓
-├── MECHANICS.md / AGENTS.md / …     ← 文档 ✓
+├── modinfo.lua / data/ / native/    ← 游戏读的部分 ✓（native/ 只放源码，产物在 build/）
+├── AGENTS.md / README.md            ← 根目录**只留这两个** ✓（2026-10-19 收敛）
+├── docs/dev/ · docs/game/           ← 工程侧 / 游戏侧文档（见 overview.md §根文档收敛记录）
 └── plugin/                          ← ★ 插件：文档在根、本体在 dsh/（原本在 D:\workbench\projects\dsh\）
       ├── dsh/                       ← ★ 插件本体（代码与资产）
       │     src/ lib/ prompt/ test/ scripts/ tools/ types/ package.json tsconfig.json pnpm-lock.yaml
@@ -50,7 +51,7 @@ profile 的 `package.json` 写的是新家 `.../mods/copilot/plugin/dsh` ✓，
 
 决策提示词**不在**本仓库的机制文档里 ✗，它住在插件 `plugin/dsh/prompt/system.md` ✓
 （运行时读取 ✓，用户可用 `%AppData%\Avorion\moddata\copilot\prompt\system.md` 覆盖 ✓，
-改完**不用重启 DSH** ✓）。机制段仍以本仓库的 [`MECHANICS.md`](../../MECHANICS.md) 为**单一来源** ✓
+改完**不用重启 DSH** ✓）。机制段仍以本仓库的 [`../game/mechanics-source.md`](../game/mechanics-source.md) 为**单一来源** ✓
 （插件脚本由它生成 ✓，`check-mechanics.mjs` 防漂移 ✓，并会拦住"照抄指令"与"策略措辞" ✗✓）。
 
 ## ★★ DSH 客户端插件（UI）的真相（2026-10-17 实测，别再猜 ✗✓）
