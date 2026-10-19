@@ -70,7 +70,7 @@ self.toggleButton = nil
 self.exploreCheckBox = nil
 self.shipList = nil
 self.rosterLabel = nil          -- ★ 名单自检行（面板 N / 服务端 M）✓
-self.shipRows = nil             -- ★ 每行缓存：{ name, auto, goal, goalOptions } ✓
+self.shipRows = nil             -- ★ 每行缓存：{ name, auto, goalText } ✓（动作白名单已退役 ✗✓）
 self.mirrorGuard = false        -- ★ 勾→文字镜像 的防重入标志 ✓
 self.panelCmdSeq = 0            -- ★ 已执行到哪一条 RPC 面板命令（单调序号 ✓）
 self.goalEditShip = nil         -- ★ 目标输入框当前编辑的船名（点行设置 ✓）
@@ -231,7 +231,7 @@ local function shipColumns()
         { width = 60,  header = "Auto/P"%_t,
           tooltip = "The ship's own autopilot flag (copilot_auto_cfg). Stored only - the decision layer does not read it yet."%_t },
         { width = 110, header = "Task"%_t,
-          tooltip = "The ship's real goal. Default = Auto (nothing assigned: the AI decides from the ship's class and equipment). To assign, click a row and type a sentence below (stored as copilot_goal_<ship>). A read-only action whitelist set over RPC shows as 'Limited'."%_t },
+          tooltip = "The ship's real goal. Default = Auto (nothing assigned: the AI decides from the ship's class and equipment). To assign, click a row and type a sentence below (stored as copilot_goal_<ship>). The allowed actions are derived from the ship itself (no picker)."%_t },
     }
 end
 
@@ -278,7 +278,8 @@ function CopilotUI.buildPanel()
     --   [1] 接管状态 = 上面那个勾的**文字镜像**（✓ 已接管 / — 未接管），肉眼可读 ✓
     --   [2] 舰船
     --   [3] 本船自驾 = `copilot_auto_cfg` 的 auto 字段，**只读**（全仓库无消费方 ✗ → 标"未接入"）
-    --   [4] 任务     = 真目标 `copilot_goal_kind_<船名>`（goal.lua）✓，点该行循环 ✓
+    --   [4] 任务     = 真目标 `copilot_goal_<船名>`（goal.lua）✓，点该行把它装进下方输入框 ✓
+    --                  ★ 2026-10-19：这一列**不再显示动作白名单** ✗（白名单已退役 ✓）
     local headerRect = lister:nextRect(18)
     local listRect = lister:nextRect(220)
 
@@ -379,12 +380,17 @@ end
 --     最好是留个框，让玩家输入**自然语言**，而不是只给几个选项」✓✓
 --
 -- 所以：
---   · 默认 = **自动 / 不指派**：`copilot_goal_<船名>` 和 `copilot_goal_kind_<船名>` 都空 ✓
+--   · 默认 = **自动 / 不指派**：`copilot_goal_<船名>` 空 ✓
 --     —— 决策层按船的分类 + 装备自己拍 ✓（`task.ts` 的空目标分支会明确这么告诉它 ✓）
 --   · 要指派 → 面板下方**一个输入框**，写自然语言（"去西北方挖矿，遇敌就跑"）→
---     存进 `copilot_goal_<船名>`（`lib/copilot/goal.lua:41-49` 的 `M.setText` ✓）
---   · 这一列显示：有文字目标就显示它（截断）> 有动作白名单就显示「限定 …」> 否则「自动」
---   · 动作白名单（`copilot_goal_kind_`）仍然**只读显示**、只能由 RPC 设 —— 主人不要预设按钮 ✗
+--     存进 `copilot_goal_<船名>`（`lib/copilot/goal.lua` 的 `M.setText` ✓）
+--   · 这一列显示：有文字目标就显示它（截断）> 否则「自动」
+--
+-- ★★★ 2026-10-19 第三次修正（主人原话：「把这个 option 退役掉」✓✓）：
+--   动作白名单**不再由人填** ✗ —— 面板里那份 `copilot_goal_kind_` 的**读写界面已删** ✓✓，
+--   可选动作改由 `lib/copilot/card.lua` 的 `M.deriveActions` **按船自动推导** ✓
+--   （推导结果仍是白名单语义 ✓，校验那层原样保留 ✓）。旧存档里的值**不删** ✓ 但**忽略** ✗
+--   （`goal.describe` 回传成 `ignoredOptions` ✓）。
 local function actionLabel(action)
     local known = {
         Mine = "Mine"%_t, Salvage = "Salvage"%_t, Trade = "Trade"%_t,
@@ -393,23 +399,15 @@ local function actionLabel(action)
     }
     return known[action] or tostring(action)
 end
+-- ★ 2026-10-19：`actionLabel` 唯一的使用方（任务列的「Limited: …」）已随白名单退役 ✗✓；
+--   函数**留着**给将来显示"这艘船能做什么"用 ✓（`fleet_query {what:'ship'}` 的 allowedActions ✓）。
 
--- ★ 目标列的**真身**是 goal.lua 的两个 per-ship player value：
---   `copilot_goal_<船名>`（自然语言 ✓）+ `copilot_goal_kind_<船名>`（换行分隔的动作白名单 ✓）
---   —— 见 `lib/copilot/goal.lua:30-38 / 41-67` ✓
+-- ★ 目标列的**真身**是 goal.lua 的 per-ship player value `copilot_goal_<船名>`（自然语言 ✓）
+--   —— 见 `lib/copilot/goal.lua` ✓
 --   旧代码点这一列写的是 `copilot_auto_cfg` 的 target 字段 ✗ —— 那个字段**全仓库零消费方**
 --   （grep `shipConfig`：`card.lua:134` / `ops.lua:85` 两处定义，零处调用）→ 点了什么也不会发生 ✗✓
-local GOAL_KIND_PREFIX = "copilot_goal_kind_"
+--   ★ `copilot_goal_kind_<船名>`（旧白名单键）面板**不再读** ✗（仍由 rename.lua 迁移 ✓ 不丢数据 ✓）
 local GOAL_TEXT_PREFIX = "copilot_goal_"
-
-local function readShipGoalOptions(player, name)
-    local raw = tostring(player:getValue(GOAL_KIND_PREFIX .. name) or "")
-    local options = {}
-    for line in raw:gmatch("[^\n]+") do
-        options[#options + 1] = line
-    end
-    return options
-end
 
 local function readShipGoalText(player, name)
     return tostring(player:getValue(GOAL_TEXT_PREFIX .. name) or "")
@@ -438,18 +436,12 @@ local function truncateUtf8(text, limitBytes)
     return cut .. "…"
 end
 
--- 任务列显示的优先级：**自然语言目标** > 动作白名单 > 自动 ✓
-local function goalDisplay(text, options)
+-- 任务列显示的优先级：**自然语言目标** > 自动 ✓
+local function goalDisplay(text)
     local t = tostring(text or "")
     if t ~= "" then
         local shown = t:gsub("[ \t\r\n]+", " ")
         return truncateUtf8(shown, 24)
-    end
-
-    if #options > 0 then
-        local labels = {}
-        for _, o in ipairs(options) do labels[#labels + 1] = actionLabel(o) end
-        return truncateUtf8("Limited: "%_t .. table.concat(labels, "/"), 24)
     end
 
     return "Auto"%_t          -- ★ 默认就是它：不指派、让决策层按分类/装备自己定 ✓
@@ -511,13 +503,11 @@ function CopilotUI.refreshShipList()
         self.shipList:addRow()
         local row = self.shipList.rows - 1
         local c = cfg[name] or {}
-        local goalOptions = readShipGoalOptions(player, name)
         local goalText = readShipGoalText(player, name)
 
         self.shipRows[row + 1] = {
             name = name,
             auto = c.auto and true or false,
-            goalOptions = goalOptions,
             goalText = goalText,
         }
 
@@ -542,8 +532,8 @@ function CopilotUI.refreshShipList()
             false, false, ColorRGB(0.72, 0.72, 0.72))
         self.shipList:setEntryType(3, row, ListBoxEntryType.Text)
 
-        -- [4] 任务（自然语言目标优先，其次动作白名单，否则「自动」）
-        self.shipList:setEntry(4, row, goalDisplay(goalText, goalOptions), false, false,
+        -- [4] 任务（自然语言目标优先，否则「自动」；可选动作已改为**按船自动推导** ✓）
+        self.shipList:setEntry(4, row, goalDisplay(goalText), false, false,
             ColorRGB(0.7, 0.9, 1.0))
         self.shipList:setEntryType(4, row, ListBoxEntryType.Text)
     end
@@ -652,7 +642,7 @@ function CopilotUI.onGoalSavePressed(button)
     if cached ~= nil then
         cached.goalText = text
         if self.shipList and self.goalEditRow ~= nil then
-            self.shipList:setEntry(4, self.goalEditRow, goalDisplay(cached.goalText, cached.goalOptions or {}),
+            self.shipList:setEntry(4, self.goalEditRow, goalDisplay(cached.goalText),
                 false, false, ColorRGB(0.7, 0.9, 1.0))
             self.shipList:setEntryType(4, self.goalEditRow, ListBoxEntryType.Text)
         end
@@ -896,10 +886,11 @@ callable(CopilotUI, "setExplore")
 -- Stores the list of ships the AI is allowed to operate on, plus per-ship settings.
 -- 两份都是纯字符串（换行/竖线分隔）：player:setValue 对表支持未验证，见 AGENTS.md。
 --
--- ★ 2026-10-19：第三个参数 goalsText（每行 `船名|动作`）把面板第 4 列写进**真目标**
---   `copilot_goal_kind_<船名>`（`lib/copilot/goal.lua:53-67` 的 setOptions ✓，它会做
---   动作名校验/规范化 ✓）。旧参数 cfgText 里的 target 字段**没有任何消费方** ✗，
---   保留它只为兼容 `lib/copilot/rename.lua:316-331` 的改名迁移 ✓。
+-- ★ 2026-10-19：第三个参数 goalsText（旧：每行 `船名|动作` 写 `copilot_goal_kind_<船名>`）
+--   **退役** ✗✓ —— 动作白名单不再由人/面板写 ✓（改为 `lib/copilot/card.lua` 的
+--   `M.deriveActions` 按船自动推导 ✓）。参数**留着**只为兼容旧调用方 ✓，内容**一律忽略** ✗。
+--   旧参数 cfgText 里的 target 字段**没有任何消费方** ✗，
+--   保留它只为兼容 `lib/copilot/rename.lua` 的改名迁移 ✓。
 function CopilotUI.setAutoShips(serialized, cfgText, goalsText)
     if onClient() then
         invokeServerFunction("setAutoShips", serialized, cfgText, goalsText)
@@ -912,25 +903,11 @@ function CopilotUI.setAutoShips(serialized, cfgText, goalsText)
     player:setValue("copilot_auto_ships", tostring(serialized or ""))
     player:setValue("copilot_auto_cfg", tostring(cfgText or ""))
 
-    local goals = tostring(goalsText or "")
-    if goals ~= "" then
-        local ok, err = pcall(function()
-            local Goal = include("copilot/goal")
-            for line in goals:gmatch("[^\n]+") do
-                -- ★ 每行 `船名|动作` 或 `船名|动作1,动作2`（空 = 自动，清掉限制 ✓）
-                local name, list = line:match("^([^|]+)|(.*)$")
-                if name ~= nil and name ~= "" then
-                    local options = {}
-                    for action in tostring(list or ""):gmatch("[^,]+") do
-                        local a = action:match("^%s*(.-)%s*$")
-                        if a ~= "" then options[#options + 1] = a end
-                    end
-                    Goal.setOptions(player, name, (#options > 0) and options or nil)
-                end
-            end
-        end)
-        if not ok and DEBUG then
-            print("[copilot] setAutoShips goals failed: " .. tostring(err))
+    -- ★ 退役说明（不写任何东西 ✗）：传进来的 goalsText 一律不生效 ✓ —— 这正是主人要的
+    --   「不再让人选动作白名单」✓✓。旧存档里的值照旧留着（不删 ✓，读的时候忽略 ✗）。
+    if tostring(goalsText or "") ~= "" then
+        if DEBUG then
+            print("[copilot] setAutoShips: goalsText IGNORED (allowed actions are derived per ship now)")
         end
     end
 end

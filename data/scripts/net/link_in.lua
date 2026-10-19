@@ -6095,10 +6095,18 @@ function CopilotLinkIn.onSetGoal(data)
     end
 
     if data.text ~= nil then Goal.setText(player, ship, data.text) end
-    if data.options ~= nil then Goal.setOptions(player, ship, data.options) end
+
+    -- ★★ 2026-10-19：`options` **退役** ✗✓ —— 传了也**不写** ✓（旧插件/旧脚本不会再把船锁死 ✓）。
+    --   真事故：`Trader-00001` 曾被设成 `[Travel]` ✗ → 白名单校验忠实执行 → 它永远不能跑商 ✗✓。
+    --   现在可选动作由 `lib/copilot/card.lua` 的 `deriveActions` 按船推导 ✓（校验那层原样保留 ✓）。
+    if data.options ~= nil then
+        CopilotRpc.trace("setGoal: data.options IGNORED (options are derived from the ship card now) ship=" ..
+            tostring(ship))
+    end
 
     local d = Goal.describe(player, ship)
-    CopilotRpc.trace(string.format("setGoal ship=%s text=[%s] options=%d", ship, d.text, #d.options))
+    CopilotRpc.trace(string.format("setGoal ship=%s text=[%s] options=%d (auto-derived)",
+        ship, d.text, #d.options))
     return true, d
 end
 
