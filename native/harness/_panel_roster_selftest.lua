@@ -226,7 +226,7 @@ print("== ① 布局：4 列 / 列头和列宽一致 / 多行目标框 / 控件�
 Panel.buildPanel()
 
 -- panel.lua 的几何常量（两个都是文件内 local，这里按源码同步 ✓）
-local PANEL_WIDTH, PANEL_HEIGHT = 620, 760
+local PANEL_WIDTH, PANEL_HEIGHT = 620, 782
 
 local list = Panel.shipList
 check("① 列表列数 = 4（「本船自驾」死列已删）", list.columns == 4, tostring(list.columns))
@@ -254,6 +254,29 @@ end
 check("① 每个列头的 x 与列宽累加一致、且都有文字", aligned, "")
 check("① 列头 = OK / Take-over / Ship / Task（没有 Auto/P ✓）",
     table.concat(captions, "|") == "OK|Take-over|Ship|Task", table.concat(captions, "|"))
+
+-- ★★ 说明区：**一行一个 Label**（2026-10-19 第四次修正 ✓）
+--   旧版是**一个** 11 号 Label 里塞 3 行、单行 200+ 字符的长文本 ——
+--   `Label` 放不下时是**整体缩字**而不是换行 ✗ → 真机上被缩成 5px 糊字 ✗✓。
+--   这里锁死：4 个独立 Label、每行都短、且不含换行符（= 不会再触发缩字 ✓）。
+local hintLabels = {}
+for _, l in ipairs(created.labels) do
+    local c = tostring(l.caption or "")
+    if l.fontSize == 11 and (c:sub(1, 7) == "Column " or c:sub(1, 4) == "RPC:") then
+        hintLabels[#hintLabels + 1] = l
+    end
+end
+check("① 说明区 = 4 个独立 Label（不再是一个大 Label ✓）", #hintLabels == 4,
+    tostring(#hintLabels))
+
+local hintOk, longest = true, 0
+for _, l in ipairs(hintLabels) do
+    local c = tostring(l.caption)
+    if #c > 100 or c:find("\n", 1, true) ~= nil then hintOk = false end
+    if #c > longest then longest = #c end
+end
+check("① 每条说明 <=100 字符且不含换行（不触发 Label 缩字 ✓）", hintOk,
+    "最长 = " .. tostring(longest))
 
 -- ★★ 目标输入框：**原版多行控件**、宽度撑满、约 4~6 行 ✓（第三次修正的核心 ✓）
 local box = Panel.goalEditBox

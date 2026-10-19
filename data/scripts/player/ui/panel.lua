@@ -44,10 +44,12 @@ local DEBUG = false
 --   加宽的部分全给了「任务」列（110px → 350px）：原来 `在附近星区挖矿…` 那样被截断的文字
 --   现在能多看到两倍多的字 ✓；同时删掉「本船自驾」那一列（死字段 ✗），省下的 60px 也在里面 ✓✓
 local PANEL_WIDTH = 620
--- ★ 2026-10-19：列头行 + 名单自检行 + 说明行 + **目标输入框** → 500 → 590 → 606 → 658 → **760**
+-- ★ 2026-10-19：列头行 + 名单自检行 + 说明区(4 行) + **目标输入框** → 500 → 590 → 606 → 658 → 760 → 768 → **782**
 --   （目标输入框从 26px 单行 → 100px 多行 ≈ 5 行，另加一行 26px 的「保存目标」按钮 ✓✓；
---    14 行 + 13 个 6px 间距到 726，底下再留 ~24px 余量，和原来 658 留 ~28px 的习惯一致 ✓）
-local PANEL_HEIGHT = 760
+--    第四次修正把「说明行」从 1 个 74px 的大 Label 拆成 **4 个 16px 的小 Label**
+--    （= 64px + 3×6px 间距 = 82px ✓），再给炮塔按钮前加 8px 呼吸位（+14px）→ 高度 782 ✓
+--    18 行 + 17 个 6px 间距排到 748，底下还留 ~24px 余量 ✓）
+local PANEL_HEIGHT = 782
 
 -- Human readable version of Copilot.state (published by the server side brain).
 -- Translated through the game's own language setting: %_t looks the string up in
@@ -81,7 +83,7 @@ self.panelCmdSeq = 0            -- ★ 已执行到哪一条 RPC 面板命令（
 self.goalEditShip = nil         -- ★ 目标输入框当前编辑的船名（点行设置 ✓）
 self.goalEditRow = nil          -- ★ 那一行的下标（保存后回写显示 ✓）
 self.goalEditText = nil         -- ★ 输入框里的文字（读出来给缓存 ✓）
-self.hintLabel = nil
+
 
 self.hudContainer = nil
 self.hudButton = nil
@@ -350,8 +352,28 @@ function CopilotUI.buildPanel()
     -- 只读自检：面板看到的名单 vs 服务端（= 插件同源）看到的名单 ✓
     self.rosterLabel = window:createLabel(lister:nextRect(18), "", 11)
 
-    self.hintLabel = window:createLabel(lister:nextRect(74), "", 11)
-    self.hintLabel.caption = "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 3 = Task. Default is Auto: nothing assigned, the AI decides from the ship's class and equipment. To assign, click a ship row and type a sentence in the goal box below (empty = Auto again).\nThis window can also be opened/closed over RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}."%_t
+    -- ★★ 说明区（2026-10-19 第四次修正：修掉「底部那行糊成 5px 小字」✓）
+    --
+    -- 病因（真机截图对照，不是猜 ✓）：旧版是**一个** Label 里塞 3~4 行超长英文
+    --   （单行 200+ 字符），而 `Label` 放不下时**不会换行，而是整体缩字** ✗✓ ——
+    --   600px 宽塞 1400px 的字 → 缩到约 0.43 倍 → 真机上就是那排看不清的糊字 ✓。
+    -- 治法：**一行一个 Label**，每行都短到 600px @ font 11 放得下
+    --   （≈100 个 ASCII 字符 / ≈50 个汉字 ✓）→ 永不触发缩字 ✓。
+    --   ★ 也顺手把说明写短（旧文案太长，缩字之外还很啰嗦 ✗）。
+    --   ★ 不用 `wordBreak = true`：它按**空格**断行，中文没空格 → 靠不住 ✗✓；
+    --     「一行一个 Label」对中英两种文案都成立 ✓。
+    local hintLines = {
+        "Column 1 is the ONLY switch (a tick shows as a filled box)."%_t,
+        "Column 2 spells out the very same roster in words."%_t,
+        "Column 3 = Task: empty = Auto. Click a ship row, type a sentence below, press Save."%_t,
+        "RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}"%_t,
+    }
+    for _, line in ipairs(hintLines) do
+        window:createLabel(lister:nextRect(16), line, 11)
+    end
+
+    -- 说明区与下面的按钮之间的呼吸位（8px + 6px 间距，真机上原来是贴着的 ✓）
+    lister:nextRect(8)
 
     -- ★ 炮塔底座材料升级（2026-10-17）—— 只在**玩家点击**后才动，绝不自动 ✓
     self.mountsButton = window:createButton(lister:nextRect(30), "Turret base materials..."%_t,
