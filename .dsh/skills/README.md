@@ -6,9 +6,9 @@
 
 ## 现有技能
 
-| 技能 | 文件 | 文档副本 |
-|---|---|---|
-| `fleet-decision` | [`fleet-decision/SKILL.md`](fleet-decision/SKILL.md) | [`docs/game/ops/fleet-decision-skill.md`](../../docs/game/ops/fleet-decision-skill.md) |
+| 技能 | 文件 | 文档副本 | 安装指引 |
+|---|---|---|---|
+| `fleet-decision` | [`fleet-decision/SKILL.md`](fleet-decision/SKILL.md) | [`docs/game/ops/fleet-decision-skill.md`](../../docs/game/ops/fleet-decision-skill.md) | [`fleet-decision/INSTALL.md`](fleet-decision/INSTALL.md)（DSH / Claude Code / Codex / CodeBuddy / Gemini 各放哪） |
 
 ## 改完必须做
 

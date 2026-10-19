@@ -4,7 +4,9 @@
 > [`.dsh/skills/fleet-decision/SKILL.md`](../../../.dsh/skills/fleet-decision/SKILL.md)（项目级技能根，rank 100 ✓）。
 > 这里放一份同样的内容，是为了让它进文档系统（可检索、可在 PR 里 review）；
 > 两份**逐字一致**由 [`tools/check-skill-copies.mjs`](../../../tools/check-skill-copies.mjs) 守住 ✓。
-> 技能根的规则（扫描路径 / rank / 生效方式）见 [`../../dev/skills-and-roots.md`](../../dev/skills-and-roots.md)。
+> 技能根的规则（扫描路径 / rank / 生效方式）见 [`../../dev/skills-and-roots.md`](../../dev/skills-and-roots.md)；
+> **想把它放到别的 agent**（Claude Code / Codex / CodeBuddy / Gemini）见
+> [`../../../.dsh/skills/fleet-decision/INSTALL.md`](../../../.dsh/skills/fleet-decision/INSTALL.md) ✓。
 >
 > 改内容时：**先改 `.dsh` 那份**（DSH 立刻生效，不用重启），再跑
 > `node tools/check-skill-copies.mjs --sync` 把副本刷过来 ✓。
