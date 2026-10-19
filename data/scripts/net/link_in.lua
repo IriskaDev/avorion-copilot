@@ -7398,10 +7398,49 @@ function CopilotLinkIn.predict(player, data)
         boxes = { data }
     end
 
+    -- ★★★ 顶层 `escorts` 在**批量**里也必须生效 ✓（2026-10-20 真机血案 ✓✓）
+    --
+    -- 根因（本条修复的唯一病灶 ✗）：`predictOneBox` 只读**每个 box 自己的** `b.escorts`
+    --   （见 :6948-6953 / :6912-6916 Job+Trade 两个分支 ✓），而 `predict` 主函数从没把
+    --   顶层的 `data.escorts` 下发到 `boxes[]` 里的元素 ✗ →
+    --   决策者按文档「批量 `boxes[]` + 顶层 `escorts`」量框时，**每一个框都按"裸跑"算** ✓✗，
+    --   护航被**静默丢弃**（不报错、不缺字段，只是数字变高 ✗）。
+    -- 真机对照（同星区 -204,-61，框中心 -197,-54，15×15，duration=1）：
+    --   · 批量 boxes[] + 顶层 escorts:[Raven] → 79%（= 裸跑数，护航没进去 ✗）
+    --   · escorts 写进**每个** box → 2% ✓（= 原版 calculateAttackProbability 带护航 ✓）
+    --   · 真下单回执 `risk.baseAttackChance`（rpc_trace.log「onOrder 风险」）→ 2% ✓
+    --   历史 L31 记录的 87% vs 2% 就是这条（那天的裸跑值 87% ✓）。
+    --
+    -- 语义取「box 自己的 escorts 优先，缺省继承顶层」✓ —— 与 `tradeEvaluate`（:7719 一直用
+    --   顶层 `data.escorts` ✓）以及 `orderRiskOf`（:938 用 config.escorts ✓）统一 ✓。
+    -- ★ 不修改调用方的入参表（shallow copy ✓）；并对每个框回 `escortsApplied`，
+    --   让"护航到底进去了没有"可以在回执里**直接看见** ✓（不再靠猜 ✗）。
+    local topEscorts = nil
+    if type(data.escorts) == "table" then
+        local list = {}
+        for _, n in ipairs(data.escorts) do
+            if type(n) == "string" and n ~= "" then list[#list + 1] = n end
+        end
+        if #list > 0 then topEscorts = list end
+    end
+    local function boxWithEscorts(b)
+        if topEscorts == nil then return b end
+        if type(b.escorts) == "table" and #b.escorts > 0 then return b end
+        local copy = {}
+        for k, v in pairs(b) do copy[k] = v end
+        copy.escorts = topEscorts
+        return copy
+    end
+
     local results = {}
     local equipCache = {}
     for _, b in ipairs(boxes) do
-        results[#results + 1] = predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job, equipCache)
+        local bb = boxWithEscorts(b)
+        local r = predictOneBox(command, player, ship, ctype, action, bb, shipX, shipY, gate, goodsLib, Job, equipCache)
+        if type(r) == "table" and type(bb.escorts) == "table" and #bb.escorts > 0 then
+            r.escortsApplied = bb.escorts
+        end
+        results[#results + 1] = r
     end
 
     if single then
