@@ -40,9 +40,14 @@ local DEBUG = false
 
 -- Panel geometry (pixels). The content is laid out with a UIVerticalLister, so the height
 -- has to fit every row below with room to spare.
-local PANEL_WIDTH = 440
--- ★ 2026-10-19：列头行 + 名单自检行 + 说明行(4 行) + **目标输入框行** → 500 → 590 → 606 → 658
-local PANEL_HEIGHT = 658
+-- ★ 2026-10-19（主人第三次修正）：「界面可以做宽一些」✓ —— 440 → **620**（+41%）✓
+--   加宽的部分全给了「任务」列（110px → 350px）：原来 `在附近星区挖矿…` 那样被截断的文字
+--   现在能多看到两倍多的字 ✓；同时删掉「本船自驾」那一列（死字段 ✗），省下的 60px 也在里面 ✓✓
+local PANEL_WIDTH = 620
+-- ★ 2026-10-19：列头行 + 名单自检行 + 说明行 + **目标输入框** → 500 → 590 → 606 → 658 → **760**
+--   （目标输入框从 26px 单行 → 100px 多行 ≈ 5 行，另加一行 26px 的「保存目标」按钮 ✓✓；
+--    14 行 + 13 个 6px 间距到 726，底下再留 ~24px 余量，和原来 658 留 ~28px 的习惯一致 ✓）
+local PANEL_HEIGHT = 760
 
 -- Human readable version of Copilot.state (published by the server side brain).
 -- Translated through the game's own language setting: %_t looks the string up in
@@ -70,7 +75,7 @@ self.toggleButton = nil
 self.exploreCheckBox = nil
 self.shipList = nil
 self.rosterLabel = nil          -- ★ 名单自检行（面板 N / 服务端 M）✓
-self.shipRows = nil             -- ★ 每行缓存：{ name, auto, goalText } ✓（动作白名单已退役 ✗✓）
+self.shipRows = nil             -- ★ 每行缓存：{ name, goalText } ✓（auto 列 / 动作白名单都已退役 ✗✓）
 self.mirrorGuard = false        -- ★ 勾→文字镜像 的防重入标志 ✓
 self.panelCmdSeq = 0            -- ★ 已执行到哪一条 RPC 面板命令（单调序号 ✓）
 self.goalEditShip = nil         -- ★ 目标输入框当前编辑的船名（点行设置 ✓）
@@ -221,17 +226,22 @@ end
 -- 列布局（宽度之和必须 = PANEL_WIDTH - 20，即 lister 的左右各 10px）✓
 -- ★ 必须定义在 buildPanel **之前**：local 的作用域从声明处开始，放后面会被当成 nil 全局 ✗✓
 -- （2026-10-19 harness 抓到的真 bug：`attempt to call global 'shipColumns' (a nil value)`）
+--
+-- ★★ 2026-10-19 第三次修正：**删掉「本船自驾」整列** ✗✓（主人原话：「这一列还在」）
+--   它读的是 `copilot_auto_cfg` 的 auto 字段 —— **全仓零消费方**（`card.lua:134` / `ops.lua:85`
+--   两处 `shipConfig` 定义、零处调用 ✓）→ 留着只会让人以为那是开关 ✗✓。
+--   现在四列：OK / 接管状态 / 舰船 / 任务 ✓（最后一列吃掉剩余宽度 → 改 PANEL_WIDTH 时
+--   列头和列宽永远同步，不会再出现「列头对不上列宽」✗）
 local function shipColumns()
+    local fixedWidth = 26 + 84 + 140      -- OK / Take-over / Ship ✓
     return {
         { width = 26,  header = "OK"%_t,
           tooltip = "Tick here = hand this ship to the AI. This is the roster the plugin reads."%_t },
         { width = 84,  header = "Take-over"%_t,
           tooltip = "Read-only mirror of column 1, spelled out (the tick itself renders as a filled box)."%_t },
         { width = 140, header = "Ship"%_t },
-        { width = 60,  header = "Auto/P"%_t,
-          tooltip = "The ship's own autopilot flag (copilot_auto_cfg). Stored only - the decision layer does not read it yet."%_t },
-        { width = 110, header = "Task"%_t,
-          tooltip = "The ship's real goal. Default = Auto (nothing assigned: the AI decides from the ship's class and equipment). To assign, click a row and type a sentence below (stored as copilot_goal_<ship>). The allowed actions are derived from the ship itself (no picker)."%_t },
+        { width = PANEL_WIDTH - 20 - fixedWidth, header = "Task"%_t,
+          tooltip = "The ship's real goal. Default = Auto (nothing assigned: the AI decides from the ship's class and equipment). To assign, click a row and type a sentence below (stored as copilot_goal_<ship>)."%_t },
     }
 end
 
@@ -271,15 +281,17 @@ function CopilotUI.buildPanel()
     --     面板里没有 ✓ 号，于是主人把那 4 个实心方块读成了「一个都没勾」✗✓
     --   · 那 4 个实心方块恰好是 Miner-00001 / Miner-00002 / Salvager-00001 / Trader-00001，
     --     与 `fleet_query {what:list}` 的 `designated: 4` **完全一致** ✓✓（同源 ✓）
-    --   · 旧的「四列」里有**两个**勾选框（第 0 列名单、第 2 列 c.auto）→ 谁也说不清哪个生效 ✗
     --
-    -- 所以现在是五列，**只有一个可写的勾**：
+    -- ★★ 2026-10-19 第三次修正（主人原话：「这一列还在」✗）：
+    --   原来第 [3] 列「本船自驾」= `copilot_auto_cfg` 的 auto 字段，**全仓零消费方** ✗
+    --   （`card.lua:134` / `ops.lua:85` 两处 `shipConfig` 定义、零处调用 ✓）→ **整列删掉** ✓✓
+    --
+    -- 所以现在是四列，**只有一个可写的勾**：
     --   [0] ✓      = 生效名单（`copilot_auto_ships`，插件 `designated` 数的就是它）✓ 唯一开关 ✓
     --   [1] 接管状态 = 上面那个勾的**文字镜像**（✓ 已接管 / — 未接管），肉眼可读 ✓
     --   [2] 舰船
-    --   [3] 本船自驾 = `copilot_auto_cfg` 的 auto 字段，**只读**（全仓库无消费方 ✗ → 标"未接入"）
-    --   [4] 任务     = 真目标 `copilot_goal_<船名>`（goal.lua）✓，点该行把它装进下方输入框 ✓
-    --                  ★ 2026-10-19：这一列**不再显示动作白名单** ✗（白名单已退役 ✓）
+    --   [3] 任务     = 真目标 `copilot_goal_<船名>`（goal.lua）✓，点该行把它装进下方输入框 ✓
+    --                  ★ 这一列**不再显示动作白名单** ✗（白名单已退役 ✓）
     local headerRect = lister:nextRect(18)
     local listRect = lister:nextRect(220)
 
@@ -305,21 +317,33 @@ function CopilotUI.buildPanel()
     list.onSelectFunction = "onShipSelected"
 
     -- ★★ 目标输入框（主人要的"自然语言"）—— 先点一艘船的行，再在这里写一句话 ✓
+    --
+    -- ★★★ 2026-10-19 第三次修正（主人原话：「目标输入框可以做大一些，最好做成一个多行的
+    --   输入框，文字可以自动换行的那种」✓✓）：
+    --   · 控件换成**原版多行控件** `Window:createMultiLineTextBox(Rect)`
+    --     （`Documentation/MultiLineTextBox.html:906-912` ✓；原版用法：
+    --      `data/scripts/entity/beacon.lua:48`、`data/scripts/entity/markerbuoy.lua:89` ✓）
+    --   · 宽度 = lister 的整宽（= PANEL_WIDTH - 20 = **600px**）✓ 撑满面板 ✓
+    --   · 高度 **100px**、字体 13 ≈ 5 行 ✓（要求 4~6 行 ✓）
+    --   · **自动换行由控件自己按 rect 宽度做** ✓ —— 它有 moveCursorUp/Down 一族，
+    --     本身就是多行文本域（不是我们手动插 \n ✗，也不是单行控件假装的 ✗）
+    --   · **不传回调**：保存仍然只由下面「保存目标」按钮触发 ✓
+    --     （每敲一个字就发一次 RPC 会把服务端淹掉 ✗）
     self.goalEditCaption = window:createLabel(lister:nextRect(16), "", 11)
     self.goalEditCaption.caption = "Goal text: click a ship row first (empty = Auto)"%_t
 
     do
-        local editRect = lister:nextRect(26)
-        local width = editRect.upper.x - editRect.lower.x
-        local boxWidth = width - 116
-        self.goalEditBox = window:createTextBox(
-            Rect(vec2(editRect.lower.x, editRect.lower.y),
-                 vec2(editRect.lower.x + boxWidth, editRect.upper.y)),
-            "onGoalSavePressed")
+        local boxRect = lister:nextRect(100)
+        self.goalEditBox = window:createMultiLineTextBox(boxRect)
         self.goalEditBox.maxCharacters = 200
+        self.goalEditBox.setFontSize = 13
+
+        -- 保存按钮单独一行、右对齐（多行框要占满宽度，塞不进同一行 ✓）
+        local buttonRect = lister:nextRect(26)
+        local buttonWidth = 140
         self.goalSaveButton = window:createButton(
-            Rect(vec2(editRect.lower.x + boxWidth + 8, editRect.lower.y),
-                 vec2(editRect.upper.x, editRect.upper.y)),
+            Rect(vec2(buttonRect.upper.x - buttonWidth, buttonRect.lower.y),
+                 vec2(buttonRect.upper.x, buttonRect.upper.y)),
             "Save goal"%_t, "onGoalSavePressed")
     end
 
@@ -327,7 +351,7 @@ function CopilotUI.buildPanel()
     self.rosterLabel = window:createLabel(lister:nextRect(18), "", 11)
 
     self.hintLabel = window:createLabel(lister:nextRect(74), "", 11)
-    self.hintLabel.caption = "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 3 is read-only: the per-ship autopilot is stored but not wired into the decision layer yet.\nColumn 4 = Task. Default is Auto: nothing assigned, the AI decides from the ship's class and equipment. To assign, click a ship row and type a sentence in the goal box below (empty = Auto again).\nThis window can also be opened/closed over RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}."%_t
+    self.hintLabel.caption = "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 3 = Task. Default is Auto: nothing assigned, the AI decides from the ship's class and equipment. To assign, click a ship row and type a sentence in the goal box below (empty = Auto again).\nThis window can also be opened/closed over RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}."%_t
 
     -- ★ 炮塔底座材料升级（2026-10-17）—— 只在**玩家点击**后才动，绝不自动 ✓
     self.mountsButton = window:createButton(lister:nextRect(30), "Turret base materials..."%_t,
@@ -414,7 +438,10 @@ local function readShipGoalText(player, name)
 end
 
 -- ★ UTF-8 安全截断（Lua 的 # 数的是**字节** ✗ —— 直接 sub 会把汉字切一半 ✓修）
---   任务列只有 110px 宽，font 11 大概放得下 8 个汉字 ≈ 24 字节 ✓
+-- ★ 2026-10-19：任务列 110px → **350px**（窗口加宽 + 死列删掉 ✓），font 11 大约放得下
+--   27 个汉字 ≈ 81 字节；这里取 **72 字节**（≈ 24 汉字）留一点余量，免得贴到列边 ✓
+--   —— 原来 24 字节只能显示 8 个汉字，真机上就是 `在附近星区挖矿…` ✗✓
+local GOAL_COLUMN_MAX_BYTES = 72
 local function truncateUtf8(text, limitBytes)
     local s = tostring(text or "")
     if #s <= limitBytes then return s end
@@ -441,7 +468,7 @@ local function goalDisplay(text)
     local t = tostring(text or "")
     if t ~= "" then
         local shown = t:gsub("[ \t\r\n]+", " ")
-        return truncateUtf8(shown, 24)
+        return truncateUtf8(shown, GOAL_COLUMN_MAX_BYTES)
     end
 
     return "Auto"%_t          -- ★ 默认就是它：不指派、让决策层按分类/装备自己定 ✓
@@ -449,28 +476,13 @@ end
 
 -- 每船配置存成 "船名|autopilot|目标" 每行一条，和名单一样是纯字符串
 -- （player:setValue 对表支持未验证，见 AGENTS.md）。
--- ★ auto 现在只做**只读展示**（没人读它 ✗）；target 与真目标保持一致（rename.lua 会迁移这两份 ✓）
-local function decodeShipCfg(text)
-    local cfg = {}
-    for line in tostring(text or ""):gmatch("[^\n]+") do
-        local name, auto, target = line:match("^([^|]+)|([^|]*)|([^|]*)$")
-        if name ~= nil then
-            cfg[name] = { auto = (auto == "1"), target = target }
-        end
-    end
-    return cfg
-end
-
-local function encodeShipCfg(cfg, order)
-    local lines = {}
-    for _, name in ipairs(order) do
-        local c = cfg[name]
-        if c ~= nil then
-            lines[#lines + 1] = name .. "|" .. (c.auto and "1" or "0") .. "|" .. (c.target or "")
-        end
-    end
-    return table.concat(lines, "\n")
-end
+--
+-- ★★ 2026-10-19 第三次修正：`decodeShipCfg` / `encodeShipCfg` **删掉** ✗✓
+--   它们存在的唯一理由是给 [3]「本船自驾」列读那个 auto 字段（以及把 target 字段写回去）——
+--   两处**全仓零消费方** ✓（`card.lua:134` / `ops.lua:85` 的 `shipConfig` 零处调用 ✓）。
+--   列已按主人要求删掉 ✓ → 这两个只服务它的读/写也一起删 ✓✓。
+--   ★ 旧存档里的 `copilot_auto_cfg` **不动** ✓：`saveShipList` 原样回传（见那里 ✓），
+--     `rename.lua:316-334` 改名时仍会迁移它 ✓。
 
 -- 名单里几艘（同一个 key，用于自检行 ✓）
 local function countSet(set)
@@ -486,7 +498,6 @@ function CopilotUI.refreshShipList()
     if not player then return end
 
     local auto = decodeShipSet(player:getValue("copilot_auto_ships"))
-    local cfg = decodeShipCfg(player:getValue("copilot_auto_cfg"))
 
     -- suppress the callbacks while the list is being written
     self.shipList.onChangedFunction = ""
@@ -496,20 +507,16 @@ function CopilotUI.refreshShipList()
     table.sort(names)
 
     self.shipOrder = names
-    -- 每行的缓存：勾选框状态以**列表里的勾**为准（保存时重新读），这里只存只读列与目标 ✓
+    -- 每行的缓存：勾选框状态以**列表里的勾**为准（保存时重新读），这里只存船名与目标 ✓
+    -- （★「本船自驾」那一列的 auto 字段已随整列删掉 ✗✓）
     self.shipRows = {}
 
     for _, name in ipairs(names) do
         self.shipList:addRow()
         local row = self.shipList.rows - 1
-        local c = cfg[name] or {}
         local goalText = readShipGoalText(player, name)
 
-        self.shipRows[row + 1] = {
-            name = name,
-            auto = c.auto and true or false,
-            goalText = goalText,
-        }
+        self.shipRows[row + 1] = { name = name, goalText = goalText }
 
         local taken = auto[name] and true or false
 
@@ -527,15 +534,11 @@ function CopilotUI.refreshShipList()
         self.shipList:setEntry(2, row, tostring(name), false, false, ColorRGB(0.9, 0.9, 0.9))
         self.shipList:setEntryType(2, row, ListBoxEntryType.Text)
 
-        -- [3] 该船自己的 Autopilot：只读（决策层没接它）✗
-        self.shipList:setEntry(3, row, self.shipRows[row + 1].auto and "ON"%_t or "OFF"%_t,
-            false, false, ColorRGB(0.72, 0.72, 0.72))
-        self.shipList:setEntryType(3, row, ListBoxEntryType.Text)
-
-        -- [4] 任务（自然语言目标优先，否则「自动」；可选动作已改为**按船自动推导** ✓）
-        self.shipList:setEntry(4, row, goalDisplay(goalText), false, false,
+        -- [3] 任务（自然语言目标优先，否则「自动」；可选动作已改为**按船自动推导** ✓）
+        -- ★ 列号从 4 → 3：原来的 [3]「本船自驾」已整列删掉 ✗✓
+        self.shipList:setEntry(3, row, goalDisplay(goalText), false, false,
             ColorRGB(0.7, 0.9, 1.0))
-        self.shipList:setEntryType(4, row, ListBoxEntryType.Text)
+        self.shipList:setEntryType(3, row, ListBoxEntryType.Text)
     end
 
     self.shipList.onChangedFunction = "onShipToggled"
@@ -633,18 +636,21 @@ function CopilotUI.onGoalSavePressed(button)
     if self.goalEditBox and self.goalEditBox.text ~= nil then
         text = tostring(self.goalEditBox.text)
     end
+    -- ★ 多行控件里可能带换行（玩家按了 Enter ✓）→ 落盘前压成一行：
+    --   目标是一句「自然语言边界」，存成多行会破坏决策提示词里的整块渲染 ✗
     text = text:gsub("[\r\n]+", " ")
 
     invokeServerFunction("setShipGoalText", ship, text)
 
     -- 乐观回写那一行（服务端下一拍确认；值本来就是同一份字符串 ✓）
+    -- ★ 列号 4 → 3（[3]「本船自驾」列已删掉 ✓）
     local cached = self.shipRows and self.goalEditRow and self.shipRows[self.goalEditRow + 1]
     if cached ~= nil then
         cached.goalText = text
         if self.shipList and self.goalEditRow ~= nil then
-            self.shipList:setEntry(4, self.goalEditRow, goalDisplay(cached.goalText),
+            self.shipList:setEntry(3, self.goalEditRow, goalDisplay(cached.goalText),
                 false, false, ColorRGB(0.7, 0.9, 1.0))
-            self.shipList:setEntryType(4, self.goalEditRow, ListBoxEntryType.Text)
+            self.shipList:setEntryType(3, self.goalEditRow, ListBoxEntryType.Text)
         end
     end
 end
@@ -652,30 +658,29 @@ end
 -- 把整张表读回来落盘：**只剩生效名单的勾** ✓
 -- ★ 2026-10-19：目标不再从这里写（它有专门的输入框 + `setShipGoalText` ✓）——
 --   以前靠"点行换预设"写目标，会顺手把 RPC 设的动作白名单覆盖掉 ✗✓
+-- ★ 2026-10-19 第三次修正：`copilot_auto_cfg` 面板**不再解码/改写** ✗✓
+--   （它只服务已删除的「本船自驾」列）→ 这里**原样回传**这份字符串 ✓：
+--   旧存档数据一个字节都不丢 ✓，`rename.lua` 改名时照样能迁移它 ✓。
 function CopilotUI.saveShipList()
     if not self.shipList then return end
 
+    local player = Player()
+    if not player then return end
+
     local set = {}
-    local cfg = {}
-    local order = {}
-    local rows = self.shipRows or {}
 
     for i = 0, self.shipList.rows - 1 do
         local name = self.shipList:getEntry(2, i)
         if name ~= nil and name ~= "" then
-            order[#order + 1] = name
-
             if self.shipList:getEntry(0, i) ~= "" then
                 set[name] = true
             end
-
-            local cached = rows[i + 1] or {}
-            -- `copilot_auto_cfg` 只做兼容（rename.lua 会迁移它 ✓）；target 字段没人读 ✗
-            cfg[name] = { auto = cached.auto and true or false, target = cached.goalText or "" }
         end
     end
 
-    invokeServerFunction("setAutoShips", encodeShipSet(set), encodeShipCfg(cfg, order), "")
+    -- 第二个参数 = `copilot_auto_cfg` 的**原样回传**（面板只读不写 ✓，见上面的说明 ✓）
+    local cfgText = tostring(player:getValue("copilot_auto_cfg") or "")
+    invokeServerFunction("setAutoShips", encodeShipSet(set), cfgText, "")
 
     -- 写回之后立刻刷新自检行（服务端的回报晚一拍到，updateClient 会补上）✓
     CopilotUI.refreshRosterReport()
