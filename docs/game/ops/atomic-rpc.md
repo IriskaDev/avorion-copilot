@@ -1,6 +1,6 @@
 # 原子化 RPC 设计（游戏只给原子接口，决策者多步组合）
 
-> 上一级：[`../README.md`](../README.md) · 工具速查：[`tools-cheatsheet.md`](tools-cheatsheet.md) · 机制总目录：[`../mechanics/index.md`](../mechanics/index.md)
+> 上一级：[`../README.md`](../README.md) · 作业手册：[`fleet-ops-manual.md`](fleet-ops-manual.md) · 工具速查：[`tools-cheatsheet.md`](tools-cheatsheet.md) · 机制总目录：[`../mechanics/index.md`](../mechanics/index.md)
 > ★ 唯一原则（主人原话）：
 > **「游戏只提供原子化接口，而不是一个接口把所有事都做了。而你作为决策者，收到决策要求后，则通过这批原子化接口进行多步决策」**
 > **「你先决定，要扫描什么，再调接口，让游戏扫描」**
@@ -302,7 +302,7 @@ B.6 的 `mountQuote/mountUpgrade` 只认**炮塔底座那 4 个 BlockType** ✗�
 | `order` | `{ship, action, x, y, size/sizeX/sizeY, duration?, safeMode?, goodName?, deposit?, escorts[]?, goodsToSell?}`（Travel 不需要 size：x/y = 目的地 ✓） | 下单回执（`:606-615`）+ ★ `risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown, riskKind}`（= 本单的伏击评估，口径与 `predict` **同一份代码** ✓✓） | `SHIP_NOT_AVAILABLE` `HOLD_HAS_GOODS` `NO_ROUTE` `HOLD_EMPTY` `UNKNOWN_ACTION` `BAD_REQUEST` |
 | `recall` | `{ship}` | `{recalled:true}` | `RECALL_FAILED` `BAD_REQUEST` |
 | `escort`（插件工具 `fleet_escort`） | `{escort, target}` | Travel 回执 / 「无需移动」 | 游戏拒绝逐字回报（`tools.ts:344-420`） |
-| `setGoal` | `{ship, text?, options?, clear?}` | 目标描述 | `BAD_REQUEST` |
+| `setGoal` | `{ship, text?, clear?}` ★ `options` 已**退役**（2026-10-19）：传了也**不写**，只留一条 trace ✓ | 目标描述（`options` 是 `card.lua` 的 `deriveActions` **按船推导**的 ✓，旧值回传为 `ignoredOptions` ✓） | `BAD_REQUEST` |
 
 ## C. 迁移清单
 

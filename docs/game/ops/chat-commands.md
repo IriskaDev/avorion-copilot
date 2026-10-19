@@ -67,7 +67,7 @@
 | `off` / `stop` / `disable` | 收回控制 | 写（状态） | `/copilot off` | `:1267` |
 | `status` / `state` | 开关状态 + 被 AI 运营的船名单 | 读 | `/copilot status` | `:1415` |
 | `explore on` / `explore off` | 清空星区后自动跃迁 | 写（状态） | `/copilot explore on` | `:1320` |
-| `goal` / `goals` | 船的长期目标（文字 / 允许动作 / 清除） | 写（配置） | `/copilot goal Raven mine only`<br>`/copilot goal Raven options Mine,Salvage`<br>`/copilot goal Raven clear` | `:1337` |
+| `goal` / `goals` | 船的长期目标（★ 现只剩**文字** / 清除 —— 动作白名单 2026-10-19 已退役 ✗✓） | 写（配置） | `/copilot goal Raven mine only`<br>`/copilot goal Raven options Mine,Salvage`（✗ 已失效：`options` 按船自动推导）<br>`/copilot goal Raven clear` | `:1337` |
 | `ops` | 诊断：名单里每艘船的可用性/耐久/船长/炮塔/货舱 | 读 | `/copilot ops` | `:1439` |
 | `reload [关键词]` | 重执行 RELOADABLE 里的脚本 | 写（代码） | `/copilot reload`<br>`/copilot reload mounts` | `:1436` |
 | `netstop` / `netstart` | 卸/装 net 链（两次命令之间等 2 秒） | 写（脚本挂载） | `/copilot netstop` → 等 → `/copilot netstart` | `:1283` / `:1291` |

@@ -112,7 +112,7 @@
 | 工具 | 要点 |
 |---|---|
 | `fleet_recall(ship)` | 后台命令**能扛过游戏重启**（BGS 会恢复）→ **召回是唯一可靠的解绑方式**；召回后带着目标会马上下一次决策（`plugin/dsh/src/tools.ts:411-434`） |
-| `fleet_goal(ship, text?, options?, clear?)` | 目标是**长期意图**：船每次空闲都会带着它再问一次（`tools.ts:375-401`） |
+| `fleet_goal(ship, text?, clear?)` | 目标是**长期意图**：船每次空闲都会带着它再问一次（`tools.ts:706-736`）。★ **只有文字，没有动作白名单** —— `options` 入参 2026-10-19 已退役 ✗✓（可选动作由游戏侧 `card.lua` 的 `deriveActions` 按船推导 ✓） |
 | `fleet_escort(escort, target)` | 只做一件事：给 escort 下一单 **Travel** 到 target 所在星区（客户端要求目的地**一跳到不了**，即 `d > reach`；服务端 `getErrors` 为空 ✓）；**游戏拒绝就逐字回报，不自动重试**（`tools.ts:654`）。护航资格见 [`../mechanics/escorts.md`](../mechanics/escorts.md) §1（距离 ≤ 护航自己 reach，**不必同星区**） |
 | `fleet_decisions(ship?, limit?, verbose?)` | 读**历史决策**：目标、取到的事实、思维链、选的动作、下单回执 —— 纯本地，**游戏关着也能用**（`tools.ts:537-642`） |
 | `fleet_commander(...)` | 看/设/清"舰队决策任务投给哪条会话"；★ 输出里的 **`mode`** 很关键：`shadow` = **你答了也只被记录，实际下单用单发模型**；`live` = 你的答案算数（插件默认 **shadow**：`plugin/dsh/src/index.ts:1247`、`tools.ts:525-527`；而 `plugin/dsh/src/dispatch.ts:172-173` 的注释说默认 `live` ✗矛盾 —— **以 `fleet_commander` 的实际输出为准**） |

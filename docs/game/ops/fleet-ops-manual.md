@@ -58,8 +58,8 @@
 | `query:*Plan`（legacy） | 旧计划查询（自扫 ~67 框 + 推荐） | `ship` | 读 | **不要用**，策略必须每次自己判断 | [`atomic-rpc.md`](atomic-rpc.md) §C.1 |
 | `order` | 下后台命令（一船一动作） | `ship`,`action`,`x`,`y`,`size`(+动作参数) | 写 | 缺参即报错不自动补；Travel 不需要 `size` | [`tools-cheatsheet.md`](tools-cheatsheet.md) §3 |
 | `recall` | 召回，让船回空闲 | `ship` | 写 | 召回 ≠ 回港（见 P6）；后台命令扛重启 | [`tools-cheatsheet.md`](tools-cheatsheet.md) §5 |
-| `escort` | 把护航 Travel 到目标星区 | `escort`,`target` | 写 | 只 Travel，**≠ 护航生效**（见 R6） | 同上 |
-| `goal` | 设/清某船长期目标 | `ship`,`text?`,`options?`,`clear?` | 写 | 空闲时会带着目标再问一次 | 同上 |
+| `escort` | 把护航 Travel 到目标星区 | `escort`,`target` | 写 | 只 Travel，**≠ 护航生效**（见 R6）；已在护航自己 reach 内就**不必动** | 同上 |
+| `goal` | 设/清某船长期目标（★ **只有文字** ✓） | `ship`,`text?`,`clear?` | 写 | 可选动作**按船自动推导**（`options` 已退役 ✗✓）；空闲时会带着目标再问一次 | 同上 |
 | `commander` | 看/设/清「哪条会话收决策任务」 | — | 写 | `mode:shadow` = 答了也只记录 | 同上 |
 | `decisions` | 历史决策 + 思维链（纯本地） | — | 读 | 游戏关着也能查 | 同上 |
 
@@ -77,7 +77,7 @@
 | 步骤 | 内容 |
 |---|---|
 | 前置检查 | ① 判这船是矿船（装备 → 名字 → 判不出问主人，[`lessons/orders.md`](../lessons/orders.md) L19）；② `query:ship` 看 `captainClass`/`hasCaptain`；③ 目标框 `query:predict` 看 `risk.baseAttackChance ≤ 0.10` 且 `box.containsShip` |
-| 命令序列 | `query:predict {ship, action:"Mine", x:-348, y:32, sizeX:15, sizeY:15, duration:1}` → 比 2-3 框 → `order {…同参…}`（见 R1、R3） |
+| 命令序列 | `query:predict {ship, action:"Mine", x:-348, y:32, sizeX:15, sizeY:15, duration:1}` → ★ 一次批量量 **6~8 框**（`boxes:[…]`，N≤24）：同区风险可从 3% 跳到 66%，别用单框结论否定整片（[`lessons/mining.md`](../lessons/mining.md) L26）→ `order {…同参…}`（见 R1、R3） |
 | 成功判据 | 回执 `risk.attackChance ≤ 0.10` 且 `verify.ok`；产出进全局资源池（不占舱） |
 | 失败怎么办 | `SHIP_NOT_IN_AREA` → 框留余量（15×15 用 ±6，L1）；风险超闸门 → 换框或护航（见 R2、R6） |
 
@@ -86,7 +86,7 @@
 | 步骤 | 内容 |
 |---|---|
 | 前置检查 | ① `captainClass` 是 Merchant（见 R7）；② 空舱（有货先 Sell，见 P3）；③ 路线两端 `isFriendly` 逐个核（见 R5） |
-| 命令序列 | `query:tradeEvaluate {ship, boxes:[合法形状], deposits:[200000,…]}` → 取 `profitPerHour` 最高且 `baseAttackChance ≤ 0.10` → **立刻** `order`（清单会变） |
+| 命令序列 | `query:tradeEvaluate {ship, boxes:[17x17, 29x11, 11x29], deposits:[500000, 1000000, 1500000]}` → ★ 按 [`lessons/trade.md`](../lessons/trade.md) L22-L25：下单参数**整组照抄**结果那一行（`29x11 ≠ 11x29`）、本金按可用资金 **30~50%**、比「每趟利润 × 趟数」而不仅 `profitPerHour`、同框心三种形状都量 → 取 `baseAttackChance ≤ 0.10` 里最优的 → **立刻** `order`（清单会变） |
 | 成功判据 | 回执无 `NO_ROUTE`、`verify.ok`；`netProfit` 入账、押金结束退还 |
 | 失败怎么办 | `routeCount:0` → 先换形状（17×17 → 29×11 / 11×29，L15）；`RISK_OVER_GATE` → 换框（见 R8） |
 
@@ -112,10 +112,10 @@
 
 | 步骤 | 内容 |
 |---|---|
-| 前置检查 | 先判需不需要：`predict` 的 `baseAttackChance ≤ 0.10` 通常不派（见 R6、L4）；侦察与精炼**不吃护航** |
-| 命令序列 | 需要时 ① `escort {escort, target}` Travel 过去（一跳内可用 / 同星区最佳）；② 主命令 `order {…, escorts:[…]}`（真正生效靠订单里的 `escorts`，L3） |
-| 成功判据 | 护航与行动船同星区 + 订单带 `escorts`；回执 `risk` 降下来 |
-| 失败怎么办 | 太近 Travel 被拒 → 换船；不需要 → `recall` 召回、别占船（见 R9） |
+| 前置检查 | 先判需不需要：`predict` 的 `baseAttackChance ≤ 0.10` 通常不派（见 R6、L4）；侦察与精炼**不吃护航**（它们的风险模型不含战力：Scout 要求风险 0、Refine 风险恒 0） |
+| 命令序列 | 需要时 ① 先看护航是否已在行动船的 **reach（护航自己一跳航程，真机 4.1 星区）内**——在就**不用动**，只有超出 reach 才 `escort {escort, target}` Travel 过去（**同星区只是距离 0 的特例**，不是必要条件）；② 主命令 `order {…, escorts:[…]}`（真正生效靠订单里的 `escorts`，L3） |
+| 成功判据 | 护航在行动船的 **reach 内**（同星区只是距离 0 的特例）+ 订单带 `escorts`；回执 `risk` 降下来 |
+| 失败怎么办 | `ESCORT_TOO_FAR` → 先 `escort` 调到 reach 内（或换一艘更近的护航）；已在 reach 内却还想 Travel 会被「太近」拒 → 不用调，直接带 `escorts`；不需要 → `recall` 召回、别占船（见 R9） |
 
 ### P6 召回（Recall）
 
@@ -155,9 +155,9 @@
 | R3 | 框必须**严格含船**且留余量（21×21 用 ±8、15×15 用 ±6） | [`lessons/boxes.md`](../lessons/boxes.md) L1 |
 | R4 | 满舱/有货先 Sell 再 Trade；空舱 Sell 会被拒 | [`mechanics/cargo-and-goods.md`](../mechanics/cargo-and-goods.md) §3 |
 | R5 | 商船/跑商/移动只走友好星区（`sectorFacts.isFriendly` 逐个核） | [`lessons/orders.md`](../lessons/orders.md) L15 |
-| R6 | 护航四前提（真需要 / 同星区 / 有炮塔 / 订单带 `escorts`）；≤10% 不派 | [`lessons/escorts.md`](../lessons/escorts.md) L2-L4 |
+| R6 | 护航四前提：真需要 / **在护航自己的 reach 内**（真机 4.1 星区；同星区只是距离 0 的特例）/ 有炮塔 / 订单带 `escorts`；≤10% 不派；超 reach → `ESCORT_TOO_FAR` | [`lessons/escorts.md`](../lessons/escorts.md) L2-L4 · L21 |
 | R7 | Trade 必须 Merchant 船长，否则「不知道怎么做贸易」 | [`mechanics/captains-and-crew.md`](../mechanics/captains-and-crew.md) §1 |
-| R8 | 贸易要一次比一片（`tradeEvaluate`），按**单位时间利润**排序；清单易变 → 查到立即下单 | [`lessons/orders.md`](../lessons/orders.md) L17 |
+| R8 | 贸易要一次比一片（`tradeEvaluate`），按**每趟利润 × 趟数**排序（`profitPerHour` 作同档时长的效率参考）；清单易变 → 查到立即下单 | [`lessons/orders.md`](../lessons/orders.md) L17 · [`lessons/trade.md`](../lessons/trade.md) L24 |
 | R9 | 不许给闲船编活（`action=None` 也是决策）；战斗舰允许闲置 | [`lessons/orders.md`](../lessons/orders.md) L5 |
 | R10 | 读回执、失败重投；缺数不猜、不用 safeMode 顶替 | [`lessons/orders.md`](../lessons/orders.md) L10 · [`rules/owner-rules.md`](../rules/owner-rules.md) §3 |
 
@@ -167,11 +167,12 @@
 
 | 症状 | 原因 | 处置 |
 |---|---|---|
+| `ESCORT_TOO_FAR` | 护航距行动船 > **护航自己**的 reach（真机 4.1 星区） | 先 `escort` 调到 reach 内，或换一艘更近的护航；**同星区不是必要条件**（见 R6） |
 | `SHIP_NOT_IN_AREA` | 框不含船 / 贴边 | 留余量（见 R3） |
 | `HOLD_HAS_GOODS` | 满舱要 Trade | 先 Sell（见 R4） |
 | `HOLD_EMPTY` | 空舱要 Sell / Refine | 改别的动作 |
 | `SHIP_NOT_AVAILABLE` | 船忙 / 玩家在开 | 等 `busy=false`（L9） |
-| `NO_ROUTE` | 框内无路线 / 形状不对 | 换形状（L15） |
+| `NO_ROUTE` | 框内无路线 / **形状给错**（`29x11` ↔ `11x29`） | 先看 `noRoute.siblingBoxes`（L22），再换形状（L15） |
 | `NO_BUYER` | 请求的货无买家 | 看回执 `skipped[]` |
 | `UNKNOWN_ACTION` | 动作名不在 7 个里 | 用合法动作 |
 | `attackChance = nil` | `known=false` 算不出 | 别当 0，查 `unknownReason` |
