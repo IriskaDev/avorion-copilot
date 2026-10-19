@@ -7539,6 +7539,7 @@ function CopilotLinkIn.tradeRoutes(player, data)
 
     return true, {
         ship = ship,
+        shipPosition = { x = shipRawX, y = shipRawY, cellX = shipX, cellY = shipY },
         box = {
             x = math.floor(cx), y = math.floor(cy),
             sizeX = math.floor(sizeX), sizeY = math.floor(sizeY),
@@ -7905,6 +7906,7 @@ function CopilotLinkIn.tradeEvaluate(player, data)
     return true, {
         ship = ship,
         shipSector = { x = shipX, y = shipY },
+        shipPosition = { x = shipRawX, y = shipRawY, cellX = shipX, cellY = shipY },
         boxCount = #prepared,
         depositTiers = deposits,
         goodsFilter = filterList,
