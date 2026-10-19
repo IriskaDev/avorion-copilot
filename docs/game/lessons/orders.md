@@ -108,3 +108,27 @@
   本会话修后 `turretCount:8 / turretCategories{Armed:4, Salvaging:4} / armedTurrets:4 / dps.turret:425.1`，`predict{Salvage}` 成功 ✓。
 - **生效方式**：改的是 `net/link_in.lua` → **必须重载存档或重启游戏** ✓（`/copilot` 命令层已退役、`netstop/netstart` 不可靠，见 `docs/dev/hot-reload-and-vm-boundaries.md` ✓）。
 
+## L32 · ★ 回单字段是**逐行文本**，不是 Lua/JSON —— `escorts=[…]` 会让整单作废
+
+- **症状**：2026-10-20 真机：决策者交单时把**工具参数**的数组写法抄进了**回单**——
+  `escorts=["Combat-00001"]` ✗ → 这一单的护航等于没带（主人看到的是「整单作废」）。
+  回执原文：`escorts:[{"name":"[Combat-00001]"}]`、`warnings:[{code:"ESCORT_ARMAMENT_UNKNOWN", detail:"cannot read the armament of escort '[Combat-00001]' (canFight unknown)"}]`、
+  `risk:{known:false, baseAttackChance:null, unknownReason:"…simulationutility.lua:656: attempt to index local 'entry' (a nil value)"}`。
+- **当时的错误判断**：以为「字段清单里有 `escorts=`，写法应该都一样」—— 工具里写 `["Combat-00001"]` 能用，回单照抄也应该能用；
+  文档里**只有字段清单、没有逐字写法示例**，于是只能靠猜 ✗。
+- **错因**：两条通道是**两套解析器**，写法不通用 ✗。
+  ① 回单是逐行文本：`field()` 只做 `key[:=：]value` 取值并**剥掉引号**，**方括号原样留着**（`plugin/dsh/src/task.ts:112-116` ✓）；
+  `escorts` 的值再按 `,` / `，` / `、` 切成船名（`task.ts:142-147` ✓）—— 所以 `["Combat-00001"]` 切出来就是**一个**叫 `[Combat-00001]` 的船名 ✓。
+  ② 这个名字对不上护航候选名单 → 被**清洗丢弃**（`plugin/dsh/src/index.ts:1285-1293` ✓，日志里有「⚠ 丢弃无法护航的名字」）→ 订单里没有护航，风险也算不出来。
+  ③ 工具那边 `escorts` 是**真数组**（`plugin/dsh/src/tools.ts:273` ✓），JSON 才是它的母语。
+  ④ 根子是文档缺口：字段清单有、**写法示例没有** ✗ → 同一次会话里「一个东西两种写法」全靠记 ✗。
+- **正确判据**：★ **回单里 `escorts=` 是逗号分隔的船名**：`escorts=Combat-00001` 或 `escorts=Raven,Combat-00001`（全角逗号、顿号也认）；
+  **不是** `["…"]`、**不是** JSON、**不是** `escorts: […]`。同一份回单里其它字段同理：`goodsToSell=all` 或 `goodsToSell=Drill:100,Oxygen:50`（**裸名不带数量会被丢掉 → 退回全卖** ✗）、`safeMode=false`、`duration=1`、`sizeX=15`/`sizeY=15`（或 `size=15`）。
+  只有**调工具**时才写 `escorts: ["Combat-00001"]`、`goodsToSell: ["Drill","Oxygen"]`。
+  ★ 交单后自检三件事：回执 `escorts` 里的名字**不带方括号**、`risk.known:true`、带护航的 `predict` 里 `escortsApplied` **含目标船名**。
+  ★ 两套写法并排对照 + 三条端到端链路 → 作业手册 [`../ops/fleet-ops-manual.md`](../ops/fleet-ops-manual.md) §3（回单 §3.1-§3.2、字段对照 §3.3、工具 JSON §3.4、链路 §3.5）。
+- **证据出处**：解析器 `plugin/dsh/src/task.ts:112-116`（`field()` 剥引号不剥方括号）✓、`:142-147`（`listField` 按逗号/全角逗号/顿号切分）✓、`:352-364`（多组按 `action=` 行切）✓；
+  清洗丢弃 `plugin/dsh/src/index.ts:1285-1293` ✓；工具侧数组 schema `plugin/dsh/src/tools.ts:273` ✓；
+  真机回执 `escorts:[{"name":"[Combat-00001]"}]` + `ESCORT_ARMAMENT_UNKNOWN` + `risk.known:false`（本会话 `fleet_decisions{ship:"Salvager-00001"}` 第 #21 条原文 ✓，`unknownReason` 指向原版 `simulationutility.lua:656` ✓）；
+  主人本会话原话：「回单里写了 `escorts=["Combat-00001"]`，导致整单作废」✓；同一次 `predict` 对照：裸跑 `0.8` → `escorts:["Combat-00001"]` 后 `0.02`、`escortsApplied:["Combat-00001"]`（2026-10-20 真机 ✓）。
+

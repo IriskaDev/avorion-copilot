@@ -22,7 +22,7 @@
 | [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
 | [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派、L28 带 `escorts` ≠ 降险（同框实测数字不变）、L31 批量 `boxes[]` 会丢顶层 `escorts`（真机 87% vs 2% 的根因，已修 ✓） |
 | [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步、L16 揭图在任务完成时才生效、L18 未知占比 > 10% 才开、L20 换框 = 换一片（中心至少挪一个框宽 ≥21 格） |
-| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投（2026-10-18 补：`aborted` ≠ 没执行）、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**） |
+| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投（2026-10-18 补：`aborted` ≠ 没执行）、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**）、L32 回单字段是**逐行文本**（`escorts=` 逗号分隔船名，不是 `["…"]`） |
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`wins.md`](wins.md) | L14 本会话的成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
 | [`trade.md`](trade.md) | L22 框形状逐字照抄（`29x11 ≠ 11x29`）、L23 本金 30~50%、L24 比每趟 × 趟数、L25 至少量 3 种形状、L30 形状 × 位置两重自由度（船在框心 + 四角，分批量） |
@@ -30,7 +30,7 @@
 | [`materials.md`](materials.md) | L27 材料升级先 `mountQuote`；换设计会降级，只看当场 `baseCount` |
 | [`trade-order-routes.md`](trade-order-routes.md) | 专题复盘：`NO_ROUTE` 真根因 = `29x11`/`11x29` 写反（L22 的深度证据，非五段编号条目） |
 
-## 3. 校正清单总表（L1–L31：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28–L31 = 2026-10-20 实测）
+## 3. 校正清单总表（L1–L32：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28–L32 = 2026-10-20 实测）
 
 | 编号 | 一句话 | 落在 |
 |---|---|---|
@@ -62,3 +62,4 @@
 | L29 | 采集类量框先把船放到**框的角格**上（框心 = 船 ∓7）：船贴角够到 ±14 vs 框心在船 ±7，同一框覆盖 ×4；贴角高产出框带 reach 内护航 73% → 2% | [`mining.md`](mining.md) |
 | L30 | Trade 框有**形状 × 位置**两重自由度：同形状船在框心 / 贴四角 = 覆盖不同市场（采集贴角扩射程、贸易贴角换市场，同名不同因）；量 3 形状 × 5 位置 × 2 本金，但 `boxes[]` ≤6 → 按形状分批（≤5×4×2 = 40 组合 ✓） | [`trade.md`](trade.md) |
 | L31 | 明确要求护航时风险**按「带护航」算**；真机 87% vs 2% 的根因 = **批量 `boxes[]` 丢了顶层 `escorts`**（护航静默丢弃 → 整批按裸跑算），**已在 2026-10-20 修**：box 内 `escorts` 优先、缺省继承顶层 + 每框回 `escortsApplied`；predict 与 order 回执现在同一份代码、逐字同数 ✓ | [`escorts.md`](escorts.md) |
+| L32 | 回单字段是**逐行文本，不是 Lua/JSON**：`escorts=Combat-00001`（逗号分隔船名）；写 `escorts=["Combat-00001"]` → 名字变 `[Combat-00001]` → 护航静默丢失 + `risk.known:false`。写法示例见作业手册 §3 | [`orders.md`](orders.md) |
