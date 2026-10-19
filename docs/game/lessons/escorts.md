@@ -61,3 +61,14 @@
 - **错因**：那次 0.64 → 0.03 是更远 / 更强的另一种情形，不能当通用假设 ✗；而本场景里护航对 `baseAttackChance` 一个数都没改，我却把它当成了免费的降险开关。框的风险按「船当时的星区 + 框覆盖」算，船一挪，旧框连 `box.containsShip` 都不成立 ✗。
 - **正确判据**：① 带 `escorts` 前后对**同一框**各测一次 `risk.baseAttackChance`，数字不变 = 没用；② 量框要放在**派单前最近一次**，先看 `box.containsShip`，必要时重量；③ 高产出框被风险挡住时：先确认护航在有效距离内（≤ 护航自己的 reach）并实测，仍超闸门 → 换形状 / 换位置，或经主人**明确授权**再冒险 —— 不许自己放宽闸门 ✗。
 - **证据出处**：2026-10-20 真机会话实测（同框带 / 不带 `escorts`：18% / 26% / 3% 完全一致；4/8 框 `SHIP_NOT_IN_AREA`）✓；护航资格 `simulationutility.lua:145-176`（只判可用性 / 距离 / 环侧 / 武装，**不含降风险**）✓；风险按 `area` 计算 `simulationutility.lua:617` + `minecommand.lua:853` ✓；批量多框见 [`mining.md`](mining.md) L26 ✓。
+
+## L31 · ★ 明确要求护航时，风险按「带护航」算；但 `predict` 的护航折算偏高，最终以 `fleet_order` 回执为准（2026-10-20）
+
+- **症状**：主人明确要求「让 Raven 护航」后，同一批 15×15 框的 `predict` 带 `escorts:[Raven]` 报出的 `baseAttackChance` 与真下单回执差到离谱：框 **(-197,-54)** 的 `predict` 报 **87%** → `fleet_order` 回执 `risk.baseAttackChance` **2%**（差 **45 倍**）；框 **(-197,-68)** 的 `predict` 报 **9%** → 回执 **2%**。Raven 当场是 6 门武装炮、同星区（distance 0），`preflight` 报 `ESCORT_OK` ✓。
+- **当时的错误判断**：把 `predict` 带护航的 87% 当成否决判据，直接否掉了贴角那批 **11~15 件 / 12.6~15.7 万** 的富框，改挑产出低的框 —— 最肥的框被自己误杀 ✗。
+- **错因**：本 mod 的 `predict` 在把护航战力折算进风险时**偏保守/偏高** ✗（与下单路径口径不同；两处名义上都调 `calculateAttackProbability` —— `salvagecommand.lua:977` vs 回执链路 `link_in.lua:933` → 具体分叉点 ⚠未验证，但 87% vs 2% 的实测差是硬的）。拿这份偏高的数字当闸门，等于用一把坏尺子剪掉最好的框 ✗。
+- **正确判据**（三条，采集类尤其照做）：
+  1. **目标明确要求护航 → 风险评估按「带护航」算**：量框、排序、闸门判断全用带 `escorts` 的那份数字，不许拿裸跑数字顶 ✓。
+  2. 但 `predict` 带护航的风险**只当筛选 / 排序** ✗ —— **最终以 `fleet_order` 回执的 `risk.baseAttackChance` 为准** ✓（原版完整模型；而且它会拦 `ESCORT_TOO_FAR`）。
+  3. 所以**不要因为 `predict` 报 60~90% 就否掉贴角的富框** ✗：带 reach 内的护航**真下单一次**看回执，回执仍 >10% 才换框 ✓；也不许为了凑单把闸门调低 ✗。
+- **证据出处**：2026-10-20 真机实测（`predict` 87% / 9% vs 回执 2% / 2%；Raven 6 门武装炮 + 同星区 distance 0，`preflight: ESCORT_OK`）✓；`predict` 走 `command:calculatePrediction` 并带 `config.escorts`（`data/scripts/net/link_in.lua:4182`）✓、原版入口 `salvagecommand.lua:837` / `:977` ✓；回执风险 `orderRiskOf`（`link_in.lua:909`，内部 `self.predict` 于 `:933`）✓；闸门 0.10 `docs/game/README.md:20` ✓；SKILL §6 三条判据 `.dsh/skills/fleet-decision/SKILL.md` ✓。

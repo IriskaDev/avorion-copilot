@@ -20,7 +20,7 @@
 | 文件 | 收的校正 |
 |---|---|
 | [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
-| [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派、L28 带 `escorts` ≠ 降险（同框实测数字不变） |
+| [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派、L28 带 `escorts` ≠ 降险（同框实测数字不变）、L31 明确要求护航时按带护航算 + 最终以 `fleet_order` 回执为准 |
 | [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步、L16 揭图在任务完成时才生效、L18 未知占比 > 10% 才开、L20 换框 = 换一片（中心至少挪一个框宽 ≥21 格） |
 | [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投（2026-10-18 补：`aborted` ≠ 没执行）、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**） |
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
@@ -30,7 +30,7 @@
 | [`materials.md`](materials.md) | L27 材料升级先 `mountQuote`；换设计会降级，只看当场 `baseCount` |
 | [`trade-order-routes.md`](trade-order-routes.md) | 专题复盘：`NO_ROUTE` 真根因 = `29x11`/`11x29` 写反（L22 的深度证据，非五段编号条目） |
 
-## 3. 校正清单总表（L1–L30：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28–L30 = 2026-10-20 实测）
+## 3. 校正清单总表（L1–L31：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28–L31 = 2026-10-20 实测）
 
 | 编号 | 一句话 | 落在 |
 |---|---|---|
@@ -61,3 +61,4 @@
 | L28 | 带 `escorts` 前后对**同一框**实测风险，数字不变 = 没用；量框放派单前最近一次（船会动）；高产出被挡先实测护航再换框，不许自己放宽闸门 | [`escorts.md`](escorts.md) |
 | L29 | 采集类量框先把船放到**框的角格**上（框心 = 船 ∓7）：船贴角够到 ±14 vs 框心在船 ±7，同一框覆盖 ×4；贴角高产出框带 reach 内护航 73% → 2% | [`mining.md`](mining.md) |
 | L30 | Trade 框有**形状 × 位置**两重自由度：同形状船在框心 / 贴四角 = 覆盖不同市场（采集贴角扩射程、贸易贴角换市场，同名不同因）；量 3 形状 × 5 位置 × 2 本金，但 `boxes[]` ≤6 → 按形状分批（≤5×4×2 = 40 组合 ✓） | [`trade.md`](trade.md) |
+| L31 | 明确要求护航时风险**按「带护航」算**；但 `predict` 的护航折算偏高 ✗ → 最终以 `fleet_order` 回执的 `risk.baseAttackChance` 为准（真机 87% → 2%、9% → 2%）；不因 60~90% 否掉贴角富框，也不许调低闸门 | [`escorts.md`](escorts.md) |
