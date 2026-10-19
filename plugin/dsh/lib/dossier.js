@@ -110,8 +110,9 @@ function renderShip(d) {
 }
 function renderRules(goalText, goalOptions, gate) {
     const L = [];
-    L.push(`玩家给这艘船的目标：${goalText !== '' ? goalText : '(只给了动作边界，没有文字目标)'}`);
-    L.push(`允许的动作：${goalOptions.length > 0 ? goalOptions.join(', ') : '(不限 —— Mine/Salvage/Trade/Travel/Sell/Scout/Refine 里挑)'}`);
+    L.push(`主人给这艘船的目标：${goalText !== '' ? goalText : '(只给了动作边界，没有文字目标)'}`);
+    // ★ 2026-10-19：这层仍是**白名单** ✓，但已**按船自动推导** ✗✓（不再由主人/模型填 ✓）
+    L.push(`可选动作（按船自动）：${goalOptions.length > 0 ? goalOptions.join(', ') : '(不限 —— Mine/Salvage/Trade/Travel/Sell/Scout/Refine 里挑)'}`);
     L.push(`风险闸门：attackChance ≤ ${gate}（★ 判断只看**基准**概率 baseAttackChance，不看被 safeMode 修正后的数 ✓）`);
     return L;
 }

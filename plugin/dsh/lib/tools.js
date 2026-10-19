@@ -599,13 +599,13 @@ opts = {}) {
     addTool(ctx, {
         name: 'fleet_goal',
         description: 'Set or clear a ship operating goal. A goal is a STANDING INTENT: every time the ship goes ' +
-            'idle it re-requests a decision carrying that goal, until you change or clear it. Use text ' +
-            'for free-form intent and options to bound the allowed actions ' +
-            '(Mine/Salvage/Trade/Travel). Pass clear=true to remove the goal.',
+            'idle it re-requests a decision carrying that goal, until you change or clear it. ' +
+            'Goals are free-form TEXT only; the allowed actions are derived from the ship itself ' +
+            '(its card: turrets, cargo, captain class), so there is no action whitelist to pass. ' +
+            'Pass clear=true to remove the goal.',
         parameters: {
             ship: { type: 'string', required: true, description: 'ship name' },
             text: { type: 'string', description: 'free-form intent, e.g. "mine to the north-west, flee if attacked"' },
-            options: { type: 'array', items: { type: 'string' }, description: 'allowed actions, e.g. ["Mine"]' },
             clear: { type: 'boolean', description: 'true = clear this ship goal' },
         },
         output: {
@@ -817,8 +817,9 @@ opts = {}) {
                 // ★★ decider 来源（2026-10-17 主人要求 ✓）：一眼看出这单谁定的 ✓
                 lines.push(`decider: ${rec.decider ?? deciderOf(rec.source) ?? '?'}${rec.source !== undefined ? ` (source=${rec.source})` : ''}`);
                 lines.push(`goal: ${rec.goalText !== '' ? rec.goalText : '(no free text)'}`);
+                // ★ 2026-10-19：这层现在**按船自动推导** ✓（不再是玩家填的白名单 ✗✓）
                 if (rec.goalOptions.length > 0)
-                    lines.push(`allowed actions: ${rec.goalOptions.join(', ')}`);
+                    lines.push(`allowed actions (auto-derived): ${rec.goalOptions.join(', ')}`);
                 const card = rec.card;
                 if (card !== undefined) {
                     const sector = card.sector;

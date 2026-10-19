@@ -211,8 +211,11 @@ export function renderTaskBlock(req: TaskRequest): string {
   } else {
     L.push('  · 这艘船没写文字目标 → 按它的**分类 / 装备**自己定（主人不逐条指派 ✓）')
   }
+  // ★★ 2026-10-19 退役「玩家限定动作」✗→✓：`goalOptions` 现在是**按船自动推导**的白名单
+  //   （游戏侧 `lib/copilot/card.lua` 的 `M.deriveActions` ✓，`query{what:"goal"}.options` ✓）。
+  //   白名单**语义不变**（仍然"只有这些 + None"✓），只是不再由主人/模型填 ✓✓。
   if (req.goalOptions.length > 0) {
-    L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（只有这些 + None）`)
+    L.push(`  · 可选动作（按船自动）：${req.goalOptions.join(', ')}（只有这些 + None）`)
   }
   L.push(`  · fleet_decisions {ship:"${req.ship}"} → 历史决策`)
   L.push('  ★ fleet_query；legacy 用 compact/top。')
@@ -284,7 +287,8 @@ export function renderTaskBatchBlock(batch: TaskBatchRequest): string {
   L.push('  ★ 只告知、不带数据 ✗ —— 需要什么**自己查** ✓（路由见下）。')
   L.push(`待决策 ${items.length} 条（每条 = 船名 + 任务号 ✓）：`)
   for (const it of items) {
-    const lim = it.goalOptions.length > 0 ? `  限定动作: ${it.goalOptions.join(', ')}` : ''
+    // ★ 可选动作 = **按船自动推导**（2026-10-19 起 ✗✓，不再是玩家填的）
+    const lim = it.goalOptions.length > 0 ? `  可选动作(按船自动): ${it.goalOptions.join(', ')}` : ''
     // ★ 自然语言目标也要带上（主人 2026-10-19 的用法 ✓）；空 = 自动，不写 ✓
     const gt = typeof it.goalText === 'string' ? clipGoalText(it.goalText) : ''
     const goal = gt !== '' ? `  主人目标: ${gt}` : ''

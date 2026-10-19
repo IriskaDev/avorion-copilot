@@ -1888,6 +1888,9 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     const facts: DecideFacts = {
       ship,
       goalText: typeof gd.text === 'string' ? gd.text : '',
+      // ★★ 2026-10-19 起这**不是**玩家填的白名单 ✗✓：游戏侧按船自动推导
+      //   （`lib/copilot/card.lua` 的 `M.deriveActions` ✓，`goal.describe` 把推导值放进 `options` ✓）。
+      //   语义不变 → 下游 `validateAnswer` / `allowedActions` 一行都不用改 ✓✓
       goalOptions: Array.isArray(gd.options) ? (gd.options as string[]) : [],
       card: undefined,   // ★ 船卡延迟到单发路径再取 ✓（会话路径不需要 ✓）
     }
@@ -2175,7 +2178,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       rec.goalOptions = facts.goalOptions
       rec.card = facts.card
       rec.routes = facts.tradeRoutes
-      live(`  ├ 事实  目标=[${facts.goalText}] 允许=[${facts.goalOptions.join(',') || '不限'}]`)
+      live(`  ├ 事实  目标=[${facts.goalText}] 可选动作(按船自动)=[${facts.goalOptions.join(',') || '不限'}]`)
       if (facts.tradeRoutes !== undefined) {
         const cand = (facts.tradeRoutes as Record<string, unknown>).candidates
         // ⚠️ 原写法会往流水里印一个光秃秃的 `?` ✗（字段名对不上 → undefined ✓ —— 主人截图里那个 ✓）
@@ -2185,7 +2188,7 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
           : '  ├ 贸易候选：本次没取到候选数组 ✗（**不代表没有路线** ✓ —— 见 facts.planMissing ✓）')
       }
       logger.info(
-        `avorion-copilot: ${ship} 目标=[${facts.goalText}] 允许=${facts.goalOptions.join(',') || '(不限)'}`,
+        `avorion-copilot: ${ship} 目标=[${facts.goalText}] 可选动作(按船自动)=${facts.goalOptions.join(',') || '(不限)'}`,
       )
 
       // ★★★ 单发路径的**档案**（2026-10-17 主人批准的改动 ✓✓）--------------------------

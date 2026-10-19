@@ -95,7 +95,8 @@ check('B. 答案契约在块里，且要求 action 放**第一行** ✓',
   /action=</.test(block) && /第 1 行/.test(block), '')
 check('B. 块是**任务**而不是主人说话（delimiter + 明说 ✓）',
   block.startsWith('<fleet_task id="t-deadbeef"') && block.trimEnd().endsWith('</fleet_task>'))
-check('B. 玩家限定的动作写进了块 ✓（她不必再查一次才知道边界 ✓）',
+// ★ 2026-10-19：文案改成「可选动作（按船自动）」✓（白名单不再由人填 ✗✓）
+check('B. 可选动作（按船自动）写进了块 ✓（她不必再查一次才知道边界 ✓）',
   block.includes('Mine, Salvage, Trade, Sell, Scout'), '')
 
 // ---------------------------------------------------------------------------
@@ -173,7 +174,7 @@ check('C. 保证事实①：船名与星区在 ✓',
   d.text.includes('Miner-00009') && d.text.includes('(-412,73)'), d.text.slice(0, 80))
 check('C. 保证事实②：玩家的目标与风险闸门在 ✓',
   d.text.includes('采最高阶的矿') && /attackChance ≤ 0\.1/.test(d.text), '')
-check('C. 保证事实③：允许的动作在 ✓', /允许的动作/.test(d.text) && d.text.includes('Mine'), '')
+check('C. 保证事实③：可选动作（按船自动）在 ✓', /可选动作（按船自动）/.test(d.text) && d.text.includes('Mine'), '')
 check('C. 保证事实④：这艘船"能做什么"在 ✓', /能做什么/.test(d.text) && /区域 15x15/.test(d.text), '')
 check('C. ★ 保证事实⑤：每个计划都有推荐**或明说的零候选原因** ✓',
   (d.text.match(/★★ (Mine|Salvage|Trade|Sell|Scout)/g) ?? []).length >= 1
