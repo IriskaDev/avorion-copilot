@@ -537,7 +537,9 @@ end
 --   Sell    —— `cargoCapacity >= MIN_CARGO_FOR_SELL` ✓（卖货靠货舱 ✓）
 --   Scout   —— 船长职业在原版「侦察有收益」那一组里 ✓
 --              （`scoutcommand.lua:521-526`：Explorer / Smuggler / Miner / Scavenger / Daredevil ✓）
---              其它职业侦察**一个隐藏质量区都不揭** ✗ → 不进白名单 ✓
+--              **或** 名字/称号含 scout ✓（弱证据 ✓ —— 真机反例 `Scout-00001` 的船长是 Hunter ✗，
+--              只按职业会把主人专门侦察的那条船废掉 ✗✓）。
+--              其它船侦察**一个隐藏质量区都不揭** ✗ → 不进白名单 ✓
 --
 -- ★ 这里的两个门槛是**我们自己定的启发式** ✗，不是原版常数 ✓（原版没有"货舱多大才算商船"）：
 --   `MIN_CARGO_FOR_SELL = 100` —— 真机反例：`Combat-00001` 的 `cargoCapacity = 4` ✓（含 109 单位货 ✓），
@@ -552,6 +554,16 @@ local MIN_CARGO_FOR_SELL = 100
 local SCOUT_CAPTAIN_CLASSES = {
     Explorer = true, Smuggler = true, Miner = true, Scavenger = true, Daredevil = true,
 }
+
+-- ★ 2026-10-19 真机补丁：**只有职业那一组还不够** ✗✓
+--   真机反例：`Scout-00001` 的船长是 **Hunter**（`captainClassId=9`）、货舱 4、炮塔全 Armed ——
+--   与 `Combat-00001` 的卡上事实**一模一样** ✓，于是按职业推导它只剩 `Travel` ✗
+--   → 把主人**专门用来侦察的那条船废掉** ✗✓（它的目标文本就是"侦察：每次换片…"）。
+--   补一条**弱证据**：名字或原版称号里含 "scout" ✓（仓库里"名字是弱证据"的排序本来就允许：
+--   分类 → 装备 → **名字** → 问主人 ✓）。这只补"侦察"一条 ✓，不改变 Combat-00001 → 只 Travel ✓。
+--   ⚠️ 原版其实**任何船长**都能 Scout ✓（scoutcommand.lua 只查 captain 是否存在 ✓），
+--   这里刻意**保守**：别的船不主动去揭图（职业无收益时一趟 ~1059 秒船时白花 ✓）。
+local SCOUT_NAME_HINTS = { "scout" }
 
 -- 推导本体（**纯函数** ✓：只吃事实表，不碰游戏对象 → 可离线测 ✓✓）
 -- 返回：actions（规范名数组，顺序 = card.actionNames ✓）, why（动作 → 依据 ✓）, note（不足/未知说明 ✓）
@@ -590,10 +602,26 @@ function M.deriveActions(facts)
         why.Sell = "cargoCapacity " .. tostring(cap) .. " ≥ " .. tostring(MIN_CARGO_FOR_SELL) ..
             "（卖货靠货舱 ✓；门槛是本 mod 启发式 ✗ 非原版 ✓）"
     end
+
+    -- 侦察：职业有收益 ✓ 或 名字/称号写了 scout ✓（弱证据，见上面的真机反例 ✓）
+    local scoutHint = nil
+    local nameL = tostring(facts.name or ""):lower()
+    local titleL = tostring(facts.shipTitleRaw or facts.shipTitle or ""):lower()
+    for _, hint in ipairs(SCOUT_NAME_HINTS) do
+        if nameL:find(hint, 1, true) ~= nil then scoutHint = "名字 " .. tostring(facts.name) end
+        if titleL:find(hint, 1, true) ~= nil then
+            scoutHint = "称号 " .. tostring(facts.shipTitleRaw or facts.shipTitle)
+        end
+    end
     if type(cls) == "string" and SCOUT_CAPTAIN_CLASSES[cls] then
         got.Scout = true
         why.Scout = "船长 " .. cls .. " 在原版揭图有收益那一组里 ✓（scoutcommand.lua:521-526）"
+    elseif scoutHint ~= nil then
+        got.Scout = true
+        why.Scout = scoutHint .. " 含 scout ✓（弱证据：原版任何船长都能 Scout ✓，" ..
+            "这里按名字/称号补上 ✓；真机反例 Scout-00001 的船长是 Hunter ✗）"
     end
+
     got.Travel = true
     why.Travel = "永远在 ✓（原版：目的地 ≥2 跳、需要船长 ✓）"
 
