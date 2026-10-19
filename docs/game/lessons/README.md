@@ -22,11 +22,15 @@
 | [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
 | [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派 |
 | [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步、L16 揭图在任务完成时才生效、L18 未知占比 > 10% 才开、L20 换框 = 换一片（中心至少挪一个框宽 ≥21 格） |
-| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**） |
+| [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投（2026-10-18 补：`aborted` ≠ 没执行）、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**） |
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`wins.md`](wins.md) | L14 本会话的成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
+| [`trade.md`](trade.md) | L22 框形状逐字照抄（`29x11 ≠ 11x29`）、L23 本金 30~50%、L24 比每趟 × 趟数、L25 至少量 3 种形状 |
+| [`mining.md`](mining.md) | L26 采矿一次批量 `predict` 6~8 框（同区风险 3%~66%） |
+| [`materials.md`](materials.md) | L27 材料升级先 `mountQuote`；换设计会降级，只看当场 `baseCount` |
+| [`trade-order-routes.md`](trade-order-routes.md) | 专题复盘：`NO_ROUTE` 真根因 = `29x11`/`11x29` 写反（L22 的深度证据，非五段编号条目） |
 
-## 3. 校正清单总表（L1–L14，主人 2026-10-17 本会话亲口给）
+## 3. 校正清单总表（L1–L27：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测）
 
 | 编号 | 一句话 | 落在 |
 |---|---|---|
@@ -48,3 +52,9 @@
 | L19 | 判「这船是干嘛的」：**装备 → 名字前缀 → 判不出就问主人**（原版无类型字段，名字是弱证据） | [`orders.md`](orders.md) |
 | L20 | 「换框」= **换一片**：侦察框中心至少挪一个框宽（**≥21 格**）；挪不动就换方向 | [`scouting.md`](scouting.md) |
 | L21 | 我们曾把 vanilla 的「一跳航程」误记成「必须同星区」：资格 = 距离 ≤ **护航自己**的 reach（同星区只是距离 0 的特例） | [`escorts.md`](escorts.md) |
+| L22 | Trade 下单参数**整组逐字照抄** evaluate 结果那一行：`29x11 ≠ 11x29`；`NO_ROUTE` 先看 `noRoute.siblingBoxes` | [`trade.md`](trade.md) |
+| L23 | 本金要大胆：按可用资金 **30~50%**（100~150 万档）给；押金不是成本，小本金只把利润切碎成多趟 | [`trade.md`](trade.md) |
+| L24 | 贸易比「**每趟利润 × 趟数**」，不只 `profitPerHour`；趟多 = 暴露多、总净利最大的常常 perHour 最低 | [`trade.md`](trade.md) |
+| L25 | 一个框心至少量 **3 种合法形状**（17x17 / 29x11 / 11x29），好货常只在其中一种里 | [`trade.md`](trade.md) |
+| L26 | 采矿一次 `predict {boxes:[…]}` 量 **6~8 框**（N≤24）：同区风险 3%~66%，别用单框否定整片 | [`mining.md`](mining.md) |
+| L27 | 材料升级**先 quote** 再升；换设计会降级，`baseCount/needUpgrade` 只看当场，别凭记忆 | [`materials.md`](materials.md) |

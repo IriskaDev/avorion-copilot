@@ -87,6 +87,11 @@
 证据：原版注册表 `player/background/simulation/commandtype.lua:8-25`（13 条）✓；
 本 mod 的 action 表 `data/scripts/net/link_in.lua:254-264` ✓（6 条，UUID 实读自原版）。
 
+## 12. 设备族：粗/净化 × 采集/分解 —— [`device-families.md`](device-families.md)
+
+- 四类设备的真实界定与术语对照：★ 原版 **「R-」= Raw（粗）**，不是 Refined（净化）✓。
+- 产出到哪（货舱 vs 派系资源池）、混装按 DPS 比例分账、粗变体 8% 精炼税 + 货舱下限门、召回时粗料落舱。
+
 ## 13. 「能打不能打」：炮塔/武装判据 —— [`weapons-and-combat-readiness.md`](weapons-and-combat-readiness.md)
 
 - 那句 **「你的 X 舰船没有炮塔或武装舰载机！」** 的唯一出处：`lib/entity.lua:81`，
@@ -97,3 +102,13 @@
 - ★ 能力卡旧 `turretCount` **恒为 1** ✗（把一张表当成多返回值去 `#`）—— 已修 ✓；
   现在给 `turretCount / turretCategories / armedTurrets / fighters / torpedoes / dps /
   liveArmedTurrets / canFight`，取不到一律「不写 + `known=false`」✓。
+
+## 14. 系统槽位 / 升级模块 / 跃迁 —— [`system-slots.md`](system-slots.md)
+
+- **没有 `BlockType.System` 方块** ✗（170 项枚举零命中）；槽位叫 **Subsystem Sockets**，
+  由船的 **Processing Power**（功能性方块，尤其 `ComputerCore`）决定 —— `ShipSystem.numSockets` 只读 ✓。
+- 已装模块 `entry:getSystems()` **跨星区可读**（原版后台命令在用）✓；装/卸接口存在但无正常玩法用例 → **未验证**。
+- ★ **科技门槛**：`4/5/6/8/10/12/15` 是**玩家建筑知识档 → 可建槽位上限**（`lib/buildingknowledgeutility.lua:44-55` ✓），
+  不是船现有槽数；档位不连续（6→8）。真机 6 槽 = PP 换算，`maxSockets=15` 语义未验证 → 见 `system-slots.md` §2.1–§2.6。
+- `blockQuote {blockType:"ComputerCore"}` 能报价 ✓，但**升材料 ≠ 加槽位**（阈值引擎内，未验证）；
+  跃迁读 `getHyperspaceProperties()` 的 **4 个返回值**，本 mod 只读了前 2 个 ✗。
