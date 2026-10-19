@@ -26,11 +26,11 @@
 | [`queries.md`](queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`wins.md`](wins.md) | L14 本会话的成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
 | [`trade.md`](trade.md) | L22 框形状逐字照抄（`29x11 ≠ 11x29`）、L23 本金 30~50%、L24 比每趟 × 趟数、L25 至少量 3 种形状 |
-| [`mining.md`](mining.md) | L26 采矿一次批量 `predict` 6~8 框（同区风险 3%~66%） |
+| [`mining.md`](mining.md) | L26 采矿一次批量 `predict` 6~8 框（同区风险 3%~66%）、L29 采集量框先把船贴到框的角格上（覆盖 ×4，贴角后带护航可把 73% 压到 2%） |
 | [`materials.md`](materials.md) | L27 材料升级先 `mountQuote`；换设计会降级，只看当场 `baseCount` |
 | [`trade-order-routes.md`](trade-order-routes.md) | 专题复盘：`NO_ROUTE` 真根因 = `29x11`/`11x29` 写反（L22 的深度证据，非五段编号条目） |
 
-## 3. 校正清单总表（L1–L28：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28 = 2026-10-20 实测）
+## 3. 校正清单总表（L1–L29：L1–L21 = 2026-10-17/18 校正；L22–L27 = 2026-10-18 实测；L28–L29 = 2026-10-20 实测）
 
 | 编号 | 一句话 | 落在 |
 |---|---|---|
@@ -59,3 +59,4 @@
 | L26 | 采矿一次 `predict {boxes:[…]}` 量 **6~8 框**（N≤24）：同区风险 3%~66%，别用单框否定整片 | [`mining.md`](mining.md) |
 | L27 | 材料升级**先 quote** 再升；换设计会降级，`baseCount/needUpgrade` 只看当场，别凭记忆 | [`materials.md`](materials.md) |
 | L28 | 带 `escorts` 前后对**同一框**实测风险，数字不变 = 没用；量框放派单前最近一次（船会动）；高产出被挡先实测护航再换框，不许自己放宽闸门 | [`escorts.md`](escorts.md) |
+| L29 | 采集类量框先把船放到**框的角格**上（框心 = 船 ∓7）：船贴角够到 ±14 vs 框心在船 ±7，同一框覆盖 ×4；贴角高产出框带 reach 内护航 73% → 2% | [`mining.md`](mining.md) |
