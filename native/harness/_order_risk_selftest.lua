@@ -40,12 +40,14 @@ local TRAVEL_CHANCE = 0.07                -- 原版 Travel 命令给出的那个
 local JOB_CHANCE = 0.03
 local PRED_ERROR = nil                    -- 非 nil → 替身 calculatePrediction 回 error ✓
 local TRACE = {}
+local LAST_ESCORTS = nil                  -- 最近一次 calculatePrediction 收到的 config.escorts ✓
 
 local function reset()
     nRun, nPred = 0, 0
     MODE = "JOB"
     PRED_ERROR = nil
     TRACE = {}
+    LAST_ESCORTS = nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -111,8 +113,14 @@ function FAKE_COMMAND:calculatePrediction(ownerIndex, shipName, area, config)
         return { attackChance = { value = TRAVEL_CHANCE }, distance = 41.5, travelTime = 3600 }
     end
     -- Mine/Salvage：safeMode 会**修正**概率（原版 attackChanceModification 同义 ✓）
+    -- ★ 护航也会改概率（原版 SimulationUtility.calculateAttackProbability 把 escort 的
+    --   dps/hp 加进 selfDps/selfHP、并且强护航再乘 0.75 ✓）—— 替身用 0.25 倍率模拟，
+    --   这样「护航到底有没有传进 calculatePrediction」就能用**数字**断言 ✓（不是看日志猜 ✗）。
+    local hasEscort = (type(config.escorts) == "table" and #config.escorts > 0)
+    LAST_ESCORTS = hasEscort and config.escorts or nil
     local chance = JOB_CHANCE
-    if config.safeMode == true then chance = JOB_CHANCE * 0.5 end
+    if hasEscort then chance = JOB_CHANCE * 0.25 end
+    if config.safeMode == true then chance = chance * 0.5 end
     return {
         attackChance = { value = chance },
         yields = { { from = 900, to = 1000 }, { from = 100, to = 120 } },
@@ -318,6 +326,83 @@ local ok7, code7 = LinkIn.predict(player, {
 })
 check("R7 Mine 框不含船 → ok=false ✓", ok7 == false, tostring(ok7))
 check("R7 错误码 = SHIP_NOT_IN_AREA ✓", code7 == "SHIP_NOT_IN_AREA", tostring(code7))
+
+-- ===========================================================================
+-- R8 / R9 / R10：护航必须真的进 calculatePrediction ✓（2026-10-20 真机 87% vs 2% 的回归）
+--
+-- 病灶（修前）：`predict` 的**批量**形态只读每个 box 自己的 `b.escorts`
+--   （predictOneBox → :6948-6953 / :6912-6916），顶层 `data.escorts` 被**静默丢弃** ✗
+--   → 决策者按文档「boxes[] + 顶层 escorts」量框时，整批按"裸跑"算（真机 79%/87%），
+--     而真下单回执（config.escorts → orderRiskOf）报 2% ✓✗ 三处数字互相打架。
+-- 修后语义：box 自己的 escorts 优先，缺省继承顶层 ✓（与 tradeEvaluate / orderRiskOf 一致 ✓）。
+-- ===========================================================================
+print("== R8: 批量 boxes[] + 顶层 escorts → 护航必须生效 ✓ ==")
+reset()
+local ok8, r8 = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Mine",
+    escorts = { "Raven" },
+    boxes = {
+        { x = SHIP_X, y = SHIP_Y, sizeX = 15, sizeY = 15 },
+        { x = SHIP_X, y = SHIP_Y, sizeX = 15, sizeY = 15 },
+    },
+})
+check("R8 批量 ok=true", ok8 == true and type(r8.boxes) == "table" and #r8.boxes == 2, r8)
+if ok8 == true and type(r8.boxes) == "table" then
+    local b1, b2 = r8.boxes[1], r8.boxes[2]
+    check("R8 框1 风险 = 带护航的 0.0075 ✓（= 0.03 × 0.25 ✓）",
+        b1 and b1.risk and b1.risk.attackChance == 0.0075, b1 and b1.risk and b1.risk.attackChance)
+    check("R8 框2 风险 = 带护航的 0.0075 ✓", b2 and b2.risk and b2.risk.attackChance == 0.0075,
+        b2 and b2.risk and b2.risk.attackChance)
+    check("R8 每框回 escortsApplied = {Raven} ✓（护航到底进去没，回执直接可看 ✓）",
+        b1 and type(b1.escortsApplied) == "table" and b1.escortsApplied[1] == "Raven"
+        and b2 and type(b2.escortsApplied) == "table" and b2.escortsApplied[1] == "Raven",
+        tostring(b1 and b1.escortsApplied and b1.escortsApplied[1]))
+    check("R8 ★ 护航真的到了 calculatePrediction（替身收到 config.escorts ✓）",
+        type(LAST_ESCORTS) == "table" and LAST_ESCORTS[1] == "Raven", tostring(LAST_ESCORTS))
+end
+
+print("== R8b: 批量**不带** escorts → 仍是裸跑数（对照 ✓）==")
+reset()
+local ok8b, r8b = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Mine",
+    boxes = { { x = SHIP_X, y = SHIP_Y, sizeX = 15, sizeY = 15 } },
+})
+check("R8b 对照 ok=true 且风险 = 裸跑 0.03 ✓",
+    ok8b == true and r8b.boxes and r8b.boxes[1].risk.attackChance == 0.03,
+    ok8b == true and r8b.boxes and r8b.boxes[1].risk.attackChance)
+check("R8b 没有 escortsApplied（没护航就不编 ✓）",
+    ok8b == true and r8b.boxes and r8b.boxes[1].escortsApplied == nil,
+    ok8b == true and r8b.boxes and tostring(r8b.boxes[1].escortsApplied))
+
+print("== R9: 单框内嵌 escorts 与批量顶层 escorts **逐字同数** ✓ ==")
+reset()
+local ok9, r9 = LinkIn.predict(player, {
+    what = "predict", ship = SHIP, action = "Mine",
+    x = SHIP_X, y = SHIP_Y, sizeX = 15, sizeY = 15, escorts = { "Raven" },
+})
+check("R9 单框带护航 ok=true 且 0.0075 ✓",
+    ok9 == true and r9.risk and r9.risk.attackChance == 0.0075, r9 and r9.risk and r9.risk.attackChance)
+check("R9 两种写法同数 ✓（批量 vs 单框）",
+    ok8 == true and ok9 == true and r8.boxes[1].risk.attackChance == r9.risk.attackChance,
+    tostring(ok8 == true and r8.boxes[1].risk.attackChance) .. " vs " .. tostring(r9.risk.attackChance))
+check("R9 两种写法同 riskKind ✓",
+    ok8 == true and ok9 == true and r8.boxes[1].risk.riskKind == r9.risk.riskKind, "")
+
+print("== R10: order 回执 risk == predict risk（带护航，三处对齐 ✓）==")
+reset()
+local ok10, r10 = LinkIn.onOrder({
+    ship = SHIP, action = "Mine", x = SHIP_X, y = SHIP_Y, size = 15, duration = 1,
+    escorts = { "Raven" },
+})
+check("R10 order 带护航 ok=true 且 accepted=true", ok10 == true and r10.accepted == true, r10)
+if ok10 == true and r10.accepted == true then
+    check("R10 回执 attackChance = 0.0075（护航进了原版函数 ✓）",
+        r10.risk and r10.risk.attackChance == 0.0075, r10.risk and r10.risk.attackChance)
+    check("R10 ★ 回执 == predict（同一份代码 ✓，修前这里是 0.03 vs 0.0075 ✗）",
+        r10.risk and r9.risk and r10.risk.attackChance == r9.risk.attackChance
+        and r10.risk.baseAttackChance == r9.risk.baseAttackChance,
+        tostring(r10.risk and r10.risk.attackChance) .. " vs " .. tostring(r9.risk and r9.risk.attackChance))
+end
 
 -- ===========================================================================
 print(string.format("== 共 %d 项断言，失败 %d 项 ==", checks, failures))
