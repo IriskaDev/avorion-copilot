@@ -18,7 +18,7 @@
   路径必须以 `moddata/` 开头（否则 `filename is not secure`），游戏路径
   `moddata/copilot/x.txt` ⇔ 磁盘 `%AppData%\Avorion\moddata\copilot\x.txt`。
   `listFilesOfDirectory` 不可靠（返回成功但空），用**固定文件名** + `os.remove`。
-- 决策层调研已完成，见 [`LLM-OPS.md`](../../LLM-OPS.md)（Mine/Salvage/Trade/Travel 的决策变量、
+- 决策层调研已完成，见 [`../game/llm-ops.md`](../game/llm-ops.md)（Mine/Salvage/Trade/Travel 的决策变量、
   `calculateAttackProbability` 风险模型、已知陷阱）。
 - 原生 TCP 通道（已打通并实测）：细节见 [`build-and-native.md`](build-and-native.md)。
 - ~~热重载：改逻辑不用重启游戏，`/copilot reload`~~ → **2026-10-18 起入口退役** ✗：
@@ -49,4 +49,15 @@
   每船的「目标」是点击行循环切换（`ListBoxEx` 放不下下拉框）。
 - **收尾**：临时诊断（原 `/copilot probe`，聊天入口已退役 ✗；函数还在 `cli.lua` ✓）
   与 DLL 里的 `numprobe`/逐步日志待清理；
-  `native\` 下的实验残留（`copilotprobe.dll`、`abi_stage.txt` 等）待清理。
+  `native\` 下的实验残留（`copilotprobe.c` 等源码）待清理 —— **二进制产物**已于 2026-10-19
+  收敛到 `build/`（见 [`overview.md`](overview.md) §根文档收敛记录同条规矩）。
+
+## 欠账清单（2026-10-19 从根目录交接单并入，逐条复核过 ✓）
+
+| 欠账 | 现状 / 证据 |
+|---|---|
+| 插件重试路径**缺驱动式断言** | 假 LLM 首轮只回推理 → 应断言「恰好重试一次」，目前没有这种用例 ✗ |
+| 各 plan 的概率**没按命令/档位分别标注** | Sell 的 0.27/0.14 与 Salvage 的 0.04 放一起容易混比 ✗（口径见 [`../game/mechanics/risk-and-ambush.md`](../game/mechanics/risk-and-ambush.md)） |
+| **六个后台命令未实现** | `Refine / Procure / Supply / Expedition / Maintenance / Escort` —— 价值最高的是 **Maintenance（修船补弹）** 与 **Expedition（无人区被动收入）**；资料库见 [`../game/goals-and-ops.md`](../game/goals-and-ops.md)，分层提案见 [`../game/ops/prompt-insert-proposal.md`](../game/ops/prompt-insert-proposal.md)（**提案未落地** ✓，等主人点头） |
+| ~~`null.x` 解引用洞~~ | **已复核：不算欠账** ✓ —— `plugin/dsh/src/tools.ts:946` 有 `sector !== undefined` 守卫；`plugin/dsh/src/index.ts:1479` 的 `targetSector` 类型是非空对象（`:1467` `{ x?: number; y?: number }`），只读 `.x/.y` |
+| 后台层**无战斗/巡逻/防守命令** | 这是**机制事实**（原版 `CommandType` 里没有），不是欠账；已写进机制（防模型幻觉）✓ |
