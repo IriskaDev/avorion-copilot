@@ -18,7 +18,9 @@ const PAIRS = [
   { skill: 'fleet-decision', copy: 'docs/game/ops/fleet-decision-skill.md' },
 ]
 
-const norm = (s) => s.replace(/\r\n/g, '\n').replace(/\s+$/, '')
+// ★ 两侧都做**整体 trim** ✓：BEGIN/END 标记必然带来一个换行（标记独占一行 ✓），
+//   只 trim 尾部会让「标记独占一行」的排版永远判成不一致 ✗（--sync 写完立刻又报漂移 ✓）。
+const norm = (s) => s.replace(/\r\n/g, '\n').replace(/^\s+/, '').replace(/\s+$/, '')
 let bad = 0
 
 for (const { skill, copy } of PAIRS) {
