@@ -184,6 +184,9 @@ local okT, rT = LinkIn.tradeRoutes(player, { ship = SHIP, x = SHIP_X, y = SHIP_Y
 check("③ tradeRoutes ok=true", okT == true, rT)
 if okT == true then
     check("③ box.containsShip=true", rT.box.containsShip == true, rT.box.containsShip)
+    check("③ shipPosition 回显原始坐标与格（与 predict 同口径 ✓）",
+        type(rT.shipPosition) == "table" and rT.shipPosition.x == SHIP_X and rT.shipPosition.cellX == SHIP_X,
+        type(rT.shipPosition))
     check("③ routeCount=1", rT.routeCount == 1, rT.routeCount)
     check("③ 路线名 = Drill", rT.routes[1] and rT.routes[1].name == "Drill", rT.routes[1] and rT.routes[1].name)
     check("③ 逐货数字在（basePrice/unitSize/profitPerSize ✓）",
