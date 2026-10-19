@@ -53,7 +53,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 生效四前提 + 具体步骤 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) P5 · [`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L2-L4。
 
 ## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）
-- 框**严格包含船**，位移留余量：21×21 用 ±8、15×15 用 ±6；下单前 `predict` 看 `box.containsShip`。
+- 框**严格包含船**，位移留余量：21×21 用 ±8、15×15 用 ±6；下单前 `predict` 看 `box.containsShip`（★ 采集类例外：主动贴角 ±7，见下）。
 - 护航生效 = ① 真需要（`baseAttackChance` 超/逼近闸门）② 在行动船**一跳航程**内（距离 ≤ 护航自己的 `reach`；**不必同星区** ✗）③ 有炮塔（`turretCount` 是槽位不是已装炮塔 ✗）④ 订单里带 `escorts:[…]`。
 - `fleet_escort` 只把护航 **Travel** 过去 ≠ 护航生效（真正生效靠订单里的 `escorts`）。
 - 不许给闲船编活：`action=None` 也是决策；战斗舰允许闲置。
@@ -68,6 +68,9 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - ★ 本金按可用资金 **30~50%**（100~150 万档）起步；押金不是成本；比「每趟利润 × 趟数」，别只看 `profitPerHour`（L23-L24）。
 - ★ 同一框心至少量 **3 种合法形状**（17x17 / 29x11 / 11x29），好货常只在一种里（L25）。
 - ★ 采矿一次 `predict {boxes:[…]}` 量 **6~8 框**（N≤24）：同区风险可从 3% 跳到 66%，别用单框否定整片（[`docs/game/lessons/mining.md`](docs/game/lessons/mining.md) L26）。
+- ★ **采集类（Mine / Salvage）量框：先把船放在框的一个角格上**（框心 = 船 ∓7），再去量；别习惯性把框心打在船上 —— 框心在船上船只够到 **±7** 半径，贴角能到 **±14**，同一张 15×15 框覆盖变成 **4 倍**（Refine 的 31×31 被原版按船重算，贴角无从谈起 ⚠）。
+- ★ **想够到某个方向的高产出区 → 把船贴在那个方向的角**（框心朝反方向挪），而不是把框心挪过去：挪过 ∓7 船就出框、下单被拒；±7 是边界格（原版含船判定是闭区间）但仍要核 `box.containsShip`。
+- ★ **贴角拿到的高产出框，别因为风险就放弃**：带上**在 reach 内**的护航重测 —— 同一框同一产出 73% → **2%**（真机 ✓）；护航不在 reach 内时 `escorts` **静默无效**（数字一个不变、也不报错）→ 带 / 不带各测一次比数字（L28）。
 - ★ 材料升级先 `mountQuote` 拿**当场** `baseCount/needUpgrade`；换设计后块数会变，别凭记忆（[`docs/game/lessons/materials.md`](docs/game/lessons/materials.md) L27）。
 - ★ **护航不是免费的降险手段**：同一框带 `escorts` 前后各测一次 `risk.baseAttackChance`；数字不变 = 没用 ✗，别假设（2026-10-20 真机 18%/26%/3% 一个没变，[`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L28）。
 - ★ **量框要在派单前最近一次**：船会动，批量 `predict` 几分钟就过期；派单前重查 `box.containsShip`、必要时重量（2026-10-20 实测 4/8 框 `SHIP_NOT_IN_AREA`）。
