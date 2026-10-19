@@ -18,7 +18,7 @@
 
 | 文件 | 一句话用途 |
 |---|---|
-| [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) | ★ 作业手册（单一入口）：原子字典 + 流程 P1-P8 + 铁律 R1-R10 + 故障对照 |
+| [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) | ★ 作业手册（单一入口）：原子字典 + **用法示例（回单/工具两套写法 + 三条链路）** + 流程 P1-P8 + 铁律 R1-R10 + 故障对照 |
 | [`ops/atomic-rpc.md`](ops/atomic-rpc.md) | 原子规范（每个原子的字段/证据/迁移路径） |
 | [`ops/tools-cheatsheet.md`](ops/tools-cheatsheet.md) | 工具速查（什么时候查什么、下单字段哪些真被读） |
 | [`ops/prompt-snippet.md`](ops/prompt-snippet.md) | 提示词片段（给改代码的 agent，待粘贴 + 该删清单） |
@@ -60,7 +60,7 @@
 | [`lessons/boxes.md`](lessons/boxes.md) | L1 框严格包含、位移留余量 |
 | [`lessons/escorts.md`](lessons/escorts.md) | L2-L4 护航四前提 / `fleet_escort` 只 Travel / 先判需不需要、L28 带 `escorts` ≠ 降险（同框实测数字不变） |
 | [`lessons/scouting.md`](lessons/scouting.md) | L6-L8/L16/L18/L20 侦察判据 / 换框 = 换一片 |
-| [`lessons/orders.md`](lessons/orders.md) | L5/L9-L11/L13/L15/L17/L19 下单纪律 / 商船友好星区 / 判船 |
+| [`lessons/orders.md`](lessons/orders.md) | L5/L9-L11/L13/L15/L17/L19 下单纪律 / 商船友好星区 / 判船、L32 **回单写法**（逐行文本，`escorts=` 不是 `["…"]`） |
 | [`lessons/queries.md`](lessons/queries.md) | L12 predict 关键字段可能被明细挤掉 |
 | [`lessons/wins.md`](lessons/wins.md) | L14 成功模式（list → predict 单框 → 批量 → 比较 → 下单） |
 | [`lessons/trade.md`](lessons/trade.md) | L22-L25 框形状逐字照抄 / 本金 30~50% / 比每趟 × 趟数 / 量三种形状 |
@@ -102,9 +102,10 @@
 | 我想知道 X | 读 Y |
 |---|---|
 | 我该产出什么格式？答案行怎么写、task 回显 | 本文件 §2（答案契约） |
-| 下单前完整作业流程（采矿/贸易/打捞/侦察/护航/召回/材料/改名） | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §3 |
+| 下单前完整作业流程（采矿/贸易/打捞/侦察/护航/召回/材料/改名） | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §4 |
 | 每个原子要什么参数 / 有没有副作用 / 一句话陷阱 | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §2 |
-| 下单被拒/结果不对 → 症状对照 | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §5 |
+| ★ **接口用法示例：回单逐行怎么写（`escorts=` 是逗号分隔船名）/ 工具 JSON 怎么写 / 三条端到端链路** | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §3 |
+| 下单被拒/结果不对 → 症状对照 | [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md) §6 |
 | 主人的硬规矩是什么 | [`rules/owner-rules.md`](rules/owner-rules.md) |
 | "安全"是什么意思 / safeMode 能不能开 | [`rules/owner-rules.md`](rules/owner-rules.md) + [`mechanics/risk-and-ambush.md`](mechanics/risk-and-ambush.md) |
 | 手上有哪些工具 / 该查哪个 `what` / 下单字段哪些真被读 | [`ops/tools-cheatsheet.md`](ops/tools-cheatsheet.md) |

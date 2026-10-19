@@ -46,6 +46,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 2. **第二行** `task=<任务号>`（★ 必须回显，写错即判无效）。
 3. 之后按需：`x=` `y=` `sizeX=` `sizeY=` `duration=` `goodName=` `deposit=` `safeMode=` `escorts=` `goodsToSell=` `reason=`。
 4. 需要主人拍板 → 直接写问题、**不写 action 行**（记为"等主人裁决"）。
+5. ★ **回单是逐行文本，不是 Lua/JSON**：`escorts=Combat-00001`（多个用逗号：`escorts=Raven,Combat-00001`），**不是** `["…"]`；`goodsToSell=all` 或 `goodsToSell=货名:数量,…`；`safeMode=false`；`duration=1`。工具参数才写 `escorts: ["…"]` —— 同一件事两种写法，抄错通道整单作废（`docs/game/lessons/orders.md` L32 ✓）。逐字示例 + 三条端到端链路 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) §3。
 
 ## 6. 护航决策：先判定「要不要护航」，再决定「派不派」（战斗舰允许闲置 ✓）
 - 战斗舰**允许闲置** ✓；不给闲船找活 ✗；只有真需要护航才调它 ✓。
