@@ -1597,6 +1597,7 @@ M.WHATS = {
     "blockUpgrade",     -- ★★ 原子：**某一种方块类型**材料升级（只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "shipUpgrade",      -- ★★ 原子：**整船**材料升级（独立接口；只有 confirm=true 才执行 ✓ 2026-10-18 加 ✓）
     "renameShip",       -- ★★ 原子：**改船名**（原版唯一入口 ShipDatabaseEntry:setNewName ✓ 服务端 ✓ 2026-10-18 加 ✓）
+    "panel",            -- ★★ 原子：**开关 Copilot 面板**（action=open|close|toggle ✓ 2026-10-19 加 ✓）
     "systemsFacts",     -- ★★ 原子：**只读**系统槽位/已装模块/处理能力（远程船 socketsKnown=false ✓ 2026-10-18 加 ✓）
     "dossier",          -- ★★ 单发路径用的**有界档案**（船 + 规则 + 能做什么 + 每个计划前几个候选 ✓）
     "tradePlan",        -- legacy：Trade 多区域 × 多商品 × 净收益（自己扫 + 自己推荐 ✗）

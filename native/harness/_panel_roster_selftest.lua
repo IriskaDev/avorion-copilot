@@ -141,7 +141,7 @@ local function newList()
     return list
 end
 
-local created = { labels = {}, buttons = {}, checkboxes = {}, lists = {} }
+local created = { labels = {}, buttons = {}, checkboxes = {}, lists = {}, textboxes = {} }
 
 local function newWindow()
     local w = { visible = false, caption = "", moveable = false, showCloseButton = false }
@@ -162,6 +162,12 @@ local function newWindow()
         local c = { rect = rect, caption = caption }
         created.checkboxes[#created.checkboxes + 1] = c
         return c
+    end
+    -- ★ 目标的**自然语言输入框**（主人 2026-10-19 要的 ✓）
+    function w:createTextBox(rect, callback)
+        local t = { rect = rect, text = "", callback = callback }
+        created.textboxes[#created.textboxes + 1] = t
+        return t
     end
     function w:createListBoxEx(rect)
         local l = newList()
@@ -239,12 +245,12 @@ for _, group in ipairs({ created.labels, created.buttons, created.checkboxes, cr
     for _, e in ipairs(group) do
         if e.rect ~= nil then
             if e.rect.lower.y < 9 then inside = false end
-            if e.rect.upper.y > 580 then inside = false end
+            if e.rect.upper.y > 648 then inside = false end
             if e.rect.upper.y > worst then worst = e.rect.upper.y end
         end
     end
 end
-check("① 所有控件都在 590 高的面板内", inside, "最低边 = " .. tostring(worst))
+check("① 所有控件都在 658 高的面板内", inside, "最低边 = " .. tostring(worst))
 
 -- ---------------------------------------------------------------------------
 -- ② 刷新：第 0 列勾 / 第 1 列文字 = 同一个名单
@@ -306,57 +312,87 @@ for _, n in ipairs(names) do if n == "Scout-00001" then has = true end end
 check("③ Scout-00001 立刻不在名单里", has == false, table.concat(names, ","))
 
 -- ---------------------------------------------------------------------------
--- ④ 任务列写的是**真目标**，不是没人读的 cfg.target
+-- ④ 任务列 = 预设（「自动」+ 多动作），写进**真目标**，不是没人读的 cfg.target
 -- ---------------------------------------------------------------------------
-print("== ④ 任务列：写进 copilot_goal_kind_<船>（goal.lua）==")
+print("== ④ 任务列：默认「自动」，指派 = 自然语言输入框 ==")
 -- ★ 关键反证：cfg 里 Miner-00001 明明写着 `Mine`（见 VALUES["copilot_auto_cfg"]），
---   但**真目标**是空的 → 列里必须显示「不指派」。只有这样才证明面板读的是 goal.lua、
---   没有去读那个没人消费的 cfg.target ✓✓
-check("④ 初始显示不是 Mine（证明读 goal.lua 而非 cfg.target）",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])) ~= "Mine",
+--   但**真目标**是空的 → 列里必须显示「Auto」（默认就是自动、不指派 ✓）。
+--   只有这样才证明面板读的是 goal.lua、没有去读那个没人消费的 cfg.target ✓✓
+check("④ 默认显示 Auto（证明读 goal.lua 而非 cfg.target）",
+    tostring(list:getEntry(4, rowOf["Miner-00001"])) == "Auto",
     tostring(list:getEntry(4, rowOf["Miner-00001"])))
-check("④ 初始真目标为空", #Goal.get(player, "Miner-00001").options == 0,
-    table.concat(Goal.get(player, "Miner-00001").options, ","))
+check("④ 默认没有文字目标（= 自动 ✓）", Goal.get(player, "Miner-00001").text == "",
+    Goal.get(player, "Miner-00001").text)
 
--- 点第一下："" 的下一档 = Mine
+-- ★ 点行**只载入输入框**，不改目标（主人要的是"自己写一句话"，不是点一下换一档 ✗✓）
 list.selected = rowOf["Miner-00001"]
 Panel.onShipSelected()
-applyLastSetAutoShips()
-check("④ 点一下 → 真目标 Mine", Goal.get(player, "Miner-00001").options[1] == "Mine",
-    tostring(Goal.get(player, "Miner-00001").options[1]))
-check("④ 显示同步 Mine", tostring(list:getEntry(4, rowOf["Miner-00001"])) == "Mine",
+check("④ 点行不改目标（真目标仍是空 ✓）",
+    Goal.get(player, "Miner-00001").text == "" and #Goal.get(player, "Miner-00001").options == 0, "")
+check("④ 输入框装的是这艘船的目标（此刻空串）", tostring(Panel.goalEditBox.text) == "",
+    tostring(Panel.goalEditBox.text))
+check("④ 输入框标题写着船名",
+    tostring(Panel.goalEditCaption.caption):find("Miner-00001", 1, true) ~= nil,
+    tostring(Panel.goalEditCaption.caption))
+
+-- ★★ 自然语言：写一句话 → 保存 → 真目标 text 就是它 ✓
+--   ★ onGoalSavePressed 是**客户端**回调（`if not onClient() then return end`），
+--     所以这里临时把 onClient 切成 true 再调用 —— 引擎里它本来就在客户端跑 ✓
+local function clickSaveAsClient()
+    local saved = onClient
+    onClient = function() return true end
+    Panel.onGoalSavePressed()
+    onClient = saved
+end
+
+local SENTENCE = "去西北方挖矿，遇到敌人就先跑"
+Panel.goalEditBox.text = SENTENCE
+clickSaveAsClient()
+local gcall = lastRPC("setShipGoalText")
+check("④ 保存走 setShipGoalText（船名 + 原文）",
+    gcall ~= nil and gcall.args[1] == "Miner-00001" and gcall.args[2] == SENTENCE,
+    tostring(gcall and gcall.args[1]))
+Panel.setShipGoalText(gcall.args[1], gcall.args[2])      -- 服务端真的执行一次 ✓
+check("④ 真目标 text = 玩家写的那句话", Goal.get(player, "Miner-00001").text == SENTENCE,
+    Goal.get(player, "Miner-00001").text)
+check("④ 那一行同步显示这句话（超宽截断 ✓）",
+    tostring(list:getEntry(4, rowOf["Miner-00001"])):find("去西北方", 1, true) ~= nil,
     tostring(list:getEntry(4, rowOf["Miner-00001"])))
 check("④ 名单没被目标操作改动（仍 4 艘）", #designated() == 4, tostring(#designated()))
 
--- 再点 → Salvage
+-- ★ 再次点行 → 输入框里装的是刚写的那句（而不是空 ✓）
 list.selected = rowOf["Miner-00001"]
 Panel.onShipSelected()
-applyLastSetAutoShips()
-check("④ 再点一次循环到 Salvage", Goal.get(player, "Miner-00001").options[1] == "Salvage",
-    tostring(Goal.get(player, "Miner-00001").options[1]))
+check("④ 再点该行：输入框回显那句话", tostring(Panel.goalEditBox.text) == SENTENCE,
+    tostring(Panel.goalEditBox.text))
 
--- ★ 多选项保护：API 写进来的 `Mine + Sell`，不能被"点了一个勾"的保存覆盖成单选 ✗
+-- ★ 清空 = 回到「自动」
+Panel.goalEditBox.text = ""
+clickSaveAsClient()
+gcall = lastRPC("setShipGoalText")
+Panel.setShipGoalText(gcall.args[1], gcall.args[2])
+check("④ 清空 → 真目标回到空（自动 ✓）", Goal.get(player, "Miner-00001").text == "",
+    Goal.get(player, "Miner-00001").text)
+check("④ 清空 → 那一行显示 Auto",
+    tostring(list:getEntry(4, rowOf["Miner-00001"])) == "Auto",
+    tostring(list:getEntry(4, rowOf["Miner-00001"])))
+
+-- ★ 动作白名单（RPC 设的）只读显示，且不会被"点勾"覆盖 ✗
 Goal.setOptions(player, "Salvager-00002", { "Mine", "Sell" })
 Panel.refreshShipList()
+check("④ 动作白名单显示为「限定 …」",
+    tostring(list:getEntry(4, rowOf["Salvager-00002"])):find("Limited", 1, true) ~= nil,
+    tostring(list:getEntry(4, rowOf["Salvager-00002"])))
 list:toggle(0, rowOf["Scout-00001"])
 Panel.onShipToggled()
 applyLastSetAutoShips()
 local multi = Goal.get(player, "Salvager-00002").options
-check("④ 碰勾不会覆盖 API 写的多选项目标", #multi == 2 and multi[1] == "Mine" and multi[2] == "Sell",
+check("④ 碰勾不会覆盖 RPC 写的动作白名单", #multi == 2 and multi[1] == "Mine" and multi[2] == "Sell",
     table.concat(multi, ","))
 -- 收尾：把 Scout 的勾改回去（保持 4 艘）
 list:toggle(0, rowOf["Scout-00001"])
 Panel.onShipToggled()
 applyLastSetAutoShips()
-
--- 循环一整圈（Salvage→Trade→Travel→Sell→Scout→Refine→不指派）
-for _ = 1, 6 do
-    list.selected = rowOf["Miner-00001"]
-    Panel.onShipSelected()
-    applyLastSetAutoShips()
-end
-check("④ 循环一整圈后回到「不指派」", #Goal.get(player, "Miner-00001").options == 0,
-    table.concat(Goal.get(player, "Miner-00001").options, ","))
 
 -- ---------------------------------------------------------------------------
 -- ⑤ 只读自检行：reportRoster 回执 = card.designated
@@ -373,6 +409,87 @@ check("⑤ 自检行文字含「4 / 4」且打 ✓",
     tostring(Panel.rosterLabel.caption):find("4 / 4", 1, true) ~= nil and
     tostring(Panel.rosterLabel.caption):find("✓", 1, true) ~= nil,
     tostring(Panel.rosterLabel.caption))
+
+-- ---------------------------------------------------------------------------
+-- ⑥ RPC 面板开关：`query {what="panel", action=open|close|toggle}`
+--    （主人 2026-10-19 决定：不做快捷键，做接口 ✓）
+--    服务端只写 seq + cmd；客户端 pollPanelCommand() 执行；再用 seq 防重复 ✓
+-- ---------------------------------------------------------------------------
+print("== ⑥ RPC 面板开关（服务端原子 + 客户端轮询）==")
+
+-- link_in.lua 是命名空间脚本，加载时只定义函数 + 末尾注册（框架替身给空实现 ✓）
+CopilotRpc = {
+    trace = function() end,
+    handle = function() end,
+    caps = function() return {} end,
+}
+CopilotNet = { emit = function() end }
+CopilotOut = { VER = 1 }
+local LinkIn = dofile("data/scripts/net/link_in.lua")
+
+-- 先把面板关掉，模拟"客户端当前不可见"（且它此前已经上报过一次 ✓）
+Panel.window.visible = false
+VALUES["copilot_panel_visible"] = "closed"
+
+local ok1, res1 = LinkIn.onQuery({ what = "panel", action = "open" })
+check("⑥ open 被接受", ok1 == true and res1.ok == true, tostring(res1))
+check("⑥ open 写了 cmd=open", tostring(VALUES["copilot_panel_cmd"]) == "open", tostring(VALUES["copilot_panel_cmd"]))
+check("⑥ open 的 seq = 1", tonumber(VALUES["copilot_panel_seq"]) == 1, tostring(VALUES["copilot_panel_seq"]))
+check("⑥ 回执里的 lastKnownVisible 是客户端回报（此刻 closed）",
+    tostring(res1.lastKnownVisible) == "closed", tostring(res1.lastKnownVisible))
+
+-- 客户端每拍读一次 → 面板打开
+Panel.pollPanelCommand()
+check("⑥ 客户端执行后面板 = 打开", Panel.window.visible == true, tostring(Panel.window.visible))
+check("⑥ 客户端已上报可见性 = open", tostring(VALUES["copilot_panel_visible"]) == "open",
+    tostring(VALUES["copilot_panel_visible"]))
+
+-- ★ 客户端→服务端那一跳必须走 callable（player value 只能服务端写 ✓）
+do
+    local saved = onClient
+    onClient = function() return true end
+    local before = #RPC
+    Panel.reportPanelVisible(true)
+    onClient = saved
+    local rpc = RPC[#RPC]
+    check("⑥ 客户端上报走的是 invokeServerFunction(reportPanelVisible)",
+        #RPC == before + 1 and rpc.name == "reportPanelVisible", tostring(rpc and rpc.name))
+end
+
+-- ★ 同一拍再轮询一次：seq 没变 → 不许重复执行（否则 open 会被反复 toggle ✓）
+local stillOpen = Panel.window.visible
+Panel.pollPanelCommand()
+check("⑥ 同一 seq 轮询两次不会重复执行", Panel.window.visible == stillOpen, tostring(Panel.window.visible))
+
+-- 关
+local ok2, res2 = LinkIn.onQuery({ what = "panel", action = "close" })
+check("⑥ close 被接受且 seq = 2", ok2 == true and tonumber(VALUES["copilot_panel_seq"]) == 2,
+    tostring(VALUES["copilot_panel_seq"]))
+check("⑥ close 的 lastKnownVisible = open（上一拍客户端报的 ✓）",
+    tostring(res2.lastKnownVisible) == "open", tostring(res2.lastKnownVisible))
+Panel.pollPanelCommand()
+check("⑥ 客户端执行后面板 = 关闭", Panel.window.visible == false, tostring(Panel.window.visible))
+
+-- toggle
+LinkIn.onQuery({ what = "panel", action = "toggle" })
+Panel.pollPanelCommand()
+check("⑥ toggle → 打开", Panel.window.visible == true, tostring(Panel.window.visible))
+LinkIn.onQuery({ what = "panel" })          -- 缺省 = toggle ✓
+Panel.pollPanelCommand()
+check("⑥ 缺省 action = toggle（→ 关闭）", Panel.window.visible == false, tostring(Panel.window.visible))
+
+-- 非法动作
+local badOk, badCode, badWhy = LinkIn.onQuery({ what = "panel", action = "explode" })
+check("⑥ 非法 action 被拒（BAD_REQUEST）", badOk == false and badCode == "BAD_REQUEST",
+    tostring(badCode) .. " / " .. tostring(badWhy))
+check("⑥ 被拒时不推进 seq", tonumber(VALUES["copilot_panel_seq"]) == 4,
+    tostring(VALUES["copilot_panel_seq"]))
+
+-- caps 自我声明里有 panel
+local _, caps = LinkIn.onQuery({ what = "caps" })
+local hasPanel = false
+for _, w in ipairs(caps.what or {}) do if w == "panel" then hasPanel = true end end
+check("⑥ caps.what 里声明了 panel", hasPanel, "")
 
 -- ---------------------------------------------------------------------------
 print("")

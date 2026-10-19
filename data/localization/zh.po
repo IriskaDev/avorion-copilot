@@ -132,10 +132,9 @@ msgstr "跃迁"
 msgid "OK"
 msgstr "✓"
 
-# 圆形按钮不常显（飞行时要按 SHIFT / 有窗口开着才出现），所以给它配了快捷键 ✓
-# ★ 不用 Ctrl+Shift+P：真机实测它会连带打开原版「玩家」窗口（引擎不检查修饰键 ✗）
-msgid "Copilot (Ctrl+Shift+F7)"
-msgstr "副驾驶（快捷键 Ctrl+Shift+F7）"
+# ★ 2026-10-19 主人决定：**不做快捷键，改成 RPC 原子** `query {what="panel", action=...}` ✓
+msgid "Copilot (open it over RPC too: query {what=\"panel\", action=\"open\"})"
+msgstr "副驾驶（也可以用 RPC 打开：query {what=\"panel\", action=\"open\"}）"
 
 msgid "Take-over"
 msgstr "接管状态"
@@ -146,6 +145,13 @@ msgstr "本船自驾"
 msgid "Task"
 msgstr "任务"
 
+# ---------- 任务列：默认「自动」（2026-10-19）----------
+# 主人：「很大程度上我是让决策者根据船的分类、装备决定船做什么，我自己并不会去设定它」
+# → 默认就是自动/不指派（决策层按分类+装备自己定 ✓）；要指派走下面的自然语言输入框 ✓
+#   （预设按钮已按主人第二次修正**去掉** ✗）
+msgid "Auto"
+msgstr "自动"
+
 msgid "Tick here = hand this ship to the AI. This is the roster the plugin reads."
 msgstr "在这里打勾 = 把这艘船交给 AI 管。插件读的就是这一列。"
 
@@ -154,9 +160,6 @@ msgstr "第 1 列勾的可读镜像（勾本身在界面上是个实心方块，
 
 msgid "The ship's own autopilot flag (copilot_auto_cfg). Stored only - the decision layer does not read it yet."
 msgstr "这艘船自己的自动驾驶员开关（copilot_auto_cfg）。目前只存着 —— 决策层还没读它。"
-
-msgid "The ship's real goal (copilot_goal_kind_<ship>). Click the row to cycle it."
-msgstr "这艘船的真实目标（copilot_goal_kind_<船名>）。点这一行可循环切换。"
 
 msgid "Taken over"
 msgstr "已接管"
@@ -167,8 +170,26 @@ msgstr "未接管"
 msgid "Roster (panel / server): "
 msgstr "名单（面板 / 服务端）："
 
-msgid "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 4 is read-only: the per-ship autopilot is stored but not wired into the decision layer yet.\nColumn 5 shows the ship's real task; click the row to cycle it. Only ticked ships are ever touched."
-msgstr "只有第 1 列是开关：它就是 AI 真正用的接管名单（勾在界面上是个「实心方块」，第 2 列会把它写成文字）。\n第 4 列只是只读：那艘船自己的自动驾驶员开关，决策层还没接入。\n第 5 列是这艘船的真实任务，点该行可循环切换。没打勾的船一律不碰。"
+# ---------- 任务列：默认自动 + 自然语言输入框（2026-10-19 主人第二次修正）----------
+# 主人：「不是空目标叫自动，而是默认就是自动、不指派；如果需要能够指派，
+#         最好是留个框，让玩家输入自然语言，而不是只给几个选项」✓✓
+msgid "Goal text: click a ship row first (empty = Auto)"
+msgstr "目标文字：先点一艘船的行，在这里写（清空 = 自动）"
+
+msgid "Goal text for "
+msgstr "目标文字："
+
+msgid "Save goal"
+msgstr "保存目标"
+
+msgid "Limited: "
+msgstr "限定："
+
+msgid "The ship's real goal. Default = Auto (nothing assigned: the AI decides from the ship's class and equipment). To assign, click a row and type a sentence below (stored as copilot_goal_<ship>). A read-only action whitelist set over RPC shows as 'Limited'."
+msgstr "这艘船的真实目标。默认「自动」= 不指派（AI 按船的分类与装备自己定）。要指派就点一行、在下面输入框里写一句话（存进 copilot_goal_<船名>）。RPC 设的动作白名单会以「限定」只读显示。"
+
+msgid "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 3 is read-only: the per-ship autopilot is stored but not wired into the decision layer yet.\nColumn 4 = Task. Default is Auto: nothing assigned, the AI decides from the ship's class and equipment. To assign, click a ship row and type a sentence in the goal box below (empty = Auto again).\nThis window can also be opened/closed over RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}."
+msgstr "只有第 1 列是开关：它就是 AI 真正用的接管名单（勾在界面上是个「实心方块」，第 2 列会把它写成文字）。\n第 3 列只是只读：那艘船自己的自动驾驶员开关，决策层还没接入。\n第 4 列是任务。默认「自动」= 不指派：AI 按船的分类与装备自己定。要指派就点一行、在下面的输入框里写一句话（清空 = 回到自动）。\n本窗口也能用 RPC 开关：query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}。"
 
 # 缺船长：硬门槛，只提示一次（否则每 tick 重试会刷屏）
 msgid "Copilot: this ship needs a captain before it can mine or salvage."

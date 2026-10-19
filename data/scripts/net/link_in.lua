@@ -509,6 +509,41 @@ function CopilotLinkIn.onQuery(data)
         local Goal = include("copilot/goal")
         return true, Goal.describe(player, name)
 
+    -- ★★ 2026-10-19 加（主人要求：面板开关做成 RPC 接口，不做快捷键 ✗✓）：
+    --   `query {what="panel", action="open"|"close"|"toggle"}` —— 开着/关掉 Copilot 面板。
+    --
+    --   机制（**单向**，谁都不猜谁的状态 ✓）：
+    --     ① 这里只写两个 player value：`copilot_panel_seq`（单调序号 ✓）+ `copilot_panel_cmd`（动作 ✓）
+    --        ★ 用**序号**而不是状态位：否则"玩家手动关了面板之后再 open"会被误判成"已经是 open" ✗✓
+    --     ② 客户端 `player/ui/panel.lua` 的 `CopilotUI.pollPanelCommand()` 每拍读一次并执行 ✓
+    --     ③ 客户端执行完把**真实可见性**回报到 `copilot_panel_visible`（`reportPanelVisible` ✓），
+    --        回执里的 `lastKnownVisible` 就是它 ✓ —— 命令发出去到底开没开，有据可查 ✓
+    --
+    --   ★ 这是"写"操作却放在 query 里：与 `mountUpgrade` / `blockUpgrade` / `shipUpgrade` /
+    --     `renameShip` 同一个先例 ✓（query = 具名接口，写不写由参数/语义决定，不是"query 只读" ✗）。
+    elseif what == "panel" then
+        local action = tostring(data.action or "toggle"):lower()
+        if action ~= "open" and action ~= "close" and action ~= "toggle" then
+            return false, "BAD_REQUEST",
+                "query panel needs data.action = open | close | toggle (got '" .. action .. "')"
+        end
+
+        local seq = tonumber(player:getValue("copilot_panel_seq") or 0) or 0
+        seq = seq + 1
+
+        player:setValue("copilot_panel_seq", seq)
+        player:setValue("copilot_panel_cmd", action)
+
+        return true, {
+            ok = true,
+            command = action,
+            seq = seq,
+            lastKnownVisible = tostring(player:getValue("copilot_panel_visible") or "unknown"),
+            how = "the game client applies this on its next 1 Hz tick " ..
+                "(player value copilot_panel_cmd / copilot_panel_seq); " ..
+                "lastKnownVisible is the client's own report BEFORE this command",
+        }
+
     elseif what == "caps" then
         -- 我支持哪些 what（**自我声明** ✓，DSH 不用猜 ✓）
         return true, { what = Card.WHATS, predictParams = Card.PREDICT_PARAMS, tradeRoutesParams = Card.TRADE_ROUTES_PARAMS, tradeEvaluateParams = Card.TRADE_EVALUATE_PARAMS, sectorFactsParams = Card.SECTOR_FACTS_PARAMS, mountQuoteParams = Card.MOUNT_QUOTE_PARAMS, mountUpgradeParams = Card.MOUNT_UPGRADE_PARAMS, shipQuoteParams = Card.SHIP_QUOTE_PARAMS, blockQuoteParams = Card.BLOCK_QUOTE_PARAMS, blockUpgradeParams = Card.BLOCK_UPGRADE_PARAMS, shipUpgradeParams = Card.SHIP_UPGRADE_PARAMS, renameShipParams = Card.RENAME_SHIP_PARAMS, systemsFactsParams = Card.SYSTEMS_FACTS_PARAMS }
