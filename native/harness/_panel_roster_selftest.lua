@@ -146,7 +146,10 @@ end
 local created = { labels = {}, buttons = {}, checkboxes = {}, lists = {}, textboxes = {} }
 
 local function newWindow()
-    local w = { visible = false, caption = "", moveable = false, showCloseButton = false }
+    -- ★ closeableWithEscape：Avorion 窗口**没有** onCloseFunction ✗
+    --   ESC 能不能关窗只看这个属性（`Documentation/Window.html:363` ✓）
+    local w = { visible = false, caption = "", moveable = false, showCloseButton = false,
+                closeableWithEscape = false }
     function w:show() self.visible = true end
     function w:hide() self.visible = false end
     function w:createLabel(rect, text, font)
@@ -549,6 +552,77 @@ local _, caps = LinkIn.onQuery({ what = "caps" })
 local hasPanel = false
 for _, w in ipairs(caps.what or {}) do if w == "panel" then hasPanel = true end end
 check("⑥ caps.what 里声明了 panel", hasPanel, "")
+
+-- ---------------------------------------------------------------------------
+-- ⑦ ESC 关窗（2026-10-19，主人原话：「这个界面不吃 ESC…要做成 HOOK 住 ESC 键」）
+--
+-- ★ 先纠正一个**错误前提**：Avorion 的窗口类**没有** `onCloseFunction`
+--   （`Documentation/Window.html` 全文 0 处、全原版脚本 0 处引用 ✗✓）。
+--   ESC 关窗的真实开关是 **`Window.closeableWithEscape`**（`Window.html:363-365`），
+--   原版用法：`player/ui/diplomacy.lua:1012` / `entity/merchants/researchstation.lua:141`。
+--
+-- ★ 离线能验的一半：属性挂上 ✓ + 关窗路径（引擎 hide）幂等 ✓ + 关后 visible=false ✓
+--   + 可见性补报 ✓。ESC 按键本身由引擎处理，替身模拟不了 → 真机结论在报告里 ✓
+-- ---------------------------------------------------------------------------
+print("== ⑦ ESC 关窗（closeableWithEscape + 幂等关闭路径 + 补报）==")
+check("⑦ 主面板窗口 closeableWithEscape = true（根因就是缺它）",
+    Panel.window.closeableWithEscape == true, tostring(Panel.window.closeableWithEscape))
+
+-- 引擎处理 ESC 的动作 = window:hide()（和 X 按钮同一条路径 ✓，不会销毁窗口）
+-- 故意把回报值留成旧值 "open" → 证明补报会纠正它 ✓
+Panel.lastVisibleReport = true
+VALUES["copilot_panel_visible"] = "open"
+
+local savedClient = onClient
+onClient = function() return true end
+
+local before = #RPC
+local okFirst = pcall(function()
+    Panel.window:hide()                 -- ← 引擎的 ESC 行为
+    Panel.watchPanelVisibility()
+end)
+local afterFirst = #RPC
+local escCall = lastRPC("reportPanelVisible")
+
+local okSecond = pcall(function()
+    Panel.window:hide()                 -- ← 再按一次 ESC（窗口本来就关着）
+    Panel.watchPanelVisibility()
+end)
+local afterSecond = #RPC
+
+onClient = savedClient
+
+check("⑦ ESC 关窗（hide）后 isVisible = false", Panel.window.visible == false,
+    tostring(Panel.window.visible))
+check("⑦ 连按两次 ESC 都不报错（幂等）", okFirst and okSecond,
+    tostring(okFirst) .. " / " .. tostring(okSecond))
+check("⑦ 第一次 ESC 补报 reportPanelVisible(false)",
+    escCall ~= nil and escCall.args[1] == false,
+    tostring(escCall and escCall.args[1]))
+check("⑦ 第二次 ESC 不重复发 RPC（只在可见性变化时报 ✓）", afterSecond == afterFirst,
+    tostring(afterFirst) .. " -> " .. tostring(afterSecond))
+
+-- 服务端真的执行一次（玩家 value 只能服务端写 ✓）
+Panel.reportPanelVisible(false)
+check("⑦ 服务端回报值 = closed（RPC 回执不再说假话 ✓）",
+    tostring(VALUES["copilot_panel_visible"]) == "closed",
+    tostring(VALUES["copilot_panel_visible"]))
+
+-- 关了还能再开，再关仍不报错（关闭路径可重复走 ✓）
+Panel.togglePanel()
+check("⑦ 重新打开后 isVisible = true", Panel.window.visible == true,
+    tostring(Panel.window.visible))
+Panel.window:hide()
+Panel.watchPanelVisibility()
+check("⑦ 再次关闭仍不报错且 isVisible = false", Panel.window.visible == false,
+    tostring(Panel.window.visible))
+
+-- ★ 子窗口（炮塔底座材料）也要吃 ESC，否则 ESC 会跳过它去关下面的主面板 ✗
+Panel.buildMountsWindow()
+check("⑦ 炮塔底座子窗口 closeableWithEscape = true",
+    Panel.mountsWindow ~= nil and Panel.mountsWindow.closeableWithEscape == true,
+    tostring(Panel.mountsWindow and Panel.mountsWindow.closeableWithEscape))
+Panel.mountsWindow:hide()
 
 -- ---------------------------------------------------------------------------
 print("")
