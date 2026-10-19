@@ -34,10 +34,24 @@ local FOLLOW_VANILLA_VISIBILITY = true
 -- Startup logging to the client/server log (diagnostic).
 local DEBUG = false
 
+-- ★★ 2026-10-19 加：**键盘快捷键**（主人要求）
+--   「那个 UI 也不是常显的，你直接点点得不太准」→ 圆形按钮只在"非飞行 / 按住 SHIFT /
+--   有窗口开着"时才显示（vanillaRowVisible ✓），所以给它配一个随时能按的快捷键 ✓。
+--   组合键：**Ctrl + Shift + F7**。
+--   ★ 为什么不是 P：真机实测 Ctrl+Shift+P **会顺便打开原版的「玩家」窗口** ✗✓ ——
+--     引擎对自带绑定不检查修饰键（2026-10-19 21:57 实测：面板开了，玩家窗口也开了 ✗）。
+--   ★ F7 单键真机实测**什么也不触发** ✓（2026-10-19 21:60 截图对比），
+--     所以 Ctrl+Shift+F7 与游戏自带快捷键不冲突 ✓✓
+--   （若哪天撞了，只改 `panelHotkeyKey()` 里那一个键名即可）
+local HOTKEY_NEEDS_CTRL = true
+local HOTKEY_NEEDS_SHIFT = true
+
 -- Panel geometry (pixels). The content is laid out with a UIVerticalLister, so the height
 -- has to fit every row below with room to spare.
 local PANEL_WIDTH = 440
-local PANEL_HEIGHT = 500
+-- ★ 2026-10-19：加了「列头行」和「名单自检行」两行，高度从 500 提到 590 ✓
+--   （内容总高 ≈ 468 + 10 个 6px 间隙 + 上下 10px 边距 ≈ 548）
+local PANEL_HEIGHT = 590
 
 -- Human readable version of Copilot.state (published by the server side brain).
 -- Translated through the game's own language setting: %_t looks the string up in
@@ -64,6 +78,10 @@ self.stateLabel = nil
 self.toggleButton = nil
 self.exploreCheckBox = nil
 self.shipList = nil
+self.rosterLabel = nil          -- ★ 名单自检行（面板 N / 服务端 M）✓
+self.shipRows = nil             -- ★ 每行缓存：{ name, auto, goal, goalOptions } ✓
+self.mirrorGuard = false        -- ★ 勾→文字镜像 的防重入标志 ✓
+self.hotkeyLatched = false      -- ★ 快捷键边沿锁存（按住不连发）✓
 self.hintLabel = nil
 
 self.hudContainer = nil
@@ -142,6 +160,70 @@ end
 
 function CopilotUI.onPreRenderHud(state)
     CopilotUI.updateHudButtonVisibility()
+    CopilotUI.pollHotkey()
+end
+
+-- ---------------------------------------------------------------------------
+-- ★★ 面板快捷键（Ctrl + Shift + F7）—— 2026-10-19 加
+--
+-- 每帧轮询 + **边沿锁存**：按住不放只触发一次 ✓（引擎的 keyPressed 是"当前是否按下"，
+-- 不是"这一帧刚按下"，所以必须自己做边沿 ✓）。
+-- API 照抄原版用法：`Keyboard():keyPressed(KeyboardKey.xxx)`、`Keyboard().shiftPressed`
+-- （mapcommands.lua:1766-1777 同款 ✓）。
+-- ---------------------------------------------------------------------------
+
+-- 键名容错：F7 为主，F8 为备（都取不到就返回 nil，快捷键静默失效，绝不让面板挂掉 ✓）。
+-- ★ 不用字母键：真机实测引擎对自带绑定不检查修饰键 → Ctrl+Shift+P 会连带打开「玩家」窗口 ✗
+local hotkeyKeyCache
+local function panelHotkeyKey()
+    if hotkeyKeyCache ~= nil then return hotkeyKeyCache end
+
+    -- 写成显式字段访问：枚举是引擎侧的表，别指望 `KeyboardKey["F7"]` 这种字符串索引一定通 ✓
+    for _, probe in ipairs({
+        function() return KeyboardKey.F7 end,
+        function() return KeyboardKey.F8 end,
+    }) do
+        local ok, key = pcall(probe)
+        if ok and key ~= nil then
+            hotkeyKeyCache = key
+            return key
+        end
+    end
+
+    hotkeyKeyCache = false
+    return nil
+end
+
+function CopilotUI.hotkeyDown()
+    local ok, down = pcall(function()
+        local keyboard = Keyboard()
+        if keyboard == nil then return false end
+        if HOTKEY_NEEDS_CTRL and not keyboard.controlPressed then return false end
+        if HOTKEY_NEEDS_SHIFT and not keyboard.shiftPressed then return false end
+        local key = panelHotkeyKey()
+        if key == nil then return false end
+        return keyboard:keyPressed(key) == true
+    end)
+    return (ok and down) and true or false
+end
+
+function CopilotUI.pollHotkey()
+    -- 首次轮询往客户端日志报一次（键名解析不到时，这条就是唯一的线索 ✓；
+    -- 同时也让日志里能查到"这个版本的面板快捷键是什么" ✓）
+    if not self.hotkeyReported then
+        self.hotkeyReported = true
+        print("[copilot] panel hotkey: Ctrl+Shift+F7 (KeyboardKey.F7 = " ..
+            tostring(panelHotkeyKey()) .. ")")
+    end
+
+    local down = CopilotUI.hotkeyDown()
+
+    if down and not self.hotkeyLatched then
+        self.hotkeyLatched = true
+        CopilotUI.togglePanel()
+    elseif not down then
+        self.hotkeyLatched = false
+    end
 end
 
 function CopilotUI.getUpdateInterval()
@@ -153,6 +235,8 @@ function CopilotUI.updateClient(timeStep)
     -- the panel is opened so it never fights with the player's clicks
     if self.window and self.window.visible then
         CopilotUI.refresh()
+        -- ★ 只刷新底部那行「面板 N / 服务端 M」自检（不重建列表，免得和玩家的点击打架）✓
+        CopilotUI.refreshRosterReport()
     end
 
     -- 炮塔底座面板：只在它开着时同步服务端给的报价/结果（服务端只在按钮/选船时算 ✓）
@@ -166,6 +250,23 @@ end
 -- ---------------------------------------------------------------------------
 -- panel
 -- ---------------------------------------------------------------------------
+
+-- 列布局（宽度之和必须 = PANEL_WIDTH - 20，即 lister 的左右各 10px）✓
+-- ★ 必须定义在 buildPanel **之前**：local 的作用域从声明处开始，放后面会被当成 nil 全局 ✗✓
+-- （2026-10-19 harness 抓到的真 bug：`attempt to call global 'shipColumns' (a nil value)`）
+local function shipColumns()
+    return {
+        { width = 26,  header = "OK"%_t,
+          tooltip = "Tick here = hand this ship to the AI. This is the roster the plugin reads."%_t },
+        { width = 84,  header = "Take-over"%_t,
+          tooltip = "Read-only mirror of column 1, spelled out (the tick itself renders as a filled box)."%_t },
+        { width = 140, header = "Ship"%_t },
+        { width = 60,  header = "Auto/P"%_t,
+          tooltip = "The ship's own autopilot flag (copilot_auto_cfg). Stored only - the decision layer does not read it yet."%_t },
+        { width = 110, header = "Task"%_t,
+          tooltip = "The ship's real goal (copilot_goal_kind_<ship>). Click the row to cycle it."%_t },
+    }
+end
 
 function CopilotUI.buildPanel()
     local res = getResolution()
@@ -196,26 +297,50 @@ function CopilotUI.buildPanel()
 
     window:createLabel(lister:nextRect(22), "Ships operated by the AI"%_t, 16)
 
-    -- 四列：名单勾选 | 船名 | 该船的 Autopilot | 目标
+    -- ★★ 2026-10-19 重做列布局（主人真机反馈：「这列一个勾都没有」）✗→✓
     --
-    -- ListBoxEx 的行里放不下下拉框（列类型只有 Icon/Text/CheckBox/PixelIcon/Texture），
-    -- 所以「目标」是文本列，靠**点击该行**在选项之间循环。
+    -- 现场查明（真机截图 + RPC，不是推测）：
+    --   · ListBoxEx 的 CheckBox 把**已勾**画成「实心方块」、未勾画成「空框」——
+    --     面板里没有 ✓ 号，于是主人把那 4 个实心方块读成了「一个都没勾」✗✓
+    --   · 那 4 个实心方块恰好是 Miner-00001 / Miner-00002 / Salvager-00001 / Trader-00001，
+    --     与 `fleet_query {what:list}` 的 `designated: 4` **完全一致** ✓✓（同源 ✓）
+    --   · 旧的「四列」里有**两个**勾选框（第 0 列名单、第 2 列 c.auto）→ 谁也说不清哪个生效 ✗
     --
-    -- 重要：这一列的开关只管**非玩家船**。玩家自己正在开的那条船由上面的主开关
-    -- （Autopilot: ON/OFF）负责，两者互不影响。
-    local list = window:createListBoxEx(lister:nextRect(210))
+    -- 所以现在是五列，**只有一个可写的勾**：
+    --   [0] ✓      = 生效名单（`copilot_auto_ships`，插件 `designated` 数的就是它）✓ 唯一开关 ✓
+    --   [1] 接管状态 = 上面那个勾的**文字镜像**（✓ 已接管 / — 未接管），肉眼可读 ✓
+    --   [2] 舰船
+    --   [3] 本船自驾 = `copilot_auto_cfg` 的 auto 字段，**只读**（全仓库无消费方 ✗ → 标"未接入"）
+    --   [4] 任务     = 真目标 `copilot_goal_kind_<船名>`（goal.lua）✓，点该行循环 ✓
+    local headerRect = lister:nextRect(18)
+    local listRect = lister:nextRect(220)
+
+    local columns = shipColumns()          -- 宽度之和 = PANEL_WIDTH - 20（lister 左右各 10）✓
+
+    local list = window:createListBoxEx(listRect)
     self.shipList = list
-    list.columns = 4
-    list:setColumnWidth(0, 26)
-    list:setColumnWidth(1, size.x - 26 - 84 - 130 - 40)
-    list:setColumnWidth(2, 84)
-    list:setColumnWidth(3, 130)
+    list.columns = #columns
+    do
+        local x = 0
+        for i, col in ipairs(columns) do
+            list:setColumnWidth(i - 1, col.width)
+            local label = window:createLabel(
+                Rect(vec2(headerRect.lower.x + x, headerRect.lower.y),
+                     vec2(headerRect.lower.x + x + col.width, headerRect.upper.y)),
+                col.header, 11)
+            label.tooltip = col.tooltip
+            x = x + col.width
+        end
+    end
     list.rowHeight = 22
     list.entriesSelectable = true
     list.onSelectFunction = "onShipSelected"
 
-    self.hintLabel = window:createLabel(lister:nextRect(44), "", 12)
-    self.hintLabel.caption = "Only ticked ships are ever touched. Everything else is left alone.\nThe decision layer itself is not wired up yet - this only stores your selection."%_t
+    -- 只读自检：面板看到的名单 vs 服务端（= 插件同源）看到的名单 ✓
+    self.rosterLabel = window:createLabel(lister:nextRect(18), "", 11)
+
+    self.hintLabel = window:createLabel(lister:nextRect(58), "", 11)
+    self.hintLabel.caption = "Column 1 is the ONLY switch: it is the roster the AI really uses (a tick renders as a FILLED box, column 2 spells it out).\nColumn 4 is read-only: the per-ship autopilot is stored but not wired into the decision layer yet.\nColumn 5 shows the ship's real task; click the row to cycle it. Only ticked ships are ever touched."%_t
 
     -- ★ 炮塔底座材料升级（2026-10-17）—— 只在**玩家点击**后才动，绝不自动 ✓
     self.mountsButton = window:createButton(lister:nextRect(30), "Turret base materials..."%_t,
@@ -256,30 +381,34 @@ end
 -- ship list
 -- ---------------------------------------------------------------------------
 
--- 每艘船的目标选项（第一期）。键是稳定标识，显示名走翻译。
+-- 每艘船的任务倾向（第一期）。键 = **goal.lua 认的规范动作名**（`lib/copilot/goal.lua:102`
+-- 的 KNOWN_ACTIONS：Mine/Salvage/Trade/Travel/Sell/Scout/Refine/None，大小写容错 ✓），
+-- 显示名走翻译。
 -- ListBoxEx 放不下下拉框，所以「点击该行」就往后循环一个。
--- 同上：顶层带 %_t 的表会让 /copilot reload 失败 → 放进函数体，用到时再建 ✓
+-- 同上：顶层带 %_t 的表会让 reload 失败 → 放进函数体，用到时再建 ✓
 local function targetsTable()
     return {
         { key = "",        label = "No task assigned"%_t },
-        { key = "mine",    label = "Mine"%_t },
-        { key = "salvage", label = "Salvage"%_t },
-        { key = "trade",   label = "Trade"%_t },
-        { key = "travel",  label = "Travel"%_t },
+        { key = "Mine",    label = "Mine"%_t },
+        { key = "Salvage", label = "Salvage"%_t },
+        { key = "Trade",   label = "Trade"%_t },
+        { key = "Travel",  label = "Travel"%_t },
         -- ★ 2026-10-17 补全 ✗→✓：面板与 `copilot/goal` 的已知动作必须一致 ✓
         --   （旧表只有 Mine/Salvage/Trade/Travel 4 条 → Sell/Scout/Refine 在这个循环里根本选不到 ✗）
-        { key = "sell",    label = "Sell"%_t },
-        { key = "scout",   label = "Scout"%_t },
-        { key = "refine",  label = "Refine"%_t },
+        { key = "Sell",    label = "Sell"%_t },
+        { key = "Scout",   label = "Scout"%_t },
+        { key = "Refine",  label = "Refine"%_t },
     }
 end
 
+-- 列布局在文件前面定义（buildPanel 要用，local 作用域必须先声明 ✓）
 local function targetLabel(key)
-    local targets = targetsTable()
-    for _, t in ipairs(targets) do
+    for _, t in ipairs(targetsTable()) do
         if t.key == key then return t.label end
     end
-    return targets[1].label
+    -- 玩家用 API 写进去的其它选项（goal.lua 允许）→ 原样显示，不吞 ✓
+    if key ~= nil and key ~= "" then return tostring(key) end
+    return targetsTable()[1].label
 end
 
 local function nextTargetKey(key)
@@ -292,8 +421,34 @@ local function nextTargetKey(key)
     return targets[1].key
 end
 
+-- ★★ 2026-10-19：面板第 4 列读写的**真目标**是 goal.lua 的 per-ship player value：
+--   `copilot_goal_kind_<船名>`（换行分隔的规范动作名）+ `copilot_goal_<船名>`（自由文字）
+--   —— 见 `lib/copilot/goal.lua:30-38 / 53-67` ✓
+--   旧代码点这一列写的是 `copilot_auto_cfg` 的 target 字段 ✗ —— 那个字段**全仓库零消费方**
+--   （grep `shipConfig`：`card.lua:134` / `ops.lua:85` 两处定义，零处调用）→ 点了什么也不会发生 ✗✓
+local GOAL_KIND_PREFIX = "copilot_goal_kind_"
+
+local function readShipGoal(player, name)
+    local raw = tostring(player:getValue(GOAL_KIND_PREFIX .. name) or "")
+    local options = {}
+    for line in raw:gmatch("[^\n]+") do
+        options[#options + 1] = line
+    end
+    return options
+end
+
+local function goalDisplay(options)
+    if #options == 0 then return targetLabel("") end
+    if #options == 1 then return targetLabel(options[1]) end
+    -- 多选项（玩家用 API 写的）→ 全部显示，别假装只有一个 ✓
+    local labels = {}
+    for _, o in ipairs(options) do labels[#labels + 1] = targetLabel(o) end
+    return table.concat(labels, " / ")
+end
+
 -- 每船配置存成 "船名|autopilot|目标" 每行一条，和名单一样是纯字符串
 -- （player:setValue 对表支持未验证，见 AGENTS.md）。
+-- ★ auto 现在只做**只读展示**（没人读它 ✗）；target 与真目标保持一致（rename.lua 会迁移这两份 ✓）
 local function decodeShipCfg(text)
     local cfg = {}
     for line in tostring(text or ""):gmatch("[^\n]+") do
@@ -316,6 +471,13 @@ local function encodeShipCfg(cfg, order)
     return table.concat(lines, "\n")
 end
 
+-- 名单里几艘（同一个 key，用于自检行 ✓）
+local function countSet(set)
+    local n = 0
+    for _ in pairs(set) do n = n + 1 end
+    return n
+end
+
 function CopilotUI.refreshShipList()
     if not self.shipList then return end
 
@@ -333,37 +495,106 @@ function CopilotUI.refreshShipList()
     table.sort(names)
 
     self.shipOrder = names
+    -- 每行的缓存：勾选框状态以**列表里的勾**为准（保存时重新读），这里只存只读列与目标 ✓
+    self.shipRows = {}
 
     for _, name in ipairs(names) do
         self.shipList:addRow()
         local row = self.shipList.rows - 1
         local c = cfg[name] or {}
+        local goalOptions = readShipGoal(player, name)
+        local goal = goalOptions[1] or ""
 
-        -- A ticked box is expressed as a non-empty entry text, which is exactly how the
-        -- vanilla sell command toggles its checkboxes.
-        self.shipList:setEntry(0, row, auto[name] and "checked" or "", false, false, ColorRGB(1, 1, 1))
+        self.shipRows[row + 1] = {
+            name = name,
+            auto = c.auto and true or false,
+            goal = goal,
+            goalOptions = goalOptions,
+        }
+
+        local taken = auto[name] and true or false
+
+        -- [0] 生效名单的勾（唯一可写）
+        self.shipList:setEntry(0, row, taken and "checked" or "", false, false, ColorRGB(1, 1, 1))
         self.shipList:setEntryType(0, row, ListBoxEntryType.CheckBox)
 
-        self.shipList:setEntry(1, row, tostring(name), false, false, ColorRGB(0.9, 0.9, 0.9))
+        -- [1] 上面那个勾的文字镜像 —— 引擎把"已勾"画成实心方块、没有 ✓ 号，
+        --     所以这里再写一遍，肉眼才读得出来 ✓✓
+        self.shipList:setEntry(1, row, CopilotUI.takeoverText(taken), false, false,
+            taken and ColorRGB(0.55, 1.0, 0.6) or ColorRGB(0.62, 0.62, 0.62))
         self.shipList:setEntryType(1, row, ListBoxEntryType.Text)
 
-        -- 这艘船自己的 Autopilot（只管非玩家船；玩家自己的船看上面的主开关）
-        self.shipList:setEntry(2, row, c.auto and "checked" or "", false, false, ColorRGB(1, 1, 1))
-        self.shipList:setEntryType(2, row, ListBoxEntryType.CheckBox)
+        -- [2] 船名
+        self.shipList:setEntry(2, row, tostring(name), false, false, ColorRGB(0.9, 0.9, 0.9))
+        self.shipList:setEntryType(2, row, ListBoxEntryType.Text)
 
-        -- 目标列：点击该行循环切换
-        self.shipList:setEntry(3, row, targetLabel(c.target), false, false, ColorRGB(0.7, 0.9, 1.0))
+        -- [3] 该船自己的 Autopilot：只读（决策层没接它）✗
+        self.shipList:setEntry(3, row, self.shipRows[row + 1].auto and "ON"%_t or "OFF"%_t,
+            false, false, ColorRGB(0.72, 0.72, 0.72))
         self.shipList:setEntryType(3, row, ListBoxEntryType.Text)
+
+        -- [4] 任务倾向（真目标）
+        self.shipList:setEntry(4, row, goalDisplay(goalOptions), false, false, ColorRGB(0.7, 0.9, 1.0))
+        self.shipList:setEntryType(4, row, ListBoxEntryType.Text)
     end
 
     self.shipList.onChangedFunction = "onShipToggled"
+
+    -- 自检行：面板这份名单 vs 服务端（插件同源）那份 ✓
+    CopilotUI.refreshRosterReport()
+    invokeServerFunction("reportRoster")
+end
+
+-- 第 1 列的文字（翻译走 zh.po）
+function CopilotUI.takeoverText(taken)
+    if taken then return "✓ " .. "Taken over"%_t end
+    return "— " .. "Not taken over"%_t
+end
+
+-- 把第 0 列的勾同步到第 1 列的文字镜像。
+-- ★ 写在 onChanged 回调里，所以要防重入（写 entry 可能再次触发 changed）✓
+function CopilotUI.syncRowMirrors()
+    if not self.shipList or self.mirrorGuard then return end
+    self.mirrorGuard = true
+    for i = 0, self.shipList.rows - 1 do
+        local taken = (self.shipList:getEntry(0, i) or "") ~= ""
+        self.shipList:setEntry(1, i, CopilotUI.takeoverText(taken), false, false,
+            taken and ColorRGB(0.55, 1.0, 0.6) or ColorRGB(0.62, 0.62, 0.62))
+        self.shipList:setEntryType(1, i, ListBoxEntryType.Text)
+    end
+    self.mirrorGuard = false
+end
+
+-- 自检行：面板读到的名单 vs 服务端（`CopilotUI.reportRoster`，与插件同一个解析器）✓
+-- 两边不一致 = 真出问题（客户端那份滞后），会显式打 ✗ 而不是让人误会 ✓✓
+function CopilotUI.refreshRosterReport()
+    if not self.rosterLabel then return end
+
+    local player = Player()
+    if not player then return end
+
+    local panelCount = countSet(decodeShipSet(player:getValue("copilot_auto_ships")))
+    local prefix = "Roster (panel / server): "%_t
+
+    local report = tostring(player:getValue("copilot_roster_report") or "")
+    local serverCount = report:match("^(%d+)|")
+    if serverCount == nil then
+        self.rosterLabel.caption = prefix .. panelCount .. " / ?"
+        return
+    end
+
+    serverCount = tonumber(serverCount)
+    local mark = (serverCount == panelCount) and "✓" or "✗ MISMATCH"
+    self.rosterLabel.caption = prefix .. panelCount .. " / " .. tostring(serverCount) .. "  " .. mark
 end
 
 function CopilotUI.onShipToggled()
+    -- ★ 先更新文字镜像（勾本身已经在列表里了），再落盘 ✓
+    CopilotUI.syncRowMirrors()
     CopilotUI.saveShipList()
 end
 
--- 点击某一行 = 把这艘船的目标往后循环一个。
+-- 点击某一行 = 把这艘船的任务往后循环一个（写进**真目标** goal.lua ✓）。
 -- ListBoxEx 的行里放不下下拉框，所以用「点行切换」代替；这也顺便让目标可改。
 function CopilotUI.onShipSelected()
     if not self.shipList then return end
@@ -371,35 +602,35 @@ function CopilotUI.onShipSelected()
     local row = self.shipList.selected
     if row == nil or row < 0 or row >= self.shipList.rows then return end
 
-    local shown = self.shipList:getEntry(3, row)
-    local current = ""
-    -- ★ 修（2026-10-17）：这里原来读的是**未定义**的全局 `TARGETS` ✗（本文件已改成 `targetsTable()` 工厂 ✓），
-    --   真机点一下船行就会 "bad argument #1 to 'ipairs' (table expected, got nil)" ✗✓。
-    for _, t in ipairs(targetsTable()) do
-        if t.label == shown then
-            current = t.key
-            break
-        end
-    end
+    local cached = self.shipRows and self.shipRows[row + 1]
+    if cached == nil then return end
 
-    self.shipList:setEntry(3, row, targetLabel(nextTargetKey(current)), false, false, ColorRGB(0.7, 0.9, 1.0))
-    self.shipList:setEntryType(3, row, ListBoxEntryType.Text)
+    cached.goal = nextTargetKey(cached.goal or "")
+    cached.goalOptions = (cached.goal ~= "") and { cached.goal } or {}
+    -- ★ 只有玩家真的点过这一行，保存时才写目标 ✓
+    --   （否则每点一下别的船的勾，都会把 API 写进来的**多选项**目标覆盖成单选 ✗）
+    cached.dirty = true
+
+    self.shipList:setEntry(4, row, goalDisplay(cached.goalOptions), false, false, ColorRGB(0.7, 0.9, 1.0))
+    self.shipList:setEntryType(4, row, ListBoxEntryType.Text)
 
     CopilotUI.saveShipList()
 end
 
--- 把整张表读回来落盘：两列勾选 + 当前目标。
--- 只读「显示名」再反查键，避免依赖入口文本的其他语义。
+-- 把整张表读回来落盘：生效名单的勾 + 每船（只读的 autopilot 缓存、真目标）。
+-- ★ 船名在第 2 列、勾在第 0 列、目标来自 self.shipRows 缓存（显示文本是多选项拼接的，
+--   反解不可靠 ✗，所以不解析显示文本）✓
 function CopilotUI.saveShipList()
     if not self.shipList then return end
 
     local set = {}
     local cfg = {}
+    local goals = {}
     local order = {}
-    local targets = targetsTable()      -- ★ 同上：别再读未定义的全局 TARGETS ✗✓
+    local rows = self.shipRows or {}
 
     for i = 0, self.shipList.rows - 1 do
-        local name = self.shipList:getEntry(1, i)
+        local name = self.shipList:getEntry(2, i)
         if name ~= nil and name ~= "" then
             order[#order + 1] = name
 
@@ -407,20 +638,22 @@ function CopilotUI.saveShipList()
                 set[name] = true
             end
 
-            local shown = self.shipList:getEntry(3, i)
-            local target = ""
-            for _, t in ipairs(targets) do
-                if t.label == shown then
-                    target = t.key
-                    break
-                end
+            local cached = rows[i + 1] or {}
+            local goal = cached.goal or ""
+            cfg[name] = { auto = cached.auto and true or false, target = goal }
+            -- ★ 只写玩家动过的行 ✓：没动过的目标（尤其是 API 写进来的多选项）原样不动 ✓
+            if cached.dirty then
+                goals[#goals + 1] = name .. "|" .. goal
             end
-
-            cfg[name] = { auto = (self.shipList:getEntry(2, i) ~= ""), target = target }
         end
     end
 
-    invokeServerFunction("setAutoShips", encodeShipSet(set), encodeShipCfg(cfg, order))
+    invokeServerFunction("setAutoShips", encodeShipSet(set), encodeShipCfg(cfg, order),
+        table.concat(goals, "\n"))
+
+    -- 写回之后立刻刷新自检行（服务端的回报晚一拍到，updateClient 会补上）✓
+    CopilotUI.refreshRosterReport()
+    invokeServerFunction("reportRoster")
 end
 
 -- ---------------------------------------------------------------------------
@@ -440,7 +673,7 @@ function CopilotUI.buildHudButton()
         self.hudContainer = container
         self.hudButton = container:createRoundButton(Rect(vec2(0, 0), vec2(size, size)),
                                                      "data/textures/icons/robot.png", "onHudButtonPressed")
-        self.hudButton.tooltip = "Copilot"%_t
+        self.hudButton.tooltip = "Copilot (Ctrl+Shift+F7)"%_t
     end)
     if DEBUG then print("[copilot] hud button: ok=" .. tostring(ok) .. " err=" .. tostring(err)) end
 
@@ -494,7 +727,11 @@ function CopilotUI.updateHudButtonVisibility()
     end
     if not SHOW_HUD_BUTTON then want = false end
 
-    if want == self.hudVisible then return end
+    -- ★ 2026-10-19：这里原来是 `if want == self.hudVisible then return end` ✗
+    --   典型的「一次性守卫」定时炸弹（见 docs/dev/lua-vfs-and-engine.md 的两条硬规矩）：
+    --   HUD 重建 / 面板开关之后，引擎侧可能已经把按钮藏了，而本标志还记着"已经是显示的"
+    --   → 于是**永远不再补显示** → 真机上就是"找不到 Copilot 按钮" ✗✓
+    --   改成每帧幂等地下发（两次 show() 调用，代价可以忽略 ✓）；标志只留给调试看。
     self.hudVisible = want
 
     -- Visibility does NOT propagate from a container to its children in Avorion (vanilla
@@ -622,9 +859,14 @@ callable(CopilotUI, "setExplore")
 -- string: player:setValue is only proven for simple values.
 -- Stores the list of ships the AI is allowed to operate on, plus per-ship settings.
 -- 两份都是纯字符串（换行/竖线分隔）：player:setValue 对表支持未验证，见 AGENTS.md。
-function CopilotUI.setAutoShips(serialized, cfgText)
+--
+-- ★ 2026-10-19：第三个参数 goalsText（每行 `船名|动作`）把面板第 4 列写进**真目标**
+--   `copilot_goal_kind_<船名>`（`lib/copilot/goal.lua:53-67` 的 setOptions ✓，它会做
+--   动作名校验/规范化 ✓）。旧参数 cfgText 里的 target 字段**没有任何消费方** ✗，
+--   保留它只为兼容 `lib/copilot/rename.lua:316-331` 的改名迁移 ✓。
+function CopilotUI.setAutoShips(serialized, cfgText, goalsText)
     if onClient() then
-        invokeServerFunction("setAutoShips", serialized, cfgText)
+        invokeServerFunction("setAutoShips", serialized, cfgText, goalsText)
         return
     end
 
@@ -633,8 +875,67 @@ function CopilotUI.setAutoShips(serialized, cfgText)
 
     player:setValue("copilot_auto_ships", tostring(serialized or ""))
     player:setValue("copilot_auto_cfg", tostring(cfgText or ""))
+
+    local goals = tostring(goalsText or "")
+    if goals ~= "" then
+        local ok, err = pcall(function()
+            local Goal = include("copilot/goal")
+            for line in goals:gmatch("[^\n]+") do
+                local name, action = line:match("^([^|]+)|(.*)$")
+                if name ~= nil and name ~= "" then
+                    if action == nil or action == "" then
+                        Goal.setOptions(player, name, nil)
+                    else
+                        Goal.setOptions(player, name, { action })
+                    end
+                end
+            end
+        end)
+        if not ok and DEBUG then
+            print("[copilot] setAutoShips goals failed: " .. tostring(err))
+        end
+    end
 end
 callable(CopilotUI, "setAutoShips")
+
+-- ★★ 2026-10-19 只读自检：把**服务端（= 插件同源）**看到的名单回报给面板 ✓✓
+--
+-- 为什么需要它：面板第 0 列读的是 player value `copilot_auto_ships` 的**客户端副本**，
+-- 而插件 `fleet_query {what:list}` 的 `designated` 是**服务端**用同一个解析器数出来的
+-- （`lib/copilot/card.lua:124-131` 的 `M.designated`）。两者本来同源，但客户端副本理论上
+-- 可能滞后 → 面板底部那行「面板 N / 服务端 M」就是拿它在对账，不一致会打 ✗ ✓
+function CopilotUI.reportRoster()
+    if onClient() then
+        invokeServerFunction("reportRoster")
+        return
+    end
+
+    local player = Player(callingPlayer)
+    if not player then return end
+
+    -- 优先用**插件侧同一个解析器**（card.lua 的 M.designated），失败才退回本地解析 ✓
+    local names = nil
+    local source = "card"
+    local ok, result = pcall(function()
+        local Card = include("copilot/card")
+        return Card.designated(player)
+    end)
+    if ok and type(result) == "table" then
+        names = result
+    else
+        source = "fallback"
+        names = {}
+        for n in tostring(player:getValue("copilot_auto_ships") or ""):gmatch("[^\n]+") do
+            if n ~= "" then names[#names + 1] = n end
+        end
+        table.sort(names)
+        if DEBUG then print("[copilot] reportRoster fallback: " .. tostring(result)) end
+    end
+
+    player:setValue("copilot_roster_report",
+        tostring(#names) .. "|" .. source .. "|" .. table.concat(names, ", "))
+end
+callable(CopilotUI, "reportRoster")
 
 -- ===========================================================================
 -- ★ 炮塔底座材料升级（2026-10-17）
