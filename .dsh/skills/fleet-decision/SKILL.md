@@ -50,9 +50,9 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 ## 6. 护航决策：先判定「要不要护航」，再决定「派不派」（战斗舰允许闲置 ✓）
 - 战斗舰**允许闲置** ✓；不给闲船找活 ✗；只有真需要护航才调它 ✓。
 - 判据只认原子数字（`risk.baseAttackChance` / `riskKind`）：**≤10% 通常不派** ✗；超/逼近才考虑（或换框）；已派出发现不需要 → `fleet_recall` 召回 ✗。
-- ★ **目标明确要求护航时，风险评估必须按「带护航」算**：量框、排序、闸门判断都用带 `escorts` 的那一份数字，不许拿裸跑数字顶 ✗（2026-10-20 真机：框 (-197,-54) 的 `predict` 带 `escorts:[Raven]` 报 87%）。
-- ★ **但 `predict` 的护航折算偏高** ✗：采集类带护航时，`predict` 的风险只当**筛选 / 排序**用，**最终以 `fleet_order` 回执的 `risk.baseAttackChance` 为准** ✓——那是原版完整的 `calculateAttackProbability` 模型，而且它才会拦 `ESCORT_TOO_FAR`（同一框 predict 87% → 回执 2%，差 45 倍；另一框 predict 9% → 回执 2%）。
-- ★ 因此**不要因为 `predict` 报 60~90% 就否掉贴角的富框** ✗：带 reach 内的护航**真下单一次**看回执（11~15 件 / 12.6~15.7 万的肥框就是这样被误杀的）；回执仍 >10% 才换框 ✓；★ 但也不许为了凑单把闸门调低 ✗。
+- ★ **目标明确要求护航时，风险评估必须按「带护航」算**：量框、排序、闸门判断都用带 `escorts` 的那一份数字，不许拿裸跑数字顶 ✗。
+- ★ **已修：`predict` 与回执现在是同一份代码**（`orderRiskOf` → `self.predict`），带护航的数字逐字相同 ✓。原先 87% vs 2% 的根因**不是公式偏高** ✗，而是**批量 `boxes[]` 丢了顶层的 `escorts`**（护航被静默丢弃 → 整批按裸跑算；2026-10-20 已修：box 内 `escorts` 优先、缺省继承顶层，并回 `escortsApplied`）。所以量多框时**护航写在顶层也可以** ✓，但**必须核对每框的 `escortsApplied`** 是否含目标护航名 —— 空的就说明这框按裸跑算了 ✗（[`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L31）。
+- ★ **`predict` 带护航报高就否掉贴角富框 ✗**：先看该框的 `escortsApplied` —— 有护航名 = 数字可信（原版 `calculateAttackProbability` 的完整模型，含护航 dps/hp 与强护航 ×0.75）；**空的 = 那一框按裸跑算了** ✗（修好后这条不该再出现，出现就是 bug）。可信数字仍 >10% 才换框 ✓；★ 不许为了凑单把闸门调低 ✗。
 - 生效四前提 + 具体步骤 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) P5 · [`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L2-L4。
 
 ## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）

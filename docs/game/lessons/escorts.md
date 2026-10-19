@@ -62,13 +62,26 @@
 - **正确判据**：① 带 `escorts` 前后对**同一框**各测一次 `risk.baseAttackChance`，数字不变 = 没用；② 量框要放在**派单前最近一次**，先看 `box.containsShip`，必要时重量；③ 高产出框被风险挡住时：先确认护航在有效距离内（≤ 护航自己的 reach）并实测，仍超闸门 → 换形状 / 换位置，或经主人**明确授权**再冒险 —— 不许自己放宽闸门 ✗。
 - **证据出处**：2026-10-20 真机会话实测（同框带 / 不带 `escorts`：18% / 26% / 3% 完全一致；4/8 框 `SHIP_NOT_IN_AREA`）✓；护航资格 `simulationutility.lua:145-176`（只判可用性 / 距离 / 环侧 / 武装，**不含降风险**）✓；风险按 `area` 计算 `simulationutility.lua:617` + `minecommand.lua:853` ✓；批量多框见 [`mining.md`](mining.md) L26 ✓。
 
-## L31 · ★ 明确要求护航时，风险按「带护航」算；但 `predict` 的护航折算偏高，最终以 `fleet_order` 回执为准（2026-10-20）
+## L31 · ★ 明确要求护航时风险按「带护航」算 —— 但**批量 `boxes[]` 会丢顶层 `escorts`**（2026-10-20 真机定位 + 已修 ✓）
 
-- **症状**：主人明确要求「让 Raven 护航」后，同一批 15×15 框的 `predict` 带 `escorts:[Raven]` 报出的 `baseAttackChance` 与真下单回执差到离谱：框 **(-197,-54)** 的 `predict` 报 **87%** → `fleet_order` 回执 `risk.baseAttackChance` **2%**（差 **45 倍**）；框 **(-197,-68)** 的 `predict` 报 **9%** → 回执 **2%**。Raven 当场是 6 门武装炮、同星区（distance 0），`preflight` 报 `ESCORT_OK` ✓。
+- **症状**：主人明确要求「让 Raven 护航」后，同一批 15×15 框的 `predict` 报出的 `baseAttackChance` 与真下单回执差到离谱：框 **(-197,-54)** 的 `predict` 报 **87%** → `fleet_order` 回执 `risk.baseAttackChance` **2%**（差 **45 倍**）；框 **(-197,-68)** 的 `predict` 报 **9%** → 回执 **2%**。Raven 当场是 6 门武装炮、同星区（distance 0），`preflight` 报 `ESCORT_OK` ✓。
 - **当时的错误判断**：把 `predict` 带护航的 87% 当成否决判据，直接否掉了贴角那批 **11~15 件 / 12.6~15.7 万** 的富框，改挑产出低的框 —— 最肥的框被自己误杀 ✗。
-- **错因**：本 mod 的 `predict` 在把护航战力折算进风险时**偏保守/偏高** ✗（与下单路径口径不同；两处名义上都调 `calculateAttackProbability` —— `salvagecommand.lua:977` vs 回执链路 `link_in.lua:933` → 具体分叉点 ⚠未验证，但 87% vs 2% 的实测差是硬的）。拿这份偏高的数字当闸门，等于用一把坏尺子剪掉最好的框 ✗。
+- **★ 根因（2026-10-20 真机复现 + 代码定位，已修 ✓✓）**：不是公式偏高 ✗，是**护航根本没传进去** ✓。
+  * `predict` 主函数的批量分支把每个 `boxes[i]` 原样交给 `predictOneBox`，而 `predictOneBox` 只读**该 box 自己的** `b.escorts`（`data/scripts/net/link_in.lua:6948-6953` Job / `:6912-6916` Trade），**顶层的 `data.escorts` 从不下发** ✗ → 整批按「裸跑」算，不报错、不缺字段，只是数字变高 ✗。
+  * 单框形态（`boxes` 缺省 → `boxes = { data }`，`link_in.lua:7398`）不受影响 ✓ —— 所以这个坑**只在量多框时**出现，正好是决策者的常用形态 ✓。
+  * 原版那一侧从来是对的：`SimulationUtility.calculateAttackProbability(ownerIndex, shipName, area, config.escorts, hours, …)`（`simulationutility.lua:617`，escort 的 dps/hp 在 `:654-684` 累加、强护航再 `×0.75` 于 `:810-816`），`escorts` 就是**船名字符串**（`:655` `ShipDatabaseEntry(ownerIndex, escort)`）—— **不需要实体 / id** ✓，也不存在「把 escort 当敌人」或重复乘算 ✗。
+- **真机三处对照（2026-10-20 复现，同星区 Salvager-00001 在 (-204,-61)，框中心 (-197,-54)，15×15，duration=1）**：
+
+  | 调用形态 | predict/回执 的 baseAttackChance |
+  |---|---|
+  | `predict` 批量 `boxes[]` + **顶层** `escorts:[Raven]`（修前） | **79%**（= 裸跑 ✗，护航被静默丢弃） |
+  | `predict` 裸跑（不带 escorts） | **79%** ✓（对照：与上一行相同 = 铁证） |
+  | `predict` 把 `escorts` 写进**每个 box 内** | **2%** ✓ |
+  | `fleet_order` 真下单回执（`rpc_trace.log`「onOrder 风险」02:17:01） | **2%** ✓ |
+
+- **修法（已落 `data/scripts/net/link_in.lua` 的 `CopilotLinkIn.predict`）**：批量时每个 box 的 `escorts` **缺省继承顶层 `data.escorts`** ✓（box 自己的优先 ✓，语义与 `tradeEvaluate` / `orderRiskOf` 统一 ✓），并给每框回 `escortsApplied` —— 护航到底进去没，**回执直接可看**，不用猜 ✓。回归断言见 `native/harness/_order_risk_selftest.lua` R8/R9/R10（批量 vs 单框同数、order 回执 == predict ✓）。
 - **正确判据**（三条，采集类尤其照做）：
   1. **目标明确要求护航 → 风险评估按「带护航」算**：量框、排序、闸门判断全用带 `escorts` 的那份数字，不许拿裸跑数字顶 ✓。
-  2. 但 `predict` 带护航的风险**只当筛选 / 排序** ✗ —— **最终以 `fleet_order` 回执的 `risk.baseAttackChance` 为准** ✓（原版完整模型；而且它会拦 `ESCORT_TOO_FAR`）。
-  3. 所以**不要因为 `predict` 报 60~90% 就否掉贴角的富框** ✗：带 reach 内的护航**真下单一次**看回执，回执仍 >10% 才换框 ✓；也不许为了凑单把闸门调低 ✗。
-- **证据出处**：2026-10-20 真机实测（`predict` 87% / 9% vs 回执 2% / 2%；Raven 6 门武装炮 + 同星区 distance 0，`preflight: ESCORT_OK`）✓；`predict` 走 `command:calculatePrediction` 并带 `config.escorts`（`data/scripts/net/link_in.lua:4182`）✓、原版入口 `salvagecommand.lua:837` / `:977` ✓；回执风险 `orderRiskOf`（`link_in.lua:909`，内部 `self.predict` 于 `:933`）✓；闸门 0.10 `docs/game/README.md:20` ✓；SKILL §6 三条判据 `.dsh/skills/fleet-decision/SKILL.md` ✓。
+  2. 修好之后 `predict` 与回执**同一份代码**（`orderRiskOf` → `self.predict`，`link_in.lua:909/933`）→ 两处数字**逐字相同** ✓；量框时看每框的 `escortsApplied` 是否为期望的护航名 ✓，是空的就说明这一框按裸跑算了 ✗。
+  3. 仍**不许为了凑单把闸门调低** ✗；高产出框被风险挡住 → 换形状 / 换位置，或经主人**明确授权**再冒险 ✓。
+- **证据出处**：2026-10-20 真机实测（`predict` 87% / 9% vs 回执 2% / 2%；复现 79% / 79% / 2% / 2%）✓；`predict` 走 `command:calculatePrediction` 并带 `config.escorts`（`link_in.lua:4182`）✓、原版入口 `salvagecommand.lua:837` / `:977` ✓；`SimulationUtility.calculateAttackProbability` `simulationutility.lua:617-844` ✓；回执风险 `orderRiskOf`（`link_in.lua:909`，内部 `self.predict` 于 `:933`）✓；闸门 0.10 `docs/game/README.md:20` ✓；SKILL §6 `.dsh/skills/fleet-decision/SKILL.md` ✓。
