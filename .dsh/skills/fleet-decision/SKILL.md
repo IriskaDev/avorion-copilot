@@ -50,6 +50,9 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 ## 6. 护航决策：先判定「要不要护航」，再决定「派不派」（战斗舰允许闲置 ✓）
 - 战斗舰**允许闲置** ✓；不给闲船找活 ✗；只有真需要护航才调它 ✓。
 - 判据只认原子数字（`risk.baseAttackChance` / `riskKind`）：**≤10% 通常不派** ✗；超/逼近才考虑（或换框）；已派出发现不需要 → `fleet_recall` 召回 ✗。
+- ★ **目标明确要求护航时，风险评估必须按「带护航」算**：量框、排序、闸门判断都用带 `escorts` 的那一份数字，不许拿裸跑数字顶 ✗（2026-10-20 真机：框 (-197,-54) 的 `predict` 带 `escorts:[Raven]` 报 87%）。
+- ★ **但 `predict` 的护航折算偏高** ✗：采集类带护航时，`predict` 的风险只当**筛选 / 排序**用，**最终以 `fleet_order` 回执的 `risk.baseAttackChance` 为准** ✓——那是原版完整的 `calculateAttackProbability` 模型，而且它才会拦 `ESCORT_TOO_FAR`（同一框 predict 87% → 回执 2%，差 45 倍；另一框 predict 9% → 回执 2%）。
+- ★ 因此**不要因为 `predict` 报 60~90% 就否掉贴角的富框** ✗：带 reach 内的护航**真下单一次**看回执（11~15 件 / 12.6~15.7 万的肥框就是这样被误杀的）；回执仍 >10% 才换框 ✓；★ 但也不许为了凑单把闸门调低 ✗。
 - 生效四前提 + 具体步骤 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) P5 · [`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L2-L4。
 
 ## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）
