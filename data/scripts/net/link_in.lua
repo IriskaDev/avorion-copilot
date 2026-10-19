@@ -995,7 +995,16 @@ local function isoNow()
     return string.format("clock=%.2fs", os.clock())
 end
 
--- 框是否含某星区 —— 与 simulation.lua:548 的判据逐字一致 ✓。
+-- 框是否含某星区 —— 与原版 simulation.lua:548 / :825 的判据逐字一致 ✓（闭区间：两端都算 ✓）。
+--
+-- ★★ 2026-10-20：原版比的是 `faction:getShipPosition` 的**原始坐标**，**不取整** ✓ —
+--   simulation.lua:547-548（startCommand）与 :824-825（startAreaAnalysis）都是
+--   `local x, y = faction:getShipPosition(...)` 后直接 `x >= area.lower.x and … x <= area.upper.x` ✓。
+--   船在**跳跃途中**时这个值是**小数**（原版 isAreaFixed 分支直接拿它算 lower：simulation.lua:792-801 ✓），
+--   所以"整数格贴边 = 含船"只对**停在整数星区**的船成立 ✓；
+--   先 `math.floor` 再比会让上/右边界多算近一格（`floor(x) <= upper` ⇔ `x < upper+1` ✗）——
+--   那是本 mod 比原版**宽**的方向：predict 说含船、原版 startAreaAnalysis 却静默拒 ✗。
+--   ⇒ 本文件所有「框含船」判定一律传**原始坐标**（rawX/rawY ✓），只把取整后的格用于框心计算 ✓。
 -- ★ 为什么不直接调本文件的 `areaContainsShip`：它定义在 **onOrder 之后**（:1287），
 --   而 Lua 的 local 是**词法作用域** ✗ → 这里看不到 ✓（同 450 行那个坑 ✓）。
 local function sectorInside(area, x, y)
@@ -1014,7 +1023,8 @@ local function shipStateOf(player, ship)
     local st = { known = false }
     local okP, px, py = pcall(function() return player:getShipPosition(ship) end)
     if okP and tonumber(px) ~= nil and tonumber(py) ~= nil then
-        st.x, st.y = math.floor(tonumber(px)), math.floor(tonumber(py))
+        st.rawX, st.rawY = tonumber(px), tonumber(py)      -- ★ 原版比较的就是它（不取整 ✓）
+        st.x, st.y = math.floor(st.rawX), math.floor(st.rawY)  -- 星区格（用于框心 / 在终点判断 ✓）
         st.positionKnown = true
     end
     local okA, avail = pcall(function() return player:getShipAvailability(ship) end)
@@ -1175,6 +1185,7 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
     local st = shipStateOf(player, ship)
     pf.state = {
         x = st.x, y = st.y, busy = st.busy,
+        rawX = st.rawX, rawY = st.rawY,     -- ★ 原版判据用的原始坐标（可能是小数 ✓）
         cargoUsed = st.cargoUsed, cargoKinds = st.cargoKinds,
         positionKnown = st.positionKnown, busyKnown = st.busyKnown, cargoKnown = st.cargoKnown,
     }
@@ -1218,7 +1229,8 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
             "(true for every action except Travel: travelcommand.lua:472-474)")
     end
     if needInside == true then
-        local inside = sectorInside(area, st.x, st.y)
+        -- ★ 原版拿**原始坐标**比（simulation.lua:824-825 ✓）—— 不取整 ✓
+        local inside = sectorInside(area, st.rawX or st.x, st.rawY or st.y)
         if inside == nil then
             warn("AREA_NOT_CHECKED", "cannot compare the ship position with the box (position unreadable)")
         elseif inside ~= true then
@@ -1226,11 +1238,11 @@ local function preflightOf(player, ship, action, ctype, area, config, ctx)
                 "the ship is at (%s,%s) but the box is [%d,%d]-[%d,%d] — vanilla refuses this in "
                 .. "startAreaAnalysis/startCommand (simulation.lua:822-831 / :545-554) and says "
                 .. "'Ship is not inside the target area.'",
-                tostring(st.x), tostring(st.y),
+                tostring(st.rawX or st.x), tostring(st.rawY or st.y),
                 area.lower.x, area.lower.y, area.upper.x, area.upper.y))
         else
             pass("SHIP_IN_AREA", string.format("(%s,%s) is inside [%d,%d]-[%d,%d]",
-                tostring(st.x), tostring(st.y),
+                tostring(st.rawX or st.x), tostring(st.rawY or st.y),
                 area.lower.x, area.lower.y, area.upper.x, area.upper.y))
         end
     else
@@ -1940,7 +1952,8 @@ function CopilotLinkIn.onOrder(data)
             sizeX = w, sizeY = h,
             lower = { x = area.lower.x, y = area.lower.y },
             upper = { x = area.upper.x, y = area.upper.y },
-            containsShip = sectorInside(area, (pf.state or {}).x, (pf.state or {}).y),
+            containsShip = sectorInside(area, (pf.state or {}).rawX or (pf.state or {}).x,
+                (pf.state or {}).rawY or (pf.state or {}).y),
         }
 
         -- ★ 拒绝回执 = 与"预检不过"**同形** ✓（accepted=false executed=false + error + hint ✓）
@@ -2011,7 +2024,8 @@ function CopilotLinkIn.onOrder(data)
                         x = trBox.x, y = trBox.y, sizeX = sw, sizeY = sh,
                         lower = { x = sArea.lower.x, y = sArea.lower.y },
                         upper = { x = sArea.upper.x, y = sArea.upper.y },
-                        containsShip = sectorInside(sArea, (pf.state or {}).x, (pf.state or {}).y),
+                        containsShip = sectorInside(sArea, (pf.state or {}).rawX or (pf.state or {}).x,
+                            (pf.state or {}).rawY or (pf.state or {}).y),
                     }
                     local sFact = tradeBoxRoutesOf(player, ship, sArea, sBox, goodsLib)
                     local has, names = false, {}
@@ -2312,6 +2326,8 @@ local function buildArea(cx, cy, size)
     return buildAreaWH(cx, cy, size, size)
 end
 
+-- ★ 闭区间（与 simulation.lua:548 / :825 逐字一致 ✓）；坐标传**原始坐标**不要预先取整 ✓
+--   （原因见本文件 `sectorInside` 头上的 2026-10-20 记录 ✓：floor 会让上/右边界多算近一格 ✗）。
 local function areaHasSector(area, sx, sy)
     return sx >= area.lower.x and sx <= area.upper.x and sy >= area.lower.y and sy <= area.upper.y
 end
@@ -6848,7 +6864,8 @@ tradePredictFromAnalysis = function(command, player, ship, area, results, boxInf
     }
 end
 
-local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY, gate, goodsLib, Job, equipCache)
+local function predictOneBox(command, player, ship, ctype, action, b, shipX, shipY,
+        shipRawX, shipRawY, gate, goodsLib, Job, equipCache)
     local cx, cy = tonumber(b.x), tonumber(b.y)
     local sizeX, sizeY = tonumber(b.sizeX), tonumber(b.sizeY)
     if cx == nil or cy == nil or sizeX == nil or sizeY == nil then
@@ -6881,7 +6898,8 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
     end
 
     local area = buildAreaWH(cx, cy, sizeX, sizeY)
-    local containsShip = areaContainsShip(area, shipX, shipY)
+    -- ★ 原版比的是**原始坐标**（simulation.lua:547-548 / :824-825，闭区间 ✓）—— 不传 floor 后的格 ✗
+    local containsShip = areaContainsShip(area, shipRawX or shipX, shipRawY or shipY)
     local boxInfo = {
         x = cx, y = cy, sizeX = sizeX, sizeY = sizeY,
         lower = { x = area.lower.x, y = area.lower.y },
@@ -7037,7 +7055,8 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
             end
             if #wanted > 0 then hold = wanted end
         end
-        local rec = scanSellArea(command, player, ship, ctype, hold, gate, shipX, shipY, cx, cy, sizeX, sizeY, "predict")
+        local rec = scanSellArea(command, player, ship, ctype, hold, gate,
+            shipRawX or shipX, shipRawY or shipY, cx, cy, sizeX, sizeY, "predict")
         if rec == nil then
             return { box = boxInfo, error = "SHIP_NOT_IN_AREA" }
         end
@@ -7213,7 +7232,8 @@ local function predictOneBox(command, player, ship, ctype, action, b, shipX, shi
             knownCache[key] = kn
             return kn
         end
-        local entry = scanScoutArea(command, player, ship, ctype, shipX, shipY, cx, cy, sizeX, sizeY, "predict", isKnown, knownErrors)
+        local entry = scanScoutArea(command, player, ship, ctype,
+            shipRawX or shipX, shipRawY or shipY, cx, cy, sizeX, sizeY, "predict", isKnown, knownErrors)
         if entry == nil then
             return { box = boxInfo, error = "SHIP_NOT_IN_AREA" }
         end
@@ -7367,7 +7387,10 @@ function CopilotLinkIn.predict(player, data)
     if not okPos or tonumber(px) == nil or tonumber(py) == nil then
         return false, "NO_POSITION", "cannot read ship position for " .. ship
     end
-    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+    -- ★ 原始坐标 = 原版判据用的那个（闭区间、不取整 ✓ simulation.lua:547-548 / :824-825）；
+    --   floor 出来的整数格只用于框心 / Refine 重定心 ✓（船在跳跃途中坐标是小数，二者会不同 ✓）。
+    local shipRawX, shipRawY = tonumber(px), tonumber(py)
+    local shipX, shipY = math.floor(shipRawX), math.floor(shipRawY)
 
     local okInc, incErr = pcall(function() return include("areaanalysis") end)
     if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
@@ -7436,22 +7459,28 @@ function CopilotLinkIn.predict(player, data)
     local equipCache = {}
     for _, b in ipairs(boxes) do
         local bb = boxWithEscorts(b)
-        local r = predictOneBox(command, player, ship, ctype, action, bb, shipX, shipY, gate, goodsLib, Job, equipCache)
+        local r = predictOneBox(command, player, ship, ctype, action, bb, shipX, shipY,
+            shipRawX, shipRawY, gate, goodsLib, Job, equipCache)
         if type(r) == "table" and type(bb.escorts) == "table" and #bb.escorts > 0 then
             r.escortsApplied = bb.escorts
         end
         results[#results + 1] = r
     end
 
+    local shipPos = { x = shipRawX, y = shipRawY, cellX = shipX, cellY = shipY,
+        note = "★ 原版含船判据比的就是 x/y（原始坐标，闭区间 ✓ simulation.lua:547-548）；"
+            .. "船在跳跃途中时它是小数，cellX/cellY 只是 floor 出来的星区格（框心用 ✓）" }
     if single then
         local r = results[1]
         if r.error == "SHIP_NOT_IN_AREA" then
             return false, "SHIP_NOT_IN_AREA", "the box does not contain the ship; this action requires the ship inside the box"
         end
+        r.shipPosition = shipPos
         return true, r
     end
     return true, {
         ship = ship, action = action, boxCount = #results, boxes = results,
+        shipPosition = shipPos,
         note = "★ 每个框独立：单框只算一框、批量 N 只算 N 框 ✓；不排序、不推荐、不套闸门 ✗（选哪个由调用方定 ✓）。",
     }
 end
@@ -7481,14 +7510,16 @@ function CopilotLinkIn.tradeRoutes(player, data)
     if not okPos or tonumber(px) == nil or tonumber(py) == nil then
         return false, "NO_POSITION", "cannot read ship position for " .. ship
     end
-    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+    local shipRawX, shipRawY = tonumber(px), tonumber(py)
+    local shipX, shipY = math.floor(shipRawX), math.floor(shipRawY)
 
     local okInc, incErr = pcall(function() return include("areaanalysis") end)
     if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
     if type(run) ~= "function" then return false, "NO_ANALYSIS_RUN", "areaanalysis.lua did not define run()" end
 
     local area = buildAreaWH(math.floor(cx), math.floor(cy), sizeX, sizeY)
-    local containsShip = areaContainsShip(area, shipX, shipY)
+    -- ★ 原始坐标（与 simulation.lua:548 同口径 ✓）
+    local containsShip = areaContainsShip(area, shipRawX, shipRawY)
 
     local okRun, rShipName, _rType, rArea, rResults = pcall(function()
         return run(player.index, ship, COMMAND_TYPES.Trade, area, player.index)
@@ -7655,7 +7686,8 @@ function CopilotLinkIn.tradeEvaluate(player, data)
     if not okPos or tonumber(px) == nil or tonumber(py) == nil then
         return false, "NO_POSITION", "cannot read ship position for " .. ship
     end
-    local shipX, shipY = math.floor(tonumber(px)), math.floor(tonumber(py))
+    local shipRawX, shipRawY = tonumber(px), tonumber(py)
+    local shipX, shipY = math.floor(shipRawX), math.floor(shipRawY)
 
     local okInc, incErr = pcall(function() return include("areaanalysis") end)
     if not okInc then return false, "NO_ANALYSIS_SCRIPT", tostring(incErr) end
@@ -7685,7 +7717,8 @@ function CopilotLinkIn.tradeEvaluate(player, data)
                 .. " (vanilla tradecommand.lua:584-585 allows 17x17 / 29x11 / 11x29 only)"
         end
         local area = buildAreaWH(cx, cy, sizeX, sizeY)
-        local containsShip = areaContainsShip(area, shipX, shipY)
+        -- ★ 原始坐标（与 simulation.lua:548 同口径 ✓）
+        local containsShip = areaContainsShip(area, shipRawX, shipRawY)
         local boxInfo = {
             x = cx, y = cy, sizeX = sizeX, sizeY = sizeY,
             lower = { x = area.lower.x, y = area.lower.y },
