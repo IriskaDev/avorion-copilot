@@ -7,7 +7,9 @@
 -- 本自检不开游戏，把面板脚本 `data/scripts/player/ui/panel.lua` **原样加载**
 -- （UI / Player 全部换成内存替身），然后真的走一遍：
 --
---   ① 布局：5 列、列宽和 = PANEL_WIDTH-20（420）、5 个列头文字、所有控件不越界 ✓
+--   ① 布局：4 列、列宽和 = PANEL_WIDTH-20（600）、4 个列头文字、所有控件不越界 ✓
+--      ★ 2026-10-19 第三次修正：删掉「本船自驾」死列 → 4 列；窗口加宽 440 → 620（任务列 350）；
+--        目标输入框从单行 TextBox → 原版**多行** MultiLineTextBox（宽 600 / 高 100）✓
 --   ② 勾选同源：第 0 列 = `copilot_auto_ships`，第 1 列 = 它的文字镜像 ✓
 --   ③ 勾选一舥 → `setAutoShips` 落盘 → `card.lua` 的 `designated` 跟着 +1；取消 → 立刻消失 ✓
 --   ④ 任务列写的是**真目标** `copilot_goal_kind_<船>`（goal.lua），不是没人读的 cfg.target ✓
@@ -165,7 +167,14 @@ local function newWindow()
     end
     -- ★ 目标的**自然语言输入框**（主人 2026-10-19 要的 ✓）
     function w:createTextBox(rect, callback)
-        local t = { rect = rect, text = "", callback = callback }
+        local t = { rect = rect, text = "", callback = callback, kind = "TextBox" }
+        created.textboxes[#created.textboxes + 1] = t
+        return t
+    end
+    -- ★★ 原版**多行**输入控件（`Documentation/MultiLineTextBox.html` ✓）——
+    --    面板第三次修正后用的就是它，不再是单行 TextBox ✓✓
+    function w:createMultiLineTextBox(rect, callback)
+        local t = { rect = rect, text = "", callback = callback, kind = "MultiLineTextBox" }
         created.textboxes[#created.textboxes + 1] = t
         return t
     end
@@ -211,46 +220,72 @@ local function applyLastSetAutoShips()
 end
 
 -- ---------------------------------------------------------------------------
--- ① 布局：5 列 + 列头 + 不越界
+-- ① 布局：4 列 + 列头 + 多行目标框 + 不越界
 -- ---------------------------------------------------------------------------
-print("== ① 布局：5 列 / 列头和列宽一致 / 控件不越界 ==")
+print("== ① 布局：4 列 / 列头和列宽一致 / 多行目标框 / 控件不越界 ==")
 Panel.buildPanel()
 
+-- panel.lua 的几何常量（两个都是文件内 local，这里按源码同步 ✓）
+local PANEL_WIDTH, PANEL_HEIGHT = 620, 760
+
 local list = Panel.shipList
-check("① 列表列数 = 5", list.columns == 5, tostring(list.columns))
+check("① 列表列数 = 4（「本船自驾」死列已删）", list.columns == 4, tostring(list.columns))
 
 local widthSum = 0
 for i = 0, list.columns - 1 do widthSum = widthSum + (list.widths[i] or 0) end
-check("① 列宽和 = PANEL_WIDTH-20（420）", widthSum == 420, tostring(widthSum))
+check("① 列宽和 = PANEL_WIDTH-20（600）", widthSum == PANEL_WIDTH - 20, tostring(widthSum))
+check("① 任务列 = 350px（原来 110px，约 3 倍）", list.widths[3] == 350, tostring(list.widths[3]))
 
--- 列头 = 前 5 个 11 号字（后面两个 11 号字是「名单自检行」和「说明行」✓）
+-- 列头 = 前 4 个 11 号字（后面几个 11 号字是「目标框标题」「名单自检行」「说明行」✓）
 local headers = {}
 for _, l in ipairs(created.labels) do
-    if l.fontSize == 11 and l.rect ~= nil and #headers < 5 then headers[#headers + 1] = l end
+    if l.fontSize == 11 and l.rect ~= nil and #headers < 4 then headers[#headers + 1] = l end
 end
-check("① 11 号列头 = 5 个", #headers == 5, tostring(#headers))
+check("① 11 号列头 = 4 个", #headers == 4, tostring(#headers))
 
-local aligned = true
+local aligned, captions = true, {}
 local x = list.rect.lower.x
 for i, l in ipairs(headers) do
     if math.abs(l.rect.lower.x - x) > 0.001 then aligned = false end
     if l.caption == nil or l.caption == "" then aligned = false end
+    captions[#captions + 1] = tostring(l.caption)
     x = x + (list.widths[i - 1] or 0)
 end
 check("① 每个列头的 x 与列宽累加一致、且都有文字", aligned, "")
+check("① 列头 = OK / Take-over / Ship / Task（没有 Auto/P ✓）",
+    table.concat(captions, "|") == "OK|Take-over|Ship|Task", table.concat(captions, "|"))
+
+-- ★★ 目标输入框：**原版多行控件**、宽度撑满、约 4~6 行 ✓（第三次修正的核心 ✓）
+local box = Panel.goalEditBox
+check("① 目标输入框是原版多行控件 createMultiLineTextBox",
+    box ~= nil and box.kind == "MultiLineTextBox", tostring(box and box.kind))
+if box ~= nil then
+    local rect = box.rect
+    local boxWidth = rect.upper.x - rect.lower.x
+    local boxHeight = rect.upper.y - rect.lower.y
+    check("① 目标输入框撑满面板宽度（= PANEL_WIDTH-20）", boxWidth == PANEL_WIDTH - 20,
+        tostring(boxWidth))
+    check("① 目标输入框高度 ≈ 4~6 行（80..130px）", boxHeight >= 80 and boxHeight <= 130,
+        tostring(boxHeight))
+    local save = Panel.goalSaveButton
+    check("① 「保存目标」按钮还在，且在输入框**下面**（不挤同一行）",
+        save ~= nil and save.rect.lower.y >= rect.upper.y,
+        tostring(save and save.rect.lower.y))
+end
 
 local inside = true
 local worst = 0
-for _, group in ipairs({ created.labels, created.buttons, created.checkboxes, created.lists }) do
+for _, group in ipairs({ created.labels, created.buttons, created.checkboxes, created.lists,
+                         created.textboxes }) do
     for _, e in ipairs(group) do
         if e.rect ~= nil then
             if e.rect.lower.y < 9 then inside = false end
-            if e.rect.upper.y > 648 then inside = false end
+            if e.rect.upper.y > PANEL_HEIGHT - 10 then inside = false end
             if e.rect.upper.y > worst then worst = e.rect.upper.y end
         end
     end
 end
-check("① 所有控件都在 658 高的面板内", inside, "最低边 = " .. tostring(worst))
+check("① 所有控件都在 " .. PANEL_HEIGHT .. " 高的面板内", inside, "最低边 = " .. tostring(worst))
 
 -- ---------------------------------------------------------------------------
 -- ② 刷新：第 0 列勾 / 第 1 列文字 = 同一个名单
@@ -319,8 +354,8 @@ print("== ④ 任务列：默认「自动」，指派 = 自然语言输入框 ==
 --   但**真目标**是空的 → 列里必须显示「Auto」（默认就是自动、不指派 ✓）。
 --   只有这样才证明面板读的是 goal.lua、没有去读那个没人消费的 cfg.target ✓✓
 check("④ 默认显示 Auto（证明读 goal.lua 而非 cfg.target）",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])) == "Auto",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])))
+    tostring(list:getEntry(3, rowOf["Miner-00001"])) == "Auto",
+    tostring(list:getEntry(3, rowOf["Miner-00001"])))
 check("④ 默认没有文字目标（= 自动 ✓）", Goal.get(player, "Miner-00001").text == "",
     Goal.get(player, "Miner-00001").text)
 
@@ -356,8 +391,8 @@ Panel.setShipGoalText(gcall.args[1], gcall.args[2])      -- 服务端真的执�
 check("④ 真目标 text = 玩家写的那句话", Goal.get(player, "Miner-00001").text == SENTENCE,
     Goal.get(player, "Miner-00001").text)
 check("④ 那一行同步显示这句话（超宽截断 ✓）",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])):find("去西北方", 1, true) ~= nil,
-    tostring(list:getEntry(4, rowOf["Miner-00001"])))
+    tostring(list:getEntry(3, rowOf["Miner-00001"])):find("去西北方", 1, true) ~= nil,
+    tostring(list:getEntry(3, rowOf["Miner-00001"])))
 check("④ 名单没被目标操作改动（仍 4 艘）", #designated() == 4, tostring(#designated()))
 
 -- ★ 再次点行 → 输入框里装的是刚写的那句（而不是空 ✓）
@@ -374,15 +409,16 @@ Panel.setShipGoalText(gcall.args[1], gcall.args[2])
 check("④ 清空 → 真目标回到空（自动 ✓）", Goal.get(player, "Miner-00001").text == "",
     Goal.get(player, "Miner-00001").text)
 check("④ 清空 → 那一行显示 Auto",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])) == "Auto",
-    tostring(list:getEntry(4, rowOf["Miner-00001"])))
+    tostring(list:getEntry(3, rowOf["Miner-00001"])) == "Auto",
+    tostring(list:getEntry(3, rowOf["Miner-00001"])))
 
--- ★ 动作白名单（RPC 设的）只读显示，且不会被"点勾"覆盖 ✗
+-- ★ 动作白名单（RPC 设的）**已退役**：任务列只显示真目标/「自动」，不再拼「限定 …」✗✓
+--   （面板里的白名单 UI 已在 14d2141 删掉；旧断言还在这里要 "Limited" → 那是**陈旧断言** ✗✓）
 Goal.setOptions(player, "Salvager-00002", { "Mine", "Sell" })
 Panel.refreshShipList()
-check("④ 动作白名单显示为「限定 …」",
-    tostring(list:getEntry(4, rowOf["Salvager-00002"])):find("Limited", 1, true) ~= nil,
-    tostring(list:getEntry(4, rowOf["Salvager-00002"])))
+check("④ 动作白名单已退役：任务列不再显示「限定 …」",
+    tostring(list:getEntry(3, rowOf["Salvager-00002"])):find("Limited", 1, true) == nil,
+    tostring(list:getEntry(3, rowOf["Salvager-00002"])))
 list:toggle(0, rowOf["Scout-00001"])
 Panel.onShipToggled()
 applyLastSetAutoShips()
