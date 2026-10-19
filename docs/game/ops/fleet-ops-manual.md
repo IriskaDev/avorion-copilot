@@ -382,7 +382,7 @@ reason=打捞 14~18.75 件；带 Combat-00001 后 2%
 | 前置检查 | ① 判这船是矿船（装备 → 名字 → 判不出问主人，[`lessons/orders.md`](../lessons/orders.md) L19）；② `query:ship` 看 `captainClass`/`hasCaptain`；③ 目标框 `query:predict` 看 `risk.baseAttackChance ≤ 0.10` 且 `box.containsShip` |
 | 命令序列 | `query:predict {ship, action:"Mine", x:-348, y:32, sizeX:15, sizeY:15, duration:1}` → ★ 一次批量量 **6~8 框**（`boxes:[…]`，N≤24）：同区风险可从 3% 跳到 66%，别用单框结论否定整片（[`lessons/mining.md`](../lessons/mining.md) L26）→ `order {…同参…}`（见 R1、R3） |
 | 成功判据 | 回执 `risk.attackChance ≤ 0.10` 且 `verify.ok`；产出进全局资源池（不占舱） |
-| 失败怎么办 | `SHIP_NOT_IN_AREA` → 框留余量（15×15 用 ±6，L1）；风险超闸门 → 换框或护航（见 R2、R6） |
+| 失败怎么办 | `SHIP_NOT_IN_AREA` → 按 `predict.shipPosition.x/y`（原始坐标）重拼框 —— 贴边/贴角本身合法（闭区间 ✓），是船挪了/坐标带小数（L1）；风险超闸门 → 换框或护航（见 R2、R6） |
 
 ### P2 贸易（Trade）
 
@@ -409,7 +409,7 @@ reason=打捞 14~18.75 件；带 Combat-00001 后 2%
 | 前置检查 | `query:predict {action:"Scout", sizeX:21, sizeY:21}`：看 `share > 0.10`、`revealsNothingNew == false`、`baseAttackChance ≤ 0.10`、`box.containsShip` |
 | 命令序列 | `order {action:"Scout", x, y, size:21}`；换片 = 中心挪 **≥21 格**（L20）；风险 0 才开（见 R1） |
 | 成功判据 | 回执 `verify.ok`；揭图在任务**完成时**才生效（L16），同一框别连开 |
-| 失败怎么办 | `share ≤ 0.10` → 不开，换更靠中心/更生的区域；`SHIP_NOT_IN_AREA` → 留余量（21×21 用 ±8，L1） |
+| 失败怎么办 | `share ≤ 0.10` → 不开，换更靠中心/更生的区域；`SHIP_NOT_IN_AREA` → 按 `predict.shipPosition` 重拼框（闭区间，贴边合法，L1） |
 
 ### P5 护航（Escort）
 
@@ -455,7 +455,7 @@ reason=打捞 14~18.75 件；带 Combat-00001 后 2%
 |---|---|---|
 | R1 | 风险闸门 `attackChance ≤ 0.10`；判断「安全」只看 **`baseAttackChance`**（未经 safeMode 修正） | [`rules/owner-rules.md`](../rules/owner-rules.md) §1 |
 | R2 | safeMode **一般不要开**、基准 <10% **绝不要开**；「安全」= 局势概率 <10%，不是那个开关 | [`rules/owner-rules.md`](../rules/owner-rules.md) §2 |
-| R3 | 框必须**严格含船**且留余量（21×21 用 ±8、15×15 用 ±6） | [`lessons/boxes.md`](../lessons/boxes.md) L1 |
+| R3 | 框含船是**闭区间**（贴边/贴角算含 ✓，原版比**原始坐标** `simulation.lua:547-548`）；`SHIP_NOT_IN_AREA` 先按 `predict.shipPosition` 重拼，不是框太小 | [`lessons/boxes.md`](../lessons/boxes.md) L1 |
 | R4 | 满舱/有货先 Sell 再 Trade；空舱 Sell 会被拒 | [`mechanics/cargo-and-goods.md`](../mechanics/cargo-and-goods.md) §3 |
 | R5 | 商船/跑商/移动只走友好星区（`sectorFacts.isFriendly` 逐个核） | [`lessons/orders.md`](../lessons/orders.md) L15 |
 | R6 | 护航四前提：真需要 / **在护航自己的 reach 内**（真机 4.1 星区；同星区只是距离 0 的特例）/ 有炮塔 / 订单带 `escorts`；≤10% 不派；超 reach → `ESCORT_TOO_FAR` | [`lessons/escorts.md`](../lessons/escorts.md) L2-L4 · L21 |
@@ -471,7 +471,7 @@ reason=打捞 14~18.75 件；带 Combat-00001 后 2%
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | `ESCORT_TOO_FAR` | 护航距行动船 > **护航自己**的 reach（真机 4.1 星区） | 先 `escort` 调到 reach 内，或换一艘更近的护航；**同星区不是必要条件**（见 R6） |
-| `SHIP_NOT_IN_AREA` | 框不含船 / 贴边 | 留余量（见 R3） |
+| `SHIP_NOT_IN_AREA` | 框不含船：船已换格 / 在跳跃途中（坐标带小数） | 按 `predict.shipPosition.x/y` 重拼框（见 R3） |
 | `HOLD_HAS_GOODS` | 满舱要 Trade | 先 Sell（见 R4） |
 | `HOLD_EMPTY` | 空舱要 Sell / Refine | 改别的动作 |
 | `SHIP_NOT_AVAILABLE` | 船忙 / 玩家在开 | 等 `busy=false`（L9） |

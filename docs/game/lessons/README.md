@@ -19,7 +19,7 @@
 
 | 文件 | 收的校正 |
 |---|---|
-| [`boxes.md`](boxes.md) | L1 框是严格包含、位移留余量 |
+| [`boxes.md`](boxes.md) | L1 框含船是**闭区间**（贴边/贴角算含 ✓）；坑在船会动、跳跃途中坐标是小数（看 `shipPosition`） |
 | [`escorts.md`](escorts.md) | L2 护航四前提、L3 `fleet_escort` 只 Travel、L4 先判需不需要再派、L28 带 `escorts` ≠ 降险（同框实测数字不变）、L31 批量 `boxes[]` 会丢顶层 `escorts`（真机 87% vs 2% 的根因，已修 ✓） |
 | [`scouting.md`](scouting.md) | L6 看 `revealsOffgrid` 不看 `unknownCount`、L7 方向优先级 + 不可行判据、L8 方向对也要先量一步、L16 揭图在任务完成时才生效、L18 未知占比 > 10% 才开、L20 换框 = 换一片（中心至少挪一个框宽 ≥21 格） |
 | [`orders.md`](orders.md) | L5 不许给闲船编活、L9 派前确认 busy=false、L10 读回执 + 失败重投（2026-10-18 补：`aborted` ≠ 没执行）、L11 只有一个决策者、L13 不许强杀游戏、L15 商船只走友好星区 + routeCount=0 先换形状、L19 先判这船是干嘛的（装备 → 名字 → **问主人**）、L32 回单字段是**逐行文本**（`escorts=` 逗号分隔船名，不是 `["…"]`） |
@@ -34,7 +34,7 @@
 
 | 编号 | 一句话 | 落在 |
 |---|---|---|
-| L1 | 框是**严格包含**，船落框边会被拒；位移留余量（21×21 用 ±8、15×15 用 ±6） | [`boxes.md`](boxes.md) |
+| L1 | 框含船是**闭区间**（边界算含 ✓，原版比**原始坐标**）；坑在船会动、跳跃途中坐标是小数 → 用 `predict.shipPosition` 核 | [`boxes.md`](boxes.md) |
 | L2 | 护航有**四个前提**：真需要 / 在**行动船的一跳航程（护航自己的 reach）**内（不必同星区）/ 有炮塔（`turretCount` 是槽位不是已装炮塔）/ 订单带 `escorts:[…]` | [`escorts.md`](escorts.md) |
 | L3 | `fleet_escort` **只把护航 Travel 过去**，≠ 护航生效（真正生效靠订单里的 `escorts`） | [`escorts.md`](escorts.md) |
 | L4 | 先判需不需要护航再派：`baseAttackChance ≤ 10%` 通常不派；战斗舰允许闲置 | [`escorts.md`](escorts.md) |

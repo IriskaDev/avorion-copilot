@@ -57,7 +57,7 @@
 | 文件 | 一句话用途 |
 |---|---|
 | [`lessons/README.md`](lessons/README.md) | 案例库总表（L1-L28 索引 + append-only 约定） |
-| [`lessons/boxes.md`](lessons/boxes.md) | L1 框严格包含、位移留余量 |
+| [`lessons/boxes.md`](lessons/boxes.md) | L1 框含船是闭区间（贴边/贴角算含 ✓）；坑在船会动、坐标可能是小数（看 `shipPosition`） |
 | [`lessons/escorts.md`](lessons/escorts.md) | L2-L4 护航四前提 / `fleet_escort` 只 Travel / 先判需不需要、L28 带 `escorts` ≠ 降险（同框实测数字不变） |
 | [`lessons/scouting.md`](lessons/scouting.md) | L6-L8/L16/L18/L20 侦察判据 / 换框 = 换一片 |
 | [`lessons/orders.md`](lessons/orders.md) | L5/L9-L11/L13/L15/L17/L19 下单纪律 / 商船友好星区 / 判船、L32 **回单写法**（逐行文本，`escorts=` 不是 `["…"]`） |

@@ -7,7 +7,7 @@
 
 | 事实 | 证据 |
 |---|---|
-| 每条命令的区域是一个**方块/矩形**，边界是 `lower` / `upper` 两个星区坐标 | `simulation.lua:546` ✓（`x >= lower.x and … <= upper.x`） |
+| 每条命令的区域是一个**方块/矩形**，边界是 `lower` / `upper` 两个星区坐标，判据是**闭区间** | `simulation.lua:547-548` ✓（`x >= lower.x and … <= upper.x`；startAreaAnalysis 同款 `:824-825` ✓） |
 | **必须包含船**（除 Travel 外）：`isShipRequiredInArea` 返回 true | Mine `minecommand.lua:502-504` ✓、Salvage `salvagecommand.lua:584-586` ✓、Sell `sellcommand.lua:430-432` ✓、Trade `tradecommand.lua:596-597` ✓、Scout `scoutcommand.lua:428-429` ✓；**Travel 返回 false** ✓`travelcommand.lua:472-473` |
 | 区域**不是固定以船为中心**：`isAreaFixed=false` | Mine `minecommand.lua:506-508` ✓、Salvage `:580-582` ✓、Sell `sellcommand.lua:426-428` ✓、Trade `tradecommand.lua:592-594` ✓、Scout `scoutcommand.lua:434-436` ✓、Travel `travelcommand.lua:466-468` ✓ |
 | 半宽按原版口径 `floor((size-1)/2)` | Mine/Salvage/Sell 15 → half 7；Trade 17 → 8、29→14 / 11→5；Scout 21 → 10（本 mod 同口径：`data/scripts/net/link_in.lua:385-389` ✓） |
@@ -15,6 +15,9 @@
 
 **★ 事实推论（不是建议）**：船在星区 S 里时，框心只要离 S 不超过 half，框就必然仍含船
 → **框心是一个可以自由挪的变量，船不需要动**（`../mechanics-source.md` §1.1 的推论，同上一行口径）。
+⚠ 前提：判据比的是 `getShipPosition` 的**原始坐标**（`simulation.lua:547` ✓），船**在跳跃途中时它是小数** ——
+此时「船在星区 S」的整数格不等于原始坐标，按整数格拼出来的贴边框可能被判不含
+（[`../lessons/boxes.md`](../lessons/boxes.md) L1 ✓；`predict` 回 `shipPosition{x,y,cellX,cellY}` 可核 ✓）。
 
 ## 2. 各命令的区域尺寸与形状
 

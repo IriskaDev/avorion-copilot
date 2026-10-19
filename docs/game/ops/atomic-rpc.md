@@ -89,7 +89,12 @@
   - **Travel**：`distance / travelTime / travelTimeHours / routeSectors / swiftness / origin / destination`
     —— 风险是**整段航程**被伏击的概率（原版 Travel 命令自带评估 ✓，见
     [`../mechanics/risk-and-ambush.md`](../mechanics/risk-and-ambush.md) §7 ✓）
-  - 每个框都带 `containsShip: boolean`（★ 除 Travel 外框必须含船，否则预测无效——原版硬约束 `simulation.lua:546`）。
+  - 每个框都带 `containsShip: boolean`（★ 除 Travel 外框必须含船，否则预测无效——原版硬约束
+    `simulation.lua:546-554` / `:822-831`）。判据 = **闭区间 + 原始坐标**（`getShipPosition`，不取整；船在跳跃途中是小数）✓，
+    与 `simulation.lua:548` 逐字一致（`link_in.lua:1010` / `:2331` / `:6902`）✓。
+  - 回执顶层带 `shipPosition:{x, y, cellX, cellY}`（★ 2026-10-20 加 ✓）：`x/y` = 原版判据用的**原始坐标**
+    （可能带小数），`cellX/cellY` = `floor` 出来的星区格（框心用它）。贴角框要按 `x/y` 拼 ——
+    船在跳跃途中按整数格拼出来的角框会被原版判**不含**（[`../lessons/boxes.md`](../lessons/boxes.md) L1 ✓）。
 - **★ Travel 的唯一例外**：Travel 的框是 **1×1 目的地**（原版 `travelcommand.lua:454-456 getAreaSize {1,1}`、
   `:472-474 isShipRequiredInArea → false` ✓），船**当然不在框里** ✓ → 只有 Travel 跳过 `SHIP_NOT_IN_AREA`。
   其余动作照旧必须含船 ✗✓。
