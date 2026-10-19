@@ -512,6 +512,178 @@ function M.equipmentFacts(player, entry, card, probeNotes)
 end
 
 -- ---------------------------------------------------------------------------
+-- ★★ 可选动作 = **按船自动推导**（2026-10-19 ✓✓，替掉「玩家限定动作」白名单）
+-- ---------------------------------------------------------------------------
+--
+-- 主人原话（2026-10-19）：「现在这个 option 是怎么设置的，目前还有在使用吗？没有的话就退役掉」✓
+--
+-- 为什么要退役 ✗→✓（真事故 ✓）：`Trader-00001` 的 `options` 曾被设成 `[Travel]` ✗
+--   → 白名单校验忠实执行 ✓ → 它**永远不能跑商** ✗✓（只能判 None ✓）。
+--   病根不是校验层 ✗（那层是对的 ✓），而是**白名单由人/模型手填** ✓ —— 填错一次就锁死 ✓。
+--   → 现在：白名单**仍然存在、仍然校验** ✓✓，但内容由**这艘船的事实**推导 ✓，
+--     没有第二个可写入口（`fleet_goal{options}` / 面板都已退役 ✓）。
+--
+-- 判据全部来自**同一张能力卡**的事实 ✓（动作全集 = 下面 `card.actions` 的键 ✓）：
+--   Travel  —— 永远在 ✓（原版 destination ≥2 跳、needsCaptain ✓；见 card.actions.Travel）
+--   Mine    —— `turretCategories.Mining > 0` ✓
+--              原版依据：后台采矿能力就是**从已装炮塔算出来的** ✓
+--              （minecommand.lua:545-552 `MineCommand:getMiningProperties` → `entry:getTurrets()` ✓）
+--   Salvage —— `turretCategories.Salvaging > 0` ✓（salvagecommand 同一口径 ✓）
+--   Refine  —— 有采矿或打捞炮塔 ✓（能产出原矿才谈得上精炼 ✓；
+--              原版**还要求舱里真有原矿** ✓ `card.actions.Refine.requires` —— 那一条由
+--              下单侧 preflight 拒 ✓，推导层不重复判 ✗）
+--   Trade   —— 船长 **Merchant** ✓（原版硬要求，见 `card.actions.Trade.captainClass` ✓）
+--              **且** `cargoCapacity >= MIN_CARGO_FOR_SELL` ✓
+--   Sell    —— `cargoCapacity >= MIN_CARGO_FOR_SELL` ✓（卖货靠货舱 ✓）
+--   Scout   —— 船长职业在原版「侦察有收益」那一组里 ✓
+--              （`scoutcommand.lua:521-526`：Explorer / Smuggler / Miner / Scavenger / Daredevil ✓）
+--              其它职业侦察**一个隐藏质量区都不揭** ✗ → 不进白名单 ✓
+--
+-- ★ 这里的两个门槛是**我们自己定的启发式** ✗，不是原版常数 ✓（原版没有"货舱多大才算商船"）：
+--   `MIN_CARGO_FOR_SELL = 100` —— 真机反例：`Combat-00001` 的 `cargoCapacity = 4` ✓（含 109 单位货 ✓），
+--   若按 ">0 就算货船" 它会拿到 Sell/Trade ✗ —— 那既不是原版语义、也不是主人的示例 ✓
+--   （主人 2026-10-19：「Combat → Travel」✓）。
+--
+-- ★ 读不到炮塔类别时**不猜** ✗：只给「不依赖炮塔」的那几条 + `Travel` ✓，
+--   并在 note 里说明"类别没读到" ✓（多给比少给更坏 ✗：多给会让它去下单一定失败的动作 ✓）。
+local MIN_CARGO_FOR_SELL = 100
+
+-- 原版「侦察真的会揭隐藏质量区」的职业 ✓（scoutcommand.lua:521-526 实读 ✓）
+local SCOUT_CAPTAIN_CLASSES = {
+    Explorer = true, Smuggler = true, Miner = true, Scavenger = true, Daredevil = true,
+}
+
+-- 推导本体（**纯函数** ✓：只吃事实表，不碰游戏对象 → 可离线测 ✓✓）
+-- 返回：actions（规范名数组，顺序 = card.actionNames ✓）, why（动作 → 依据 ✓）, note（不足/未知说明 ✓）
+function M.deriveActions(facts)
+    facts = facts or {}
+
+    local cats = type(facts.turretCategories) == "table" and facts.turretCategories or nil
+    local cap = tonumber(facts.cargoCapacity) or 0
+    local cls = facts.captainClass
+
+    local mining = cats ~= nil and (tonumber(cats.Mining) or 0) > 0
+    local salvaging = cats ~= nil and (tonumber(cats.Salvaging) or 0) > 0
+
+    local got = {}
+    local why = {}
+
+    if mining then
+        got.Mine = true
+        why.Mine = "turretCategories.Mining = " .. tostring(cats.Mining) ..
+            "（原版后台采矿就是从已装炮塔算的 ✓ minecommand.lua:545-552）"
+    end
+    if salvaging then
+        got.Salvage = true
+        why.Salvage = "turretCategories.Salvaging = " .. tostring(cats.Salvaging) .. "（原版同口径 ✓）"
+    end
+    if mining or salvaging then
+        got.Refine = true
+        why.Refine = "有采矿/打捞炮塔 → 能产出原矿 ✓（原版另要求舱里真有原矿 ✓，下单侧 preflight 判 ✓）"
+    end
+    if cls == "Merchant" and cap >= MIN_CARGO_FOR_SELL then
+        got.Trade = true
+        why.Trade = "船长 Merchant ✓（原版硬要求 ✓）+ cargoCapacity " .. tostring(cap)
+    end
+    if cap >= MIN_CARGO_FOR_SELL then
+        got.Sell = true
+        why.Sell = "cargoCapacity " .. tostring(cap) .. " ≥ " .. tostring(MIN_CARGO_FOR_SELL) ..
+            "（卖货靠货舱 ✓；门槛是本 mod 启发式 ✗ 非原版 ✓）"
+    end
+    if type(cls) == "string" and SCOUT_CAPTAIN_CLASSES[cls] then
+        got.Scout = true
+        why.Scout = "船长 " .. cls .. " 在原版揭图有收益那一组里 ✓（scoutcommand.lua:521-526）"
+    end
+    got.Travel = true
+    why.Travel = "永远在 ✓（原版：目的地 ≥2 跳、需要船长 ✓）"
+
+    -- 输出顺序 = card.actionNames 的顺序 ✓（消费者看到的序列稳定 ✓）
+    local actions = {}
+    for _, name in ipairs({ "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine" }) do
+        if got[name] then actions[#actions + 1] = name end
+    end
+
+    local note = nil
+    if cats == nil then
+        note = "炮塔类别**没读到** ✗ → Mine/Salvage/Refine 一律**不给** ✓（不猜 ✓）；" ..
+            "要判这艘船能不能采矿请先看 `fleet_query {what:'ship'}` 的 probe.turrets ✓"
+    elseif facts.hasCaptain == false then
+        note = "船上**没有船长** ✗ → 后台命令全部起不来 ✓（原版 needsCaptain ✓）；白名单照实给 ✓"
+    end
+
+    return actions, why, note
+end
+
+-- 轻量取数：只取推导需要的字段 ✓（**不**做 depth 采样 / 不扫星区 ✓ → 热路径可用 ✓✓）
+-- 复用 `readCaptainClass` 与 `M.equipmentFacts` ✓ —— 同一件事**绝不写第二套** ✗✓
+function M.capabilityFacts(player, name)
+    local facts = { name = name }
+    local notes = {}
+
+    local entry = ShipDatabaseEntry(player.index, name)
+    if entry == nil then
+        facts.entryMissing = true
+        notes.entry = "ShipDatabaseEntry is nil"
+        return facts, notes
+    end
+
+    -- ① 船长 + 职业（与 shipCard 同一个函数 ✓）
+    local okC, captain = probe(entry, "getCaptain")
+    if not okC then
+        facts.hasCaptain = nil
+        facts.captainClassKnown = false
+        notes.captain = tostring(captain)
+    else
+        facts.hasCaptain = (captain ~= nil)
+        if captain ~= nil then
+            readCaptainClass(captain, facts, notes)
+        else
+            facts.captainClassKnown = false
+            notes.captainClass = "no captain on this ship (hasCaptain=false)"
+        end
+    end
+
+    -- ② 炮塔类别（整套复用 equipmentFacts ✓）
+    local eq = {}
+    M.equipmentFacts(player, entry, eq, notes)
+    facts.turretCategories = eq.turretCategories
+    facts.turretCount = eq.turretCount
+    facts.turretCountKnown = eq.turretCountKnown
+
+    -- ③ 货舱（原版 `entry:getCargo()` 返回 货物表 + 总容量 ✓ minecommand.lua:137 ✓）
+    local okG, cargo, baySize = pcall(function() return entry:getCargo() end)
+    if okG and type(cargo) == "table" then
+        local used = 0
+        for _, amount in pairs(cargo) do
+            local a = tonumber(amount) or 0
+            if a > 0 then used = used + a end
+        end
+        facts.holdHasGoods = (used > 0)
+        local cap = tonumber(baySize)
+        if cap ~= nil and cap > 0 then facts.cargoCapacity = math.floor(cap) end
+    else
+        notes.cargoHold = "entry:getCargo() failed: " .. tostring(cargo)
+    end
+
+    -- ④ 称号（原版类别字段 ✓ 只在推导里当**记录**用，不参与判据 ✗）
+    local okT, fmt = pcall(function() return entry:getTitle() end)
+    if okT and fmt ~= nil then
+        facts.shipTitleKnown = true
+        local okRaw, raw = pcall(function() return fmt.text end)
+        if okRaw and raw ~= nil then facts.shipTitleRaw = tostring(raw) end
+    end
+
+    return facts, notes
+end
+
+-- 给调用方的一站式入口 ✓：跑一遍推导，把"为什么"一起带回去 ✓
+function M.allowedActions(player, name)
+    local facts, notes = M.capabilityFacts(player, name)
+    local actions, why, note = M.deriveActions(facts)
+    return actions, why, facts, notes, note
+end
+
+-- ---------------------------------------------------------------------------
 -- 单船快照（= 能力卡）
 -- ---------------------------------------------------------------------------
 
@@ -944,6 +1116,18 @@ function M.shipCard(player, name)
     card.scoutNote = 'Scout reveals hidden-mass sectors; the game gets better AND more dangerous toward the map centre. Area 21x21, ship must already be INSIDE it; the only config is addCaptainsNote.'
     card.actionNames = { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine" }
 
+    -- ★★★ 这艘船**自己**的可选动作（2026-10-19 ✓✓ 起由事实推导，不再由玩家/工具填 ✗）
+    --   `card.actions` 是**动作全集 + 各自约束** ✓；`card.allowedActions` 才是"这艘船能用哪些" ✓✓
+    --   两者都在**同一张卡**上 —— 于是"能做什么"和"为什么"永远同源 ✓（不会各错一遍 ✓）。
+    do
+        local derived, why, note = M.deriveActions(card)
+        card.allowedActions = derived
+        card.allowedActionsWhy = why
+        card.allowedActionsNote = "★ 按船自动推导 ✓（2026-10-19 起 `options` 白名单退役 ✗✓：不再由玩家/" ..
+            "工具填 ✓，内容由这艘船的事实得出 ✓；下单校验那层**原样保留** ✓）。判据见 " ..
+            "`lib/copilot/card.lua` 的 `M.deriveActions` ✓。" .. (note and (" ！" .. note) or "")
+    end
+
     if next(probeNotes) ~= nil then card.probe = probeNotes end
     return card
 end
@@ -997,6 +1181,9 @@ function M.shipBrief(player, name, card)
         "entityType", "entityTypeId",
         "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
         "holdHasGoods", "cargoState", "hyperspace", "actionNames", "actions",
+        -- ★★ 这艘船**自己的**可选动作（2026-10-19 ✓✓）：与 `actions`（全集+约束）成对 ✓
+        --   三个字段一组：清单 ✓ + 逐条依据 ✓ + 说明/未知 ✓（少给一个就又要靠猜 ✗）
+        "allowedActions", "allowedActionsWhy", "allowedActionsNote",
         -- ★★ 装备/武器事实（2026-10-17 加 ✓✓）：**全组搬过来** ✓ —— 与完整卡同源
         --   （都在 shipCard → M.equipmentFacts 里赋值 ✓，简报**不重算** ✗）
         --   为什么整组：`turretCount` 单独一个是**会骗人的**（旧版恒 1 ✗）——

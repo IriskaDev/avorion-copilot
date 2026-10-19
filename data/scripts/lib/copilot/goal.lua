@@ -16,8 +16,15 @@ package.path = package.path .. ";data/scripts/?.lua"
 --
 -- 两种目标：
 --   文字  —— 玩家自由描述（"去西北方探索，遇到敌人就跑" ✓）
---   选项  —— 结构化候选（`Mine` / `Salvage` / `Trade` / `Travel` ✓）
+--   选项  —— ★ **2026-10-19 退役** ✗✓：以前是玩家/工具手填的动作白名单 ✓
+--            （真事故：`Trader-00001` 被设成 `[Travel]` ✗ → 它**永远不能跑商** ✗✓）。
+--            现在白名单**按船自动推导** ✓（`lib/copilot/card.lua` 的 `M.deriveActions` ✓），
+--            本文件只剩**文字目标**这一种可写目标 ✓✓
 -- 两者**可以同时存在** ✓：文案给意图、选项给边界 ✓✓
+--
+-- ★ `copilot_goal_kind_<船名>` 这份**旧存档数据不删** ✓（不破坏存档 ✓）——
+--   但**读的时候忽略** ✗：`M.describe` 把它回传成 `ignoredOptions`（审计用 ✓），
+--   `options` 字段一律换成**推导值** ✓✓。
 --
 -- 本文件是 lib：只能 return 命名空间表，不许定义全局生命周期回调 ✓。
 --
@@ -50,6 +57,9 @@ end
 
 -- 设选项目标。`options` 是字符串数组（例如 {"Mine", "Salvage"} ✓）。
 -- 传 nil / 空表 = 清掉 ✓
+-- ★ 2026-10-19：这个写入口**已退役** ✗（没有调用方了 ✓ —— `link_in.onSetGoal` 忽略 `data.options` ✓，
+--   面板也不再提供选择 ✓）。函数**保留**只为两件事：① 旧存档里的数据要能读（`M.get` ✓）；
+--   ② `M.clear` 清目标时顺手清掉这份旧键 ✓。**别再加新的调用方** ✗✓。
 function M.setOptions(player, ship, options)
     if player == nil or type(ship) ~= "string" or ship == "" then return false end
     if type(options) ~= "table" or #options == 0 then
@@ -124,16 +134,50 @@ end
 -- ---------------------------------------------------------------------------
 -- 给 DSH 用的形状（`query {what="goal"}` 的 data ✓）
 -- ---------------------------------------------------------------------------
-
+--
+-- ★★★ 2026-10-19 退役「玩家限定动作」后的**唯一语义出口** ✓✓
+--
+--   `options` 现在**不是** player value 里的那份 ✗ —— 而是 `Card.allowedActions` 按船推导的 ✓
+--   （推导判据与"为什么"见 `lib/copilot/card.lua` 的 `M.deriveActions` ✓）。
+--   旧存档里存的那份**原样回传**成 `ignoredOptions` ✓（**不删数据** ✓ 但**不生效** ✗✓）——
+--   于是"旧 options 被忽略"这件事在回执里**看得见** ✓，不是靠猜 ✓✓。
+--
+--   ★ 推导失败（include 报错之类）→ 退回**最小集合 `{Travel}`** ✓ + `optionsDerived=false` ✓：
+--     宁少不多 ✗✓（多给会让它去下单必然失败的动作 ✓）。
 function M.describe(player, ship)
     local g = M.get(player, ship)
-    local good, bad = M.sanitizeOptions(g.options)
+    local ignored, bad = M.sanitizeOptions(g.options)
+
+    local derived, why, note, ok = nil, {}, nil, false
+    do
+        local okCall, actions, whyOut, noteOut = pcall(function()
+            local Card = include("copilot/card")
+            local acts, whyIn, _facts, _notes, noteIn = Card.allowedActions(player, ship)
+            return acts, whyIn, noteIn
+        end)
+        if okCall and type(actions) == "table" and #actions > 0 then
+            derived = actions
+            if type(whyOut) == "table" then why = whyOut end
+            note = noteOut
+            ok = true
+        end
+    end
+    if derived == nil then
+        derived = { "Travel" }
+        note = "推导失败 ✗ → 退回最小集合 {Travel}（不猜别的动作 ✓）；请查 rpc_trace.log ✓"
+    end
+
     return {
         ship = ship,
-        text = g.text,              -- 文字意图（可能为空串 ✓）
-        options = good,             -- 规范化后的候选动作 ✓
-        unknown = bad,              -- 玩家写错的选项（原样回传，便于 DSH 提示 ✓）
-        hasGoal = g.hasGoal,
+        text = g.text,               -- 文字意图（可能为空串 ✓）—— **现在唯一可写的目标** ✓
+        options = derived,           -- ★ 按船自动推导的可选动作 ✓（仍是白名单语义 ✓）
+        optionsDerived = ok,         -- true = 推导成功 ✓；false = 退回最小集合 ✗
+        optionsSource = "auto: card.lua deriveActions()（不再是玩家填的 ✗✓）",
+        optionsWhy = why,            -- 每条动作的依据 ✓（审计/面板用 ✓）
+        optionsNote = note,          -- 未知/不足说明 ✓
+        ignoredOptions = ignored,    -- ★ 旧存档里的白名单：**已忽略** ✗✓（非空 = 那艘船曾被人手填过 ✓）
+        unknown = bad,               -- 旧数据里写错的选项（原样回传 ✓）
+        hasGoal = (g.text ~= ""),    -- ★ 只有文字目标才算"指派过" ✓（旧白名单不再算 ✗）
     }
 end
 
