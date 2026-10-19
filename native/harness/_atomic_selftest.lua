@@ -12,7 +12,7 @@
 --   · 口径与旧路径（tradePlan）**逐字一致** ✓（predict 的净收益/风险 == tradePlan 的推荐 ✓）
 --   · tradeRoutes 只回该框的路线与逐货数字，不排序/不推荐 ✗
 --
--- 跑法：  native\harness\lua.exe native\harness\_atomic_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_atomic_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

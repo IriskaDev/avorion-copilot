@@ -32,16 +32,18 @@ Lua C API 操作宿主传进来的 `lua_State`（exe 导出 0 个符号，按名
 
 **验证**：进游戏后连续 **6 分钟零 `X_X`**，心跳每 5 秒不断，RPC 握手与 `query` 均正常 ✓✓。
 
-## ⚠️ 编译中间物一律放 `native/build/`（2026-10-16 整理）
+## ⚠️ 编译产物一律放仓库根 `build/`（2026-10-19 收敛；`native/` 只放源码）
 
 早期直接在**仓库根目录**编译 native，结果根目录堆了 **39 个 `*.obj` + `.exp`/`.lib`**
-（都被 `.gitignore` 排掉了 ✓，但仍然碍眼 ✓）。现已全部收进 **`native/build/`** ✓。
+（都被 `.gitignore` 排掉了 ✓，但仍然碍眼 ✓）。中途收进过 `native/build/`，
+2026-10-19 起再收一层：**唯一输出目录 = 仓库根 `build/`** ✓ ——
+`native/` 下不许留任何 `.obj/.lib/.exp/.dll/.pdb`；测试台的 33 个 obj 与 `lua.exe` 进 `build/harness/` ✓。
 
 **规矩**：
-* 编译 `copilot.dll` 时用 `native/build/` 做输出目录 ✗→✓
+* 编译 `copilot.dll` 用 `/Fo:"build\" /Fe:"build\copilot.dll"` ✓；测试台产物进 `build\harness\` ✓
 * ★ **别误删 `D:\<游戏>\bin\copilot.dll`** ✓✓ —— 那才是**游戏运行时真正加载**的那一份 ✓
-  （仓库根/native 下出现的 `copilot.dll` 都只是**编译残留** ✗，可清 ✓）
-* 仓库根只留文档与 `modinfo.lua`、`data/`、`native/` ✓
+  （`build/` 下那几份都只是**编译产物** ✗，可清 ✓）
+* 仓库根只留文档与 `modinfo.lua`、`data/`、`native/`、`plugin/`、`docs/`、`tools/` ✓
 
 ## ★ 信息完整性：不需要反编译（2026-10-13 实测扫描）
 

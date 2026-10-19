@@ -18,7 +18,7 @@
 --   ⑦ 响应可 JSON 编解码 ✓；orderHint 能直接喂 order ✓
 --   ⑧ 源码里 Sell 的 UUID 与实读的 commandtype.lua 一致 ✓（结构性断言 ✓）
 --
--- 跑法：  native\harness\lua.exe native\harness\_sell_scan_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_sell_scan_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

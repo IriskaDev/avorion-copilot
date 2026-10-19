@@ -26,7 +26,7 @@
 --   货舱/坐标只在 onFinish 变：sellcommand.lua:161/235-267、travelcommand.lua:373-408
 --
 -- 跑法（★ 必须在 mod 仓库根跑）：
---   native\harness\lua.exe native\harness\_preflight_verify_selftest.lua
+--   build\harness\lua.exe native\harness\_preflight_verify_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

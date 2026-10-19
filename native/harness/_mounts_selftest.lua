@@ -16,7 +16,7 @@
 --   (i) 环境闸门（照抄原版修船坞）：EnemiesNearby → 什么都不做 ✓
 --
 -- 跑法（★ 必须在 mod 仓库根跑）：
---   native\harness\lua.exe native\harness\_mounts_selftest.lua
+--   build\harness\lua.exe native\harness\_mounts_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

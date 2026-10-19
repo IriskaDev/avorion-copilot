@@ -49,7 +49,7 @@ stage=2  lua_gettop(L)=3        ← 压入字符串后再读，+1，精确
 1. 编 DLL（见下），放到 `Avorion\bin\copilotprobe.dll`
 2. `moddata/copilot/abi_stage.txt` 写 `1`（只读）或 `2`（写栈）
 3. ★ 2026-10-18 起 `/copilot probe` **已退役** ✗（聊天命令层整层退役）——
-   要用 ABI 自检，在 `native\harness\` 里用 `lua.exe` 调，或在 `cli.lua` 里临时加回一行分发 ✓
+   要用 ABI 自检，用 `build\harness\lua.exe` 跑 `native\harness\` 里的脚本，或在 `cli.lua` 里临时加回一行分发 ✓
 4. 读 `moddata/copilot/native_abi_proof.txt` 与客户端日志
 
 **若游戏大版本更新后失效**，先跑 stage 1：`gettop` 不再是 2 就说明 Lua 的构建配置变了。
@@ -142,18 +142,23 @@ local msg = net.recv()      -- 非阻塞，nil = 暂无
    在同一进程同一目录下对三个候选路径**全部返回 ACCESS_DENIED(5)**，而 `fopen(path,"a")` 正常
 5. `DllMain` 挂 attach/detach；日志**惰性初始化**，不依赖 DllMain 时序
 
-## 独立测试台（native\harness\lua.exe）
+## 独立测试台（`build\harness\lua.exe`，2026-10-19 起产物不再落在 native\ 里）
 
 **不开游戏、几秒一轮、崩了只崩 lua.exe** —— 原生 bug 必须在这里调，不要去碰正在运行的存档。
 
 ```powershell
-cd D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\native
-Start-Process node -ArgumentList test-listener.mjs -WorkingDirectory .   # 监听端 127.0.0.1:8765
-cd harness
-.\lua.exe smoke.lua
-.\lua.exe json_test.lua
-.\lua.exe json_test2.lua
+$repo = "D:\SteamLibrary\steamapps\common\Avorion\mods\copilot"
+cd $repo
+Start-Process node -ArgumentList test-listener.mjs -WorkingDirectory "$repo\native"   # 监听端 127.0.0.1:8765
+pushd "$repo\build\harness"
+.\lua.exe ..\..\native\harness\smoke.lua
+.\lua.exe ..\..\native\harness\json_test.lua
+.\lua.exe ..\..\native\harness\json_test2.lua
+popd
 ```
+
+> 旧写法是 `cd native\harness; .\lua.exe smoke.lua` —— 产物搬家后 lua.exe 在 `build\harness\`，
+> 脚本仍在 `native\harness\`（源码目录只放 `.lua` ✓）。
 
 `lua.exe` 由**同一份 Lua 5.2.4 源码**编出，所以它的 `lua_State` 布局与游戏一致，
 是忠实的宿主替身。
@@ -187,12 +192,16 @@ $env:PATH    = "$vc\bin\Hostx64\x64;$env:PATH"
 # Lua 5.2.4 核心（拥有自己那份 C API，用于操作宿主 lua_State）
 $core = lapi lcode lctype ldebug ldo ldump lfunc lgc llex lmem lobject lopcodes
         lparser lstate lstring ltable ltm lundump lvm lzio lauxlib
+# ★ 产物统一落仓库根 build/（2026-10-19：native/ 只放源码，不留 obj/dll）✓
+$out  = "D:\SteamLibrary\steamapps\common\Avorion\mods\copilot\build"
+New-Item -ItemType Directory -Force -Path $out, "$out\harness" | Out-Null
 cl /nologo /LD /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"$lsrc" /I"$nat" `
-   copilot.c dshlog.c lua_json.c cJSON.c @core ws2_32.lib /Fe:copilot.dll
+   copilot.c dshlog.c lua_json.c cJSON.c @core ws2_32.lib `
+   /Fo:"$out\" /Fe:"$out\copilot.dll"
 # 测试台：
 cl /nologo /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"$lsrc" "$lsrc\lua.c" @core `
    linit lbaselib lbitlib lcorolib ldblib liolib lmathlib loadlib loslib lstrlib ltablib `
-   ws2_32.lib /Fe:harness\lua.exe
+   ws2_32.lib /Fo:"$out\harness\" /Fe:"$out\harness\lua.exe"
 ```
 
 **必须加 `/utf-8`**：源码里的中文会被 MSVC 按 GBK(936) 解码，把字符串字面量撑破

@@ -19,7 +19,7 @@
 --   (k) caps 自声明里真的有 tradeEvaluate + tradeEvaluateParams ✓
 --
 -- 跑法（★ 必须在 mod 仓库根跑，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_trade_evaluate_selftest.lua
+--   build\harness\lua.exe native\harness\_trade_evaluate_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

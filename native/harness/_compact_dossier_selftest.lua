@@ -24,7 +24,7 @@
 --   把两边的字符数都打印出来 ✓ —— 这就是 before/after 的**实测**数字 ✓。
 --
 -- 跑法（★ 必须在 mod 仓库根跑 ✓，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_compact_dossier_selftest.lua
+--   build\harness\lua.exe native\harness\_compact_dossier_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

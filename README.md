@@ -233,7 +233,8 @@ fleet_recall { ship: "Miner-00001" }
 ```
 copilot/
 ├── modinfo.lua / data/       游戏读的部分：mod 元数据 + 全部 Lua 脚本（VFS 追加，不覆盖原版）
-├── native/                   原生 TCP 模块源码（copilot.dll）+ 不开游戏也能跑的测试台
+├── native/                   原生 TCP 模块源码（copilot.dll）+ 测试台脚本（不开游戏也能验）
+├── build/                    ★ 唯一的编译产物目录（obj/lib/exp/dll/lua.exe，已在 .gitignore）
 ├── plugin/dsh/               DSH 插件本体（RPC 服务 + fleet_* 工具 + 客户端 UI），lib/ 已入库
 ├── docs/dev/                 工程侧：安装、构建、测试、热重载、git 规矩
 ├── docs/game/                游戏侧：机制 / 规则 / 教训 / 作业手册

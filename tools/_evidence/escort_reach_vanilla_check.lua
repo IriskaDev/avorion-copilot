@@ -6,7 +6,7 @@
 --       只把引擎全局（ShipDatabaseEntry / Galaxy / Balancing_InsideRing / %_t）换成替身，
 --       然后调用真的 SimulationUtility.isShipUsableAsEscort。
 --
--- 跑法：native/harness/lua.exe tools/_evidence/escort_reach_vanilla_check.lua
+-- 跑法：build/harness/lua.exe tools/_evidence/escort_reach_vanilla_check.lua
 --
 -- 实测输出（2026-10-18，Lua 5.2.3）：
 --   distance 0 / 2.236 / 4.0（reach=4.1） -> nil（接受）

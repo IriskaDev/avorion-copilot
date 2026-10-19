@@ -20,7 +20,7 @@
 --   ⚠️ 替身里的 relation 是**离线模型** ✗ —— 真机 relation（Allies/Neutral 到底哪个）
 --     要在**重启游戏后**用 fleet_query {what:"sectorFacts"} 实测核对 ✓（见回报 ✓）。
 --
--- 跑法：  native\harness\lua.exe native\harness\_sectorfaction_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_sectorfaction_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

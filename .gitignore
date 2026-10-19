@@ -1,7 +1,7 @@
-# ---- 构建中间产物（统一放在 native/build/，别再扔仓库根 ✓）----
-*/obj/
-native/build/
+# ---- 构建产物：唯一输出目录 = 仓库根 build/（中间物 / DLL / 测试台 lua.exe 全放这儿）✓
+#      2026-10-19：产物不再落在 native/ 里（native/ 只放源码）✓
 build/
+*/obj/
 *.obj
 *.lib
 *.exp

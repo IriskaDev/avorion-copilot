@@ -23,7 +23,7 @@
 --   (j) onOrder 回执 risk 与 predict **逐字相同** ✓ + trace 有 Refine 行 ✓
 --
 -- 跑法（★ 必须在 mod 仓库根跑，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_predict_refine_selftest.lua
+--   build\harness\lua.exe native\harness\_predict_refine_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

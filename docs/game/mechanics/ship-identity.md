@@ -128,6 +128,6 @@
 ## 7. 验证
 
 * `node …\check.js .` → `45 file(s), 0 failure(s)` ✓
-* `native\harness\lua.exe native\harness\_ship_identity_selftest.lua` → `26 checks, 0 failure(s)` ✓
+* `build\harness\lua.exe native\harness\_ship_identity_selftest.lua` → `26 checks, 0 failure(s)` ✓
   （覆盖：有称号 / 空称号 / getTitle 抛错 / translated 抛错退回原串 / EntityType 全局缺失兜底 / 未知枚举 / 完整卡与简报逐字一致）
 * 真机三船：见 §2 ✓

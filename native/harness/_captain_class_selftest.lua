@@ -17,7 +17,7 @@
 --   ④ 真·Merchant 的船长必须报 "Merchant" / "3" ✓ —— 即使它的 `hasClass(None)` 也为 true ✓
 --      （即：**根本不该调用 hasClass** —— 本测试顺手数调用次数 ✓）
 --
--- 跑法（在仓库根执行）：  native\harness\lua.exe native\harness\_captain_class_selftest.lua
+-- 跑法（在仓库根执行）：  build\harness\lua.exe native\harness\_captain_class_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

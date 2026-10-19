@@ -21,7 +21,7 @@
 --   ⑦ 实体口径（`liveArmedTurrets`）只在船**在本星区**时出现 ✓
 --
 -- 跑法（在仓库根执行）：
---   native\harness\lua.exe native\harness\_weapons_card_selftest.lua
+--   build\harness\lua.exe native\harness\_weapons_card_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

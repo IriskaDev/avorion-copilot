@@ -14,7 +14,7 @@
 --   ⑧ 缓存：一批 3 个都失败的框 → `Card.equipmentFacts` **只被调 1 次** ✓
 --   ⑨ 补全后的文案仍是可 JSON 编解码的普通字符串 ✓
 --
--- 跑法：  native\harness\lua.exe native\harness\_job_equipment_error_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_job_equipment_error_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

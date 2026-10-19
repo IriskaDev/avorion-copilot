@@ -14,7 +14,7 @@
 --        （两者共用 scanScoutArea / scoutSurveyArea —— 这条是防"将来有人重写其中一条"的回归锁 ✓）
 --
 -- 跑法（★ 必须在 mod 仓库根跑，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_predict_scout_selftest.lua
+--   build\harness\lua.exe native\harness\_predict_scout_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

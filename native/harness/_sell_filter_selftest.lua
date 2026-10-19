@@ -22,7 +22,7 @@
 --    getErrors（link_in.lua 的 sellableHoldOf 里 `command:getErrors(...)` ✓），所以口径不是我定的 ✗。
 --
 -- 跑法（★ 必须在 mod 仓库根跑）：
---   native\harness\lua.exe native\harness\_sell_filter_selftest.lua
+--   build\harness\lua.exe native\harness\_sell_filter_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

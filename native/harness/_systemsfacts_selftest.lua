@@ -23,7 +23,7 @@
 --   ⑪ caps 声明新三样 + 新路径只读总闸 ✓
 --
 -- 跑法（在仓库根执行）：
---   native\harness\lua.exe native\harness\_systemsfacts_selftest.lua
+--   build\harness\lua.exe native\harness\_systemsfacts_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

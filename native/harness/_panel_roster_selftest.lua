@@ -16,7 +16,7 @@
 --   ⑤ 只读自检行：`reportRoster` 回执 = `card.lua` 的 `designated` ✓
 --
 -- 跑法（在仓库根执行）：
---   native\harness\lua.exe native\harness\_panel_roster_selftest.lua
+--   build\harness\lua.exe native\harness\_panel_roster_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

@@ -13,7 +13,7 @@
 --   (e) 名字比较仍是**逐字**（原版 tradecommand.lua:743 ✓）；只是**提示** didYouMean，不改写 ✗✓
 --
 -- 跑法（★ 必须在 mod 仓库根跑，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_trade_order_route_selftest.lua
+--   build\harness\lua.exe native\harness\_trade_order_route_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

@@ -16,7 +16,7 @@
 --   ⑤ 简报**不许自造字段**：card 里没有的身份字段，brief 里也不能有 ✗
 --
 -- 跑法（在仓库根执行）：
---   native\harness\lua.exe native\harness\_ship_identity_selftest.lua
+--   build\harness\lua.exe native\harness\_ship_identity_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

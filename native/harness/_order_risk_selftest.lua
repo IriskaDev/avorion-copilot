@@ -15,7 +15,7 @@
 --   ⑥ 非 Travel 的动作**仍然**要求框含船 ✓（Travel 的例外没把别的动作带坏 ✗✓）
 --
 -- 跑法（★ 必须在 mod 仓库根跑）：
---   native\harness\lua.exe native\harness\_order_risk_selftest.lua
+--   build\harness\lua.exe native\harness\_order_risk_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

@@ -13,7 +13,7 @@
 --   这里用**偏移集合**区分相位（两个集合不相交 ✓），不需要给 link_in.lua 打补丁 ✓。
 --   ★ 注意：`rankAreasByNet` 是 link_in.lua 的 local ✗ → 测试里用自己的等价排序器 ✓。
 --
--- 跑法：  native\harness\lua.exe native\harness\_trade_scan_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_trade_scan_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

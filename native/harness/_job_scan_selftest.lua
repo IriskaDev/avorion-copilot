@@ -12,7 +12,7 @@
 --   ⑥ Salvage：装备件数 × E[稀有度层级]（1.23 ✓）；fieldTier 只当次级键 ✓
 --   ⑦ 响应可 JSON 编解码 + orderHint 能直接喂给 order ✓
 --
--- 跑法：  native\harness\lua.exe native\harness\_job_scan_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_job_scan_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

@@ -15,7 +15,7 @@
 --   (g) 响应形状不变量：关键键都在 ✓、可 JSON 往返 ✓、退化情形（没区域/全失败）不报错 ✓
 --
 -- 跑法（★ 必须在 mod 仓库根跑，脚本按相对路径读文件 ✓）：
---   native\harness\lua.exe native\harness\_scout_scan_selftest.lua
+--   build\harness\lua.exe native\harness\_scout_scan_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 package.path = package.path .. ";data/scripts/?.lua"

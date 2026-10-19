@@ -43,9 +43,13 @@ copilot/
     ├── copilot.c / dshlog.c / lua_json.c / cJSON.*   # copilot.dll 的源码
     ├── copilotprobe.c                 # ABI 自检探针（诊断残留）
     ├── lua-src/lua-5.2.1/             # **编译基准**（= 宿主 exe 里的 $LuaVersion；别用别的版本 ✗）
-    ├── harness/                       # 独立测试台 lua.exe（不开游戏即可验原生模块）
+    ├── harness/                       # 测试台**脚本**（.lua）；lua.exe 产物在 build\harness\ ✓
     └── test-listener.mjs              # TCP 测试监听端
 ```
+
+> ★ 所有编译产物（`.obj/.lib/.exp/.dll`、测试台 `lua.exe`）**统一落仓库根 `build/`** ✓
+> —— `native/` 只放源码，`git status` 里不该再出现 `native/` 下的二进制 ✓。
+> 规矩与理由见 [`build-and-native.md`](build-and-native.md) §「编译产物一律放仓库根 build/」。
 
 ## 文件结构（2026-10-13 模块化重构后的真实状态）
 

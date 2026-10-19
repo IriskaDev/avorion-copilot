@@ -12,7 +12,7 @@
 --     不 removeScript、不 addScriptOnce、不 decide）✗✓ —— 这是修掉「跃迁被打断」的关键 ✓
 --   · 开启 → 接管一次 autoPilotEnabled=true（engage once 不被破坏 ✓）
 --
--- 跑法：  native\harness\lua.exe native\harness\_autopilot_selftest.lua
+-- 跑法：  build\harness\lua.exe native\harness\_autopilot_selftest.lua
 
 package.path = package.path .. ";data/scripts/lib/?.lua"
 
