@@ -238,6 +238,11 @@ export function registerFleetTools(
         '(per-socket cost vs required threshold) -- never present missing.nextSocket/missingPP as an engine fact. ' +
         '★ For a ship NOT in your current sector there is no entity, so socketsKnown/slotsKnown/ppThresholdsKnown/' +
         'missingKnown=false + a reason -- that is UNKNOWN, never 0 sockets; equipped is still read. ' +
+        '★★ what=panel OPENS/CLOSES the Copilot UI window (no ship needed): action = open | close | toggle ' +
+        '(default toggle). The game writes a monotonic seq + the action into a player value; the game client ' +
+        'applies it on its next 1 Hz tick, so allow ~1 s. Returns {ok, command, seq, lastKnownVisible, how} ' +
+        'where lastKnownVisible is the CLIENT-REPORTED state BEFORE this command (so open-then-query shows the ' +
+        'old value; it is not a promise, it is a fact that lags one tick). ' +
         'The old plan queries -- tradePlan | minePlan | ' +
         'salvagePlan | sellPlan | scoutPlan | jobPlan (jobPlan takes action=Mine|Salvage) -- are LEGACY convenience ' +
         'endpoints that self-scan ~67 boxes and self-rank/recommend; prefer composing the atoms ' +
@@ -248,7 +253,7 @@ export function registerFleetTools(
         what: {
           type: 'string',
           required: true,
-          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | renameShip | systemsFacts | orderStatus | dossier | ' +
+          description: 'list | ship | goal | sectorFacts | predict | tradeRoutes | tradeEvaluate | mountQuote | mountUpgrade | shipQuote | blockQuote | blockUpgrade | shipUpgrade | renameShip | systemsFacts | panel | orderStatus | dossier | ' +
             'tradePlan | minePlan | salvagePlan | sellPlan | scoutPlan | jobPlan',
         },
         orderId: { type: 'number', description: 'orderStatus only: the orderId from a fleet_order receipt (exact single order; omit to get the latest order of `ship`)' },
@@ -289,7 +294,7 @@ export function registerFleetTools(
             '+ current-sector numbers; no depth sampling, no long per-action prose). Answers "what can ' +
             'it do now". The identity fields are copied verbatim from the full card (same source).',
         },
-        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel | Refine (Travel predict: box = 1x1 destination, ship need NOT be inside; Refine: 31x31, box re-centred on the ship by the game)' },
+        action: { type: 'string', description: 'predict/jobPlan: Mine | Salvage | Trade | Sell | Scout | Travel | Refine (Travel predict: box = 1x1 destination, ship need NOT be inside; Refine: 31x31, box re-centred on the ship by the game). what=panel: open | close | toggle (default toggle) = the Copilot UI window' },
         material: {
           type: 'string',
           description:
@@ -329,7 +334,9 @@ export function registerFleetTools(
         // ★ sectorFacts 只需坐标 ✓；list 什么都不用 ✓；其余"针对某艘船"的 what 才需要 ship ✓（2026-10-17 ✓）
         //   ★ orderStatus 例外：给 orderId 就够（精确到某一单 ✓），不给才按 ship 取最近一单 ✓
         const orderStatusById = args.what === 'orderStatus' && args.orderId !== undefined
+        // ★ panel 不需要 ship（它开关的是 UI 窗口，不是某艘船 ✓ 2026-10-19）
         const needsShip = args.what !== 'fleet' && args.what !== 'sectorFacts' && args.what !== 'list'
+          && args.what !== 'panel'
           && !orderStatusById
         if (needsShip && (args.ship === undefined || args.ship === '')) {
           return `what=${args.what} needs the ship parameter${args.what === 'orderStatus' ? ' (or an orderId)' : ''}`

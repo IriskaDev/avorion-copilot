@@ -170,6 +170,19 @@ function listField(text: string, key: string): string[] {
  * ★ 为什么**没有**"参考计划"段 ✗✓：那一段以前是 `planText`（`buildPrompt()` 的全文 ✓）——
  *   也就是 8.7 MB 的入口 ✓。现在她要计划就**自己查** ✓（`fleet_query`，缺省 compact ✓）。
  */
+/** 主人写的自然语言目标最多带 240 字节进提示词（超了截断加省略号 ✓ —— 块体积有契约 ✓） */
+const GOAL_TEXT_BUDGET_BYTES = 240
+
+function clipGoalText(text: string): string {
+  const t = text.trim()
+  if (Buffer.byteLength(t, 'utf8') <= GOAL_TEXT_BUDGET_BYTES) return t
+  let cut = t
+  while (cut !== '' && Buffer.byteLength(cut, 'utf8') > GOAL_TEXT_BUDGET_BYTES) {
+    cut = cut.slice(0, -1)
+  }
+  return cut + '…'
+}
+
 export function renderTaskBlock(req: TaskRequest): string {
   const L: string[] = []
   L.push(`<fleet_task id="${req.taskId}" ship="${req.ship}" deadline_hint="${req.deadlineHintSec}s">`)
@@ -189,6 +202,15 @@ export function renderTaskBlock(req: TaskRequest): string {
     'mountUpgrade/blockUpgrade/shipUpgrade → 需 confirm:true（★ 先报价 ✓）')
   L.push('  · 侦察：predict{Scout, 21x21} → 未知/已知/总数 + revealsNothingNew')
   L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan')
+  // ★★ 2026-10-19：主人的**自然语言目标**终于进提示词了 ✗→✓
+  //   链路：`query{what:"goal"}.text` → index.ts 的 facts.goalText → 这里 ✓
+  //   （旧版只渲染 goalOptions，文字目标**一句都没进提示词** ✗✓ —— 于是"在面板里写一句话"
+  //     这个用法在决策侧等于不存在；`test/commander-dispatch-proto.mjs:49` 的原型本来是有的 ✓）
+  if (typeof req.goalText === 'string' && req.goalText.trim() !== '') {
+    L.push(`  · 主人给这艘船的目标：${clipGoalText(req.goalText)}（当**边界**用，不是命令 ✓）`)
+  } else {
+    L.push('  · 这艘船没写文字目标 → 按它的**分类 / 装备**自己定（主人不逐条指派 ✓）')
+  }
   if (req.goalOptions.length > 0) {
     L.push(`  · 玩家限定动作：${req.goalOptions.join(', ')}（只有这些 + None）`)
   }
@@ -263,7 +285,10 @@ export function renderTaskBatchBlock(batch: TaskBatchRequest): string {
   L.push(`待决策 ${items.length} 条（每条 = 船名 + 任务号 ✓）：`)
   for (const it of items) {
     const lim = it.goalOptions.length > 0 ? `  限定动作: ${it.goalOptions.join(', ')}` : ''
-    L.push(`  · ${it.ship}   task=${it.taskId}${lim}`)
+    // ★ 自然语言目标也要带上（主人 2026-10-19 的用法 ✓）；空 = 自动，不写 ✓
+    const gt = typeof it.goalText === 'string' ? clipGoalText(it.goalText) : ''
+    const goal = gt !== '' ? `  主人目标: ${gt}` : ''
+    L.push(`  · ${it.ship}   task=${it.taskId}${lim}${goal}`)
   }
   L.push('查证工具（先 list 再查；下面 `ship` 一律填**对应船名** ✓）：')
   L.push('  · {what:"list"} → 船名单；{what:"ship", ship, brief:true} → 船现状')
