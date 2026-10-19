@@ -80,6 +80,7 @@ self.rosterLabel = nil          -- ★ 名单自检行（面板 N / 服务端 M�
 self.shipRows = nil             -- ★ 每行缓存：{ name, goalText } ✓（auto 列 / 动作白名单都已退役 ✗✓）
 self.mirrorGuard = false        -- ★ 勾→文字镜像 的防重入标志 ✓
 self.panelCmdSeq = 0            -- ★ 已执行到哪一条 RPC 面板命令（单调序号 ✓）
+self.lastVisibleReport = nil    -- ★ 上一次回报给服务端的可见性（ESC/X 关窗后补报 ✓）
 self.goalEditShip = nil         -- ★ 目标输入框当前编辑的船名（点行设置 ✓）
 self.goalEditRow = nil          -- ★ 那一行的下标（保存后回写显示 ✓）
 self.goalEditText = nil         -- ★ 输入框里的文字（读出来给缓存 ✓）
@@ -201,9 +202,32 @@ function CopilotUI.getUpdateInterval()
     return 1
 end
 
+-- ★★ ESC / X 关窗后的**可见性补报**（2026-10-19）✓✓
+--
+-- 为什么需要：ESC 和 X 按钮都是**引擎直接 hide 窗口**，不会调用 `togglePanel()` ——
+--   Avorion 没有 onCloseFunction 可挂（见 buildPanel 里的说明 ✓），所以客户端只能自己盯
+--   `self.window.visible` 的变化，再走 reportPanelVisible 报一次 ✓。
+--   否则 ESC 关掉后，`copilot_panel_visible` 会一直停在 "open" ✗ →
+--   RPC `{what:"panel"}` 回执里的 lastKnownVisible 就是**假话** ✗✓。
+--
+-- ★ 幂等：只有**变化**才发一次 RPC（这是 1 Hz 轮询，不能每拍都 invokeServerFunction ✗）；
+--   连按两次 ESC（第二次窗口本来就关着）只是再比一次、什么都不做 ✓✓。
+function CopilotUI.watchPanelVisibility()
+    if self.window == nil then return end
+
+    local visible = self.window.visible == true
+    if self.lastVisibleReport == visible then return end
+
+    self.lastVisibleReport = visible
+    CopilotUI.reportPanelVisible(visible)
+end
+
 function CopilotUI.updateClient(timeStep)
     -- ★ RPC 面板开关：**面板关着时也要跑** ✓（它正是用来把面板打开的 ✗→✓）
     CopilotUI.pollPanelCommand()
+
+    -- ★ ESC / X 关窗是引擎直接 hide，不走 togglePanel → 在这里补上真实可见性回报 ✓
+    CopilotUI.watchPanelVisibility()
 
     -- the labels only need updating while the panel is open; the ship list is rebuilt when
     -- the panel is opened so it never fights with the player's clicks
@@ -257,6 +281,23 @@ function CopilotUI.buildPanel()
     window.caption = "Copilot"%_t
     window.moveable = true
     window.showCloseButton = true
+
+    -- ★★ ESC 关闭（2026-10-19，主人原话：「这个界面不吃 ESC，怪难受的，要做成 HOOK 住
+    --   ESC 键，按了就关闭」✓✓）
+    --
+    -- 根因（查文档 + 全原版脚本，不是猜 ✓）：
+    --   · Avorion 的窗口**没有** `onCloseFunction` —— `Documentation/Window.html` 全文 0 处，
+    --     全原版 `data/scripts/**` 也 0 处引用 ✗（本鱼一开始也怀疑缺这个，查完发现不对 ✓）
+    --   · ESC 能不能关窗由 **`Window.closeableWithEscape`** 决定
+    --     （`Documentation/Window.html:363-365` 的 property；原版用法逐字：
+    --      `data/scripts/player/ui/diplomacy.lua:1012`、
+    --      `data/scripts/entity/merchants/researchstation.lua:141`、
+    --      `data/scripts/player/map/mapcommands.lua:428` ✓✓）
+    --   · 本面板建窗时没设它 → 引擎就不把 ESC 交给这个窗口 ✗（默认不吃 ✓）
+    --
+    -- 设成 true 后，ESC 由引擎走**和 X 按钮完全相同的那条 hide 路径**（窗口对象不销毁，
+    -- `self.window.visible` 变 false ✓）→ 不需要额外清理，也不碰游戏菜单/暂停 ✓✓
+    window.closeableWithEscape = true
 
     local lister = UIVerticalLister(Rect(vec2(10, 10), vec2(size.x - 10, size.y - 10)), 6, 0)
 
@@ -411,7 +452,8 @@ function CopilotUI.togglePanel()
 
     -- ★ 上报真实可见性（服务端只读、只用于 RPC 回执里回一句"现在到底是开还是关" ✓；
     --   ★ 客户端不能直接 setValue（player value 是服务端→客户端的同步 ✓），所以走 callable ✓）
-    CopilotUI.reportPanelVisible(self.window.visible and true or false)
+    self.lastVisibleReport = self.window.visible and true or false
+    CopilotUI.reportPanelVisible(self.lastVisibleReport)
 end
 
 -- ---------------------------------------------------------------------------
@@ -1094,6 +1136,9 @@ function CopilotUI.buildMountsWindow()
     window.caption = "Turret base materials"%_t
     window.moveable = true
     window.showCloseButton = true
+    -- ★ 同一套 ESC 规矩（见 buildPanel）：这是面板的**子窗口**，ESC 必须能关它 ✓
+    --   否则 ESC 会跳过它去关下面的主面板，留下这个窗口孤零零开着 ✗✓
+    window.closeableWithEscape = true
 
     local lister = UIVerticalLister(Rect(vec2(10, 10), vec2(size.x - 10, size.y - 10)), 6, 0)
 
