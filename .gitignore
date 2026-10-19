@@ -41,3 +41,15 @@ saves-backup*/
 # ---- DSH 插件（在 plugin/dsh/）：构建期临时依赖，不入库 ✓（lib/ 是产物但 DSH 要读它，故保留跟踪 ✓）----
 plugin/dsh/node_modules/
 plugin/dsh/.dsh-links/
+node_modules/
+node_modules.bak/
+
+# ---- 验证证据（截图 / 抓包 / 存档快照）：含本机绝对路径，且体积大（本机实测 100 MB+）→ 绝不入库 ✓ ----
+tools/_evidence/
+
+# ---- 一次性诊断脚本（tmp-*.mjs：取证跑完即弃，别留库 ✓）----
+tmp-*.mjs
+
+# ---- 本地环境变量 / 凭据（含 token 一律不入库 ✓）----
+.env
+.env.*
