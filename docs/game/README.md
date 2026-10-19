@@ -26,6 +26,7 @@
 | [`ops/mount-material-upgrade.md`](ops/mount-material-upgrade.md) | 炮塔底座材料升级可行性调研 + 真机证据 |
 | [`ops/station-operations.md`](ops/station-operations.md) | 空间站运营调研（可读性矩阵 / 原子候选 / 投入产出） |
 | [`ops/prompt-insert-proposal.md`](ops/prompt-insert-proposal.md) | 提示词插入提案（层①②③怎么分；**提案未落地** ✓，等主人点头） |
+| [`ops/fleet-decision-skill.md`](ops/fleet-decision-skill.md) | 决策技能卡（`.dsh/skills/fleet-decision/SKILL.md` 的**只读副本**，逐字一致有守卫） |
 
 ### mechanics（机制）
 
@@ -159,9 +160,9 @@
 3. **每个文件在本图恰好出现一次**，不多不漏；`docs/dev/*` 只归 [`AGENTS.md`](../../AGENTS.md)，不在本图。
 4. 一句话用途必须与文件当前主题一致（文件大改后回来更新这行）。
 
-**当前核对结果（2026-10-19 复核）**：`docs/game/` 下共 **37 个 `.md`** ——
-ops **8** / mechanics **12** / rules **2** / lessons **11** / 顶层 **4**（本文件 + `mechanics-source.md` /
-`goals-and-ops.md` / `llm-ops.md`，见 §5）；§1 列 ops+mechanics+rules+lessons 共 33 行，与磁盘**逐一一致** ✓。
-另 `docs/dev/` **12 篇**由 [`AGENTS.md`](../../AGENTS.md) 覆盖；`mechanics/` 下 2 张 PNG 是
+**当前核对结果（2026-10-19 复核）**：`docs/game/` 下共 **38 个 `.md`** ——
+ops **9** / mechanics **12** / rules **2** / lessons **11** / 顶层 **4**（本文件 + `mechanics-source.md` /
+`goals-and-ops.md` / `llm-ops.md`，见 §5）；§1 列 ops+mechanics+rules+lessons 共 34 行，与磁盘**逐一一致** ✓。
+另 `docs/dev/` **13 篇**由 [`AGENTS.md`](../../AGENTS.md) 覆盖；`mechanics/` 下 2 张 PNG 是
 [`ship-identity.md`](mechanics/ship-identity.md) 的内嵌截图，不单列。
 核对手段 = [`tools/check-links.mjs`](../../tools/check-links.mjs)（`node tools/check-links.mjs` → `ALL LINKS OK`）+ `glob` 枚举。

@@ -29,6 +29,7 @@ Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略�
 | 自行验证手册（开游戏/截图/点击/按键/看日志） | [`docs/dev/verify-manual.md`](docs/dev/verify-manual.md) |
 | ★ 截图 / 抓屏：**必须用游戏内 F12（Steam）**；GDI / PrintWindow 会抓黑 ✗ —— 换 F12 别重试，目录见 §2.1 | [`docs/dev/verify-manual.md`](docs/dev/verify-manual.md) §2 |
 | 面向用户的说明 | [`README.md`](README.md) |
+| ★ DSH 技能（`.dsh/skills` 扫描根 / rank / 生效方式 / 副本守卫） | [`docs/dev/skills-and-roots.md`](docs/dev/skills-and-roots.md)（技能内容副本：[`docs/game/ops/fleet-decision-skill.md`](docs/game/ops/fleet-decision-skill.md)） |
 | 根文档收敛记录（哪份根文档搬到哪、删了什么） | [`docs/dev/overview.md`](docs/dev/overview.md) §根文档收敛记录 |
 
 > ★ **仓库根只放 `AGENTS.md` + `README.md`**（2026-10-19 收敛 ✓）—— 其它文档一律进

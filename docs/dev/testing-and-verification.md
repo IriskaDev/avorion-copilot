@@ -91,6 +91,9 @@ node test/order-payload.mjs             # 期望 61 项断言 / 失败 0（2026-
 
 # 5) 文档链接（搬文件/改路径后必跑；含两种约定：相对本文件、相对仓库根）
 node tools/check-links.mjs              # 期望 ALL LINKS OK ✓
+
+# 6) 技能副本（.dsh 那份是运行时权威，改了技能必须同步文档副本）
+node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（漂了 → 加 --sync）
 ```
 
 **断言数台账（2026-10-19 实测；会随用例增加而变，别把旧数字当基线 ✗）**
