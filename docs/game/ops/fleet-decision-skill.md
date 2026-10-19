@@ -42,7 +42,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - **贸易排序**看「**每趟利润 × 趟数**」（`profitPerHour` 只在同档时长内比）✓，**不是** `profitPerSize` 比率、
   也不是单看 `netProfitLow`（`docs/game/lessons/orders.md` L17 ③ + [`trade.md`](docs/game/lessons/trade.md) L24 细化）；本金（`deposit`）**不是成本**、结束全额退还 ✓。
 - **贸易要一次比一片**：`tradeEvaluate`（多框 × 全商品 × 多本金，一次调用 ≤60 组合 ✓）；`flights.from = 0` = 空跑 ✗。
-- **护航既降险也加产**；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（**不是"必须同星区"** ✗；同星区只是距离 0 的特例）→ `docs/game/mechanics/escorts.md:7-61`、`:63-71`、`:73-79`。
+- **护航可能降险、也可能加产，但「降不降险」必须实测**（★ 2026-10-20 真机：同一框带 / 不带 `escorts`，风险数字一个没变 ✗，别当默认前提）；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（**不是"必须同星区"** ✗；同星区只是距离 0 的特例）→ `docs/game/mechanics/escorts.md:7-61`、`:63-71`、`:73-79`。
 
 ## 4. 原子接口作业规程（与代码一致）
 一次一件小事，**轻的先来**：一次只发一条查询 ✓；别指望一次查全 ✗；不满意可**补查一次** ✓。
@@ -82,6 +82,9 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - ★ 同一框心至少量 **3 种合法形状**（17x17 / 29x11 / 11x29），好货常只在一种里（L25）。
 - ★ 采矿一次 `predict {boxes:[…]}` 量 **6~8 框**（N≤24）：同区风险可从 3% 跳到 66%，别用单框否定整片（[`docs/game/lessons/mining.md`](docs/game/lessons/mining.md) L26）。
 - ★ 材料升级先 `mountQuote` 拿**当场** `baseCount/needUpgrade`；换设计后块数会变，别凭记忆（[`docs/game/lessons/materials.md`](docs/game/lessons/materials.md) L27）。
+- ★ **护航不是免费的降险手段**：同一框带 `escorts` 前后各测一次 `risk.baseAttackChance`；数字不变 = 没用 ✗，别假设（2026-10-20 真机 18%/26%/3% 一个没变，[`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L28）。
+- ★ **量框要在派单前最近一次**：船会动，批量 `predict` 几分钟就过期；派单前重查 `box.containsShip`、必要时重量（2026-10-20 实测 4/8 框 `SHIP_NOT_IN_AREA`）。
+- ★ **高产出框被风险挡住**：先确认护航在有效距离内并**实测**风险；仍超闸门 → 换形状 / 换位置，或经主人**明确授权**再冒险 —— 不许自己放宽闸门 ✗（L28）。
 
 拿不准先查、别猜；工具报错把它给的原因当事实。
 <!-- END SKILL-COPY -->
