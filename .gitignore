@@ -1,6 +1,7 @@
 # ---- 构建中间产物（统一放在 native/build/，别再扔仓库根 ✓）----
 */obj/
 native/build/
+build/
 *.obj
 *.lib
 *.exp

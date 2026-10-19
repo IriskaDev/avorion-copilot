@@ -89,23 +89,27 @@ Get-Content "$env:APPDATA\Avorion\mods\modconfig.lua" | Select-String 'copilot'
 $repo = "$env:USERPROFILE\avorion-copilot"
 $nat  = "$repo\native"
 $lsrc = "$nat\lua-src\lua-5.2.1\src"   # ★ 必须是 5.2.1
+$out  = "$repo\build"                  # ★ 产物统一落 build/，别留在 native/ 里
+New-Item -ItemType Directory -Force -Path $out | Out-Null
 Set-Location $nat
 $core = 'lapi','lcode','lctype','ldebug','ldo','ldump','lfunc','lgc','llex','lmem',
         'lobject','lopcodes','lparser','lstate','lstring','ltable','ltm','lundump',
         'lvm','lzio','lauxlib'
 cl /nologo /LD /O2 /utf-8 /D_CRT_SECURE_NO_WARNINGS /I"$lsrc" /I"$nat" `
-   copilot.c dshlog.c lua_json.c cJSON.c @core ws2_32.lib /Fe:copilot.dll
+   copilot.c dshlog.c lua_json.c cJSON.c @core ws2_32.lib `
+   /Fo:"$out\" /Fe:"$out\copilot.dll"
 ```
 
-3. 把产物放到**游戏真正加载的那一份**位置：
+3. 把产物放到**游戏真正加载的那一份**位置（编译产物统一落 `build/`，别往 `native/` 里丢）：
 
 ```powershell
-Copy-Item "$repo\native\copilot.dll" "D:\SteamLibrary\steamapps\common\Avorion\bin\copilot.dll" -Force
+Copy-Item "$repo\build\copilot.dll" "D:\SteamLibrary\steamapps\common\Avorion\bin\copilot.dll" -Force
 ```
 
 验证：
 
 ```powershell
+Test-Path "$repo\build\copilot.dll"                                     # 期望 True
 Test-Path "D:\SteamLibrary\steamapps\common\Avorion\bin\copilot.dll"   # 期望 True
 ```
 
