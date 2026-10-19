@@ -27,17 +27,65 @@ Start-Process "steam://rungameid/445220"      # Avorion 的 AppID
 
 启动后等 **60~75 秒**到主菜单（看 `MainWindowTitle` 变成 `Avorion`）。
 
-## 2. 截图
+## 2. 截图（★ 优先游戏内 F12＝Steam 截图）
+
+**Agent 截图一律先按游戏内 `F12`** ✓ —— Steam 自己存一张，`read_image` 直接读那个文件。
+这是硬规矩：**不要**默认去用 GDI 抓屏 ✗（见 §2.2，会抓到全黑）。
+
+- 前提：Steam 在跑（`Get-Process steam`），游戏是**经 Steam 启动**的（§1）。
+- 按完 F12 稍等再去看，按**时间最新**取；文件名 `年月日时分秒_序号.jpg`，**是 `.jpg` 不是 `.png`** ✓。
+
+### 2.1 Steam 截图目录（本机实测 2026-10-19）
+
+```
+C:\Program Files (x86)\Steam\userdata\211785734\760\remote\445220\screenshots
+```
+
+- `211785734` = 本机 Steam 账号 ID（换账号就变）· `445220` = Avorion 的 AppID
+- Steam 装在 `C:\Program Files (x86)\Steam`（注册表 `HKCU:\Software\Valve\Steam` 的 `SteamPath`）
+- 该目录实测 **136 个 `.jpg`**（最早 2026-10-13、最新就在本会话内 ✓），取时间最新的那张。
+
+```powershell
+$shots = 'C:\Program Files (x86)\Steam\userdata\211785734\760\remote\445220\screenshots'
+Get-ChildItem $shots -File | Sort-Object LastWriteTime -Descending |
+    Select-Object -First 5 Name, Length, LastWriteTime
+```
+
+取最新一张丢给 `read_image` 即可：
+
+```powershell
+$shot = Get-ChildItem $shots -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$shot.FullName
+```
+
+> 换机器 / 换账号时先自己算路径，别硬抄 ID：
+> `Get-ChildItem 'C:\Program Files (x86)\Steam\userdata' -Directory`，逐个看 `760\remote\445220\screenshots` 是否存在。
+
+### 2.2 GDI / PrintWindow 抓屏：会抓黑，只当兜底 ✗
 
 ```powershell
 Add-Type -AssemblyName System.Drawing
 $bmp = New-Object System.Drawing.Bitmap 1920, 1080
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size); $g.Dispose()
-$bmp.Save("$dir\shotN.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+$bmp.Save((Join-Path $dir 'shotN.png'), [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 ```
 
-然后用 **`read_image` 工具看图** —— 这一步是整套能力的核心：Agent 能真的"看见"屏幕。
+**实测：GDI `CopyFromScreen` / `PrintWindow` 常常抓出全黑图** ✗
+（游戏独占 / 合成渲染，截屏 API 拿不到合成后的画面）。
+2026-10-19 有 agent **反复抓到同一张全黑图**，同一个抓法重试多少次都一样 ✗✓。
+
+所以：
+
+1. **抓到黑图 → 立刻换游戏内 F12** ✓，不要调参数、不要换 PrintWindow 再试 ✗
+2. 黑图判定：文件特别小（几百字节 ~ 几 KB）或 `read_image` 一看全黑
+3. GDI 只在这两种情况下才值得用：
+   - 游戏**被暂停 / 焦点不在游戏**时它抓的是**旧帧**（见后面「SHIFT+F12 截不了图」一节）
+   - 人不在场时的兜底 —— 看完立刻回 F12
+4. **人在场**且要拍 F12 拍不到的东西（例如按住 SHIFT 才出现的快捷栏）：
+   让人类 `Alt+Tab` 出来，用**系统截图**（`Win+PrtSc` 落到 `图片\屏幕截图`，或 Snipping Tool）✓
+
+无论走哪条路，最后都用 **`read_image` 工具看图** —— 这是整套能力的核心：Agent 能真的「看见」屏幕。
 
 ## 3. 点击
 
@@ -108,6 +156,7 @@ public class K {
 | `Failed to initialize Steam API` | 直接跑了 exe ✗ 必须走 `steam://rungameid/445220` |
 | 按空格没反应 | `keybd_event` 扫描码传了 0 ✗ 要 **0x39** |
 | `SendInput` 返回 0 | `INPUT` 结构体大小不对（x64 应为 32 字节） |
+| **截图全黑** | GDI / PrintWindow 抓不到独占 / 合成渲染的画面 ✗ → 立刻换游戏内 **F12**（§2.2），别重试 |
 | **两份日志同时停住** | **游戏被暂停**（Avorion 单机可暂停，焦点离开时日志静止）—— **不是崩溃** ✗ |
 | 日志里出现 `…/ai/copilot.lua` 找不到 | **老存档记的是旧脚本路径**；改名后游戏会把它移除；`player/init.lua` 里有自愈逻辑 |
 | `你的 … 舰船需要一名船长以继续采矿` | **游戏的硬门槛**：所有后台命令都要船长（见 LLM-OPS.md） |

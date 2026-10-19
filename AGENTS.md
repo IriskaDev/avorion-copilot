@@ -15,6 +15,7 @@ Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略�
 |---|---|
 | 工程总览 / 仓库布局 / 开发工作流 | [`docs/dev/overview.md`](docs/dev/overview.md) |
 | ★ 接口原子化（接口怎么拆：一次一件小事 / 不做策略推荐 / 发命令原子化） | [`docs/dev/interface-atomicity.md`](docs/dev/interface-atomicity.md) |
+| ★ 接口（原语）清单 → 有哪些原子接口、各吃什么参数 | [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md)（§2 原子字典）+ [`docs/dev/interface-atomicity.md`](docs/dev/interface-atomicity.md) |
 | Lua / VFS / 引擎约定（挂载层级、UI 图标栏、两条硬规矩） | [`docs/dev/lua-vfs-and-engine.md`](docs/dev/lua-vfs-and-engine.md) |
 | 热重载与 VM 边界 | [`docs/dev/hot-reload-and-vm-boundaries.md`](docs/dev/hot-reload-and-vm-boundaries.md) |
 | 构建与编译 / 原生 DLL / ABI | [`docs/dev/build-and-native.md`](docs/dev/build-and-native.md) |
@@ -23,9 +24,10 @@ Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略�
 | git 与仓库规矩 | [`docs/dev/git-and-repo.md`](docs/dev/git-and-repo.md) |
 | 当前状态 / 待办 | [`docs/dev/current-status.md`](docs/dev/current-status.md) |
 | 原生 DLL / ABI 实测结论（动 DLL 前必读） | [`NATIVE.md`](NATIVE.md) |
-| ★ 舰队能力入口 = **RPC 原子**（见 [`docs/game/ops/atomic-rpc.md`](docs/game/ops/atomic-rpc.md)）；**聊天命令已退役**（历史留档 [`docs/game/ops/chat-commands.md`](docs/game/ops/chat-commands.md)） | [`docs/game/ops/atomic-rpc.md`](docs/game/ops/atomic-rpc.md) · [`docs/game/ops/tools-cheatsheet.md`](docs/game/ops/tools-cheatsheet.md) |
+| ★ 游戏侧全部内容（决策/机制/规则/教训/作业手册） | [`docs/game/README.md`](docs/game/README.md) |
 | 游戏 ⇄ DSH 的 TCP 协议 | [`PROTOCOL.md`](PROTOCOL.md) |
 | 自行验证手册（开游戏/截图/点击/按键/看日志） | [`VERIFY.md`](VERIFY.md) |
+| ★ 截图 / 抓屏：**必须用游戏内 F12（Steam）**；GDI / PrintWindow 会抓黑 ✗ —— 换 F12 别重试，目录见 §2.1 | [`VERIFY.md`](VERIFY.md) §2 |
 | 面向用户的说明 | [`README.md`](README.md) |
 | 早期计划（已过时，顶部有说明） | [`TODO.md`](TODO.md) |
 | 待办交接单（2026-10-17） | [`NEXT-WORK.md`](NEXT-WORK.md) |

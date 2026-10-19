@@ -26,8 +26,8 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 伏击概率**随时长增长**（>1h 后每多 1h 基准 +40%）→ `docs/game/mechanics/risk-and-ambush.md:44-48`。
 - 被伏击 = **强制召回 + 部分结算**（Mine/Salvage 须过 35% 才给 20%~95%；Trade 被中断那班无利润）→ 同文件 `:83-92`。
 - **打捞主角是装备件数**（`items.from/to` + `rarityTier` + `fieldTier`），废铁 `scrapLow/High` 只作审计 → `docs/game/ops/atomic-rpc.md:82`；装备只在 `onFinish` 生成 → `risk-and-ambush.md:88`。
-- **贸易排序键 = 单位时间净利**（`profitPerHour = netProfitLow / durationHours`）✓，**不是** `profitPerSize` 比率、
-  也不是单看 `netProfitLow`（`docs/game/lessons/orders.md` L17 ③ ✓）；本金（`deposit`）**不是成本**、结束全额退还 ✓。
+- **贸易排序**看「**每趟利润 × 趟数**」（`profitPerHour` 只在同档时长内比）✓，**不是** `profitPerSize` 比率、
+  也不是单看 `netProfitLow`（`docs/game/lessons/orders.md` L17 ③ + [`trade.md`](docs/game/lessons/trade.md) L24 细化）；本金（`deposit`）**不是成本**、结束全额退还 ✓。
 - **贸易要一次比一片**：`tradeEvaluate`（多框 × 全商品 × 多本金，一次调用 ≤60 组合 ✓）；`flights.from = 0` = 空跑 ✗。
 - **护航既降险也加产**；资格 = 「与行动船距离 ≤ 护航自己一跳航程」（**不是"必须同星区"** ✗；同星区只是距离 0 的特例）→ `docs/game/mechanics/escorts.md:7-61`、`:63-71`、`:73-79`。
 
@@ -64,5 +64,10 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - ★ `routeCount: 0` 的第一解释**不是**"这片没商站" ✗ —— 先**换形状**（17x17 → 29x11 / 11x29）再判。
 - ★ **换框 = 换一片**：侦察换框挪 **≥21 格** ✓ / 贸易换框挪 **≥17 格**或换形状 ✓（只挪几格 ≈ 同一个框 ✗）。
 - 挪不出一个框宽（敌人 / 边界）、或框必须含船 → **换方向** ✓；贸易"换框"= 先 `Travel` 再评估 ✓。
+- ★ Trade 下单的 `x/y/sizeX/sizeY` **整组照抄** `tradeEvaluate` 那一行：`29x11 ≠ 11x29`；`NO_ROUTE` 先看 `noRoute.siblingBoxes.hasGood`（[`docs/game/lessons/trade.md`](docs/game/lessons/trade.md) L22）。
+- ★ 本金按可用资金 **30~50%**（100~150 万档）起步；押金不是成本；比「每趟利润 × 趟数」，别只看 `profitPerHour`（L23-L24）。
+- ★ 同一框心至少量 **3 种合法形状**（17x17 / 29x11 / 11x29），好货常只在一种里（L25）。
+- ★ 采矿一次 `predict {boxes:[…]}` 量 **6~8 框**（N≤24）：同区风险可从 3% 跳到 66%，别用单框否定整片（[`docs/game/lessons/mining.md`](docs/game/lessons/mining.md) L26）。
+- ★ 材料升级先 `mountQuote` 拿**当场** `baseCount/needUpgrade`；换设计后块数会变，别凭记忆（[`docs/game/lessons/materials.md`](docs/game/lessons/materials.md) L27）。
 
 拿不准先查、别猜；工具报错把它给的原因当事实。

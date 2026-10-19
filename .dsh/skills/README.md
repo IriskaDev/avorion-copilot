@@ -23,7 +23,7 @@ DSH 的 `@deepseek-ai/dsh-skill-filesystem` 会扫描它，发现目录下的 `*
   ```
 
   这样它同时出现在**用户技能根** `~/.dsh/skills`（rank 400，任何 cwd 都扫描）。（先例见
-  [`docs/dev/install-and-deploy.md`](../docs/dev/install-and-deploy.md) 里 `%AppData%\Avorion\mods\copilot` 的 junction。）
+  [`docs/dev/install-and-deploy.md`](../../docs/dev/install-and-deploy.md) 里 `%AppData%\Avorion\mods\copilot` 的 junction。）
 
 ## 其余官方扫描根（备查）
 
