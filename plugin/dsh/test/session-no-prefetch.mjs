@@ -11,7 +11,9 @@
  * 两条断言（对应任务的验收点 ✓）：
  *   A. 会话路径（live 模式 + 会话答成了）：decide 期间 `game.queries` 里**不含**
  *      任何 legacy 计划（tradePlan|minePlan|salvagePlan|jobPlan|sellPlan|scoutPlan|dossier）；
- *      只有 `goal`（毫秒级 ✓）。
+ *      只有 `goal` —— ★ 2026-10-20 起是 **1~2 次** ✓：第 2 次 = 校验前的「动作边界当场重查」
+ *      （`dispatch.ts` 的 `allowListFor` ✓），同样是毫秒级、且发生在**她答完之后** ✓
+ *      （真机理据：`BAD_ACTION` 丢单，`decisions.live.log` 2026-10-20 14:32:19 ✓）。
  *   B. 单发路径（没有会话服务）：decide 期间 `game.queries` **仍含** legacy 计划，
  *      且**有界**（≤ 5 个计划查询：mine/salvage/sell/scout/trade ✓）。
  *
@@ -205,7 +207,15 @@ async function scenarioSessionPath() {
     agent.inbox[0] !== undefined && /<fleet_task id="[^"]+" ship="Miner-00002"/.test(agent.inbox[0]?.content?.[0]?.text ?? ''), '')
   check('A. ★ decide 期间不含任何 legacy 计划（tradePlan/minePlan/…/dossier ✓✓）',
     qDuring.every((w) => !LEGACY_PLANS.includes(w)), qDuring.join(','))
-  check('A. ★ decide 期间只有 goal（毫秒级 ✓）', qDuring.length === 1 && qDuring[0] === 'goal', qDuring.join(','))
+  // ★★ 2026-10-20：允许**第 2 次 `goal`** ✓ —— 它是「动作边界当场重查」
+  //   （`dispatch.ts` 的 `allowListFor` → `index.ts` 的 `allowedActionsFor` ✓）。
+  //   为什么必须在：真机 `BAD_ACTION` 丢单（`decisions.live.log` 2026-10-20 14:32:19 ✓）
+  //   = 校验拿**投递时**快照当白名单 ✗；重查仍是**毫秒级**的 `goal` ✓（不是 legacy 计划 ✗），
+  //   而且发生在**这一轮答完之后**（不影响投递延迟 ✓）—— 不变量"投递前只取 goal"原样成立 ✓。
+  check('A. ★ decide 期间只有**轻量**查询 goal（可 2 次：投递时 + 校验前重查 ✓）',
+    qDuring.length >= 1 && qDuring.length <= 2 && qDuring.every((w) => w === 'goal'), qDuring.join(','))
+  check('A. ★ 校验前重查确实发生了（第 2 次 goal ✓ —— 白名单不再信快照 ✓）',
+    qDuring.length === 2, qDuring.join(','))
 
   for (const d of disposers) { try { d() } catch { /* noop */ } }
   close()
