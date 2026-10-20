@@ -181,7 +181,10 @@ const SHIPS = ['Miner-00001', 'Trader-00002', 'Scout-00003']
 game.shipCard = (name) => ({
   name, sector: { ...HERE }, busy: false, hasCaptain: true, actionNames: [],
 })
-game.fleet = () => ({ designated: 3, piloted: 'Player-00001', ships: SHIPS.map((n) => ({ name: n, sector: { ...HERE }, busy: false, hasCaptain: true })) })
+// ★ 2026-10-20：D 段要额外一艘船（"被拒 → 理由回给会话"那条 ✓）；
+//   它必须在 fleet 名单里 ✓ —— 否则漏答重投会被当成"不在名单里"直接取消 ✗
+const extraShips = []
+game.fleet = () => ({ designated: 3 + extraShips.length, piloted: 'Player-00001', ships: [...SHIPS.map((n) => ({ name: n, sector: { ...HERE }, busy: false, hasCaptain: true })), ...extraShips] })
 
 function reply(cmd, data) {
   if (cmd === 'hello') return { side: 'game', ver: 2, caps: ['query', 'order', 'recall', 'reload'] }
@@ -437,12 +440,50 @@ try {
   check('C. 冷却期内的 decide 仍是 None 且理由写明待命裁定 ✓',
     d2.data?.action === 'None' && /待命裁定/.test(String(d2.data?.reason ?? '')), d2.data?.reason)
 
+  // ---- D：★ 被拒的答复**必须回给会话** ✓（2026-10-20 真机 BAD_ACTION 丢单的另一半）----
+  //   剧本：当前动作边界只有 [Mine, Travel]，她故意答 action=Trade → 判 BAD_ACTION ✓；
+  //   180s（测试里 600ms）后的漏答重投块里**必须**带「上次答复被拒 BAD_ACTION」✓，
+  //   否则她下一轮还在猜同一个动作（真机 14:32 那单就是这个形状 ✗）。
+  game.goal = { text: '只许采矿 / 巡航', options: ['Mine', 'Travel'], hasGoal: true }
+  const REJECT_SHIP = 'Miner-Reject-1'
+  extraShips.push({ name: REJECT_SHIP, sector: { ...HERE }, busy: false, hasCaptain: true })
+  let rejectRound = 0
+  agentState.replyFn = (_round, block) => {
+    rejectRound += 1
+    const ids = taskIdsIn(block)
+    return ids.map((id) => (rejectRound === 1
+      // 第 1 轮：**非法**动作（当前边界里没有 Trade ✓）→ 必须被拒 ✓
+      ? [`action=Trade`, `task=${id}`, 'goodName=Drill', 'x=-399', 'y=81',
+        'sizeX=17', 'sizeY=17', 'deposit=1000', 'reason=故意给一个非法动作'].join('\n')
+      // 之后的轮次：None 收尾 ✓（不制造重投风暴 ✓）
+      : [`action=None`, `task=${id}`, 'reason=收尾 ✓'].join('\n')))
+  }
+  const rD = await call('decide', { ship: REJECT_SHIP, hasGoal: true })
+  check('D. 非法动作 → 本轮 None（不硬下单 ✓）', rD.ok === true && rD.data?.action === 'None', rD.data)
+  check('D. 那一轮没有任何 order 发到游戏 ✓',
+    !game.orders.some((o) => o.ship === REJECT_SHIP), game.orders.map((o) => o.ship))
+  // 等漏答重投（600ms 一次）真的投出去 ✓
+  await sleep(1800)
+  const rejectBlock = agentState.inbox.filter((b) => b.includes(REJECT_SHIP) && b.includes('上次答复被拒')).pop()
+  check('D. ★ 重投块里带「上次答复被拒 BAD_ACTION」✓（拒绝理由回给会话 ✓）',
+    rejectBlock !== undefined, agentState.inbox.filter((b) => b.includes(REJECT_SHIP)).length)
+  check('D. ★ 重投块里写清「块里清单=投递时快照」✓',
+    rejectBlock !== undefined && /投递时快照/.test(rejectBlock), rejectBlock?.slice(-260))
+  check('D. ★ 重投块里带被拒的那个动作名 ✓',
+    rejectBlock !== undefined && /Trade/.test(rejectBlock), '')
+  // ★ 把那条**回话行**原样打出来 ✓ —— 真机排查时就是靠这一行认出"她知道了为什么被拒" ✓
+  console.log('  [D] 重投块里的回话行：' +
+    ((rejectBlock ?? '').split('\n').find((l) => l.includes('上次答复被拒')) ?? '(没有 ✗)'))
+
   // ---- 日志可见性（B 的"unanswered 可见" ✓） ----
   const liveLog = path.join(sandboxHome, 'AppData', 'Roaming', 'Avorion', 'moddata', 'copilot', 'decisions.live.log')
   const logText = fs.existsSync(liveLog) ? fs.readFileSync(liveLog, 'utf8') : ''
   check('B. 流水里能看到「漏答（不是决策」✓', /漏答（不是决策/.test(logText), '')
   check('B. 流水里能看到「后重投」✓', /后重投/.test(logText), '')
   check('A. 流水里能看到「合并投递」✓', /合并投递/.test(logText), '')
+  check('D. ★ 流水里能看到「拒绝理由回给会话」✓', /拒绝理由回给会话/.test(logText), '')
+  check('D. ★ 流水里能看到 BAD_ACTION 的两条清单 ✓',
+    /被拒原因/.test(logText) && /投递时快照 \[/.test(logText) && /当场边界 \[/.test(logText), '')
 } catch (error) {
   check(`回环流程抛错：${String(error)}`, false, error?.stack ?? String(error))
 }
