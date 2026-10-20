@@ -26,6 +26,13 @@
 - **聊天命令层已退役**（2026-10-18 ✓）：`/copilot` 仍注册、但任何子命令只回「已退役，请用面板 / RPC」✓。
   底层能力（`CopilotCli.*`）与 RPC / 面板入口**未动** ✓；历史用法见
   [`game/ops/chat-commands.md`](../game/ops/chat-commands.md) ✓。
+- **答复校验以「当前事实」为准**（2026-10-20 ✓）：投递块里的「可选动作」只是**投递时快照**，
+  校验前会**当场重查** `query{what:"goal"}.options`（`dispatch.ts` 的 `allowListFor` →
+  `index.ts` 的 `allowedActionsFor`）；查不到才退回快照 ✓。
+  病根是真机 `BAD_ACTION` 丢单（`moddata/copilot/decisions.live.log` 2026-10-20 14:32:19 逐字：
+  `action Mine 不在允许集合内（Travel, Sell, Scout，以及 None）`）—— 船刚加载完炮塔还没恢复 ✓。
+  被拒的答复现在**会回到会话**（下次投递块的「上一单的结果」行带拒绝理由 ✓）。
+  回归：`plugin/dsh/test/allowed-actions-refresh.mjs`；生效方式 = **重启 DSH**（只改插件 ✓）。
 
 ## 未完成
 
