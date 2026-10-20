@@ -46,7 +46,7 @@
  *   （不排队、不等待 ✓ —— 排队等 20 秒只会让游戏侧的 decide 白等 ✓，而单发本来就是对的答案 ✓）。
  */
 
-import type { TaskAnswer, TaskRequest } from './task.js'
+import type { AnswerGroupSpec, TaskAnswer, TaskRequest } from './task.js'
 import { field, makeTaskId, renderTaskBatchBlock, renderTaskBlock, validateAnswer, validateAnswers } from './task.js'
 
 // ---------------------------------------------------------------------------
@@ -198,8 +198,21 @@ export interface DispatchDeps {
    *   于是整个阶梯可以在 Node 里**完全离线**测（`test/commander-dispatch.mjs` ✓✓）。
    */
   followup: (agent: AgentLike, block: string, req: TaskRequest) => void
-  /** 每艘船此刻允许的动作 ✓（校验用 ✓） */
+  /** 每艘船此刻允许的动作 ✓（校验用 ✓）—— ★ 但它是**投递时**的快照 ✗（见 `allowedActionsFor` ✓） */
   allowedActions: string[]
+  /**
+   * ★★ 2026-10-20 真机丢单的修：**校验前当场重查**这艘船的动作边界 ✓✓。
+   *
+   * 病根（`decisions.live.log` 2026-10-20 14:32:19 逐字 ✓）：
+   *   `[session] ✘ 校验没过：BAD_ACTION（action Mine 不在允许集合内（Travel, Sell, Scout，以及 None））`
+   *   —— 船刚加载完、**炮塔还没恢复**时取的 `facts.goalOptions` 快照 = [Travel, Sell, Scout] ✗；
+   *   十几秒后她答 `action=Mine`（那时 `fleet_query{what:'ship'}` 已显示 Mining:4 ✓）→
+   *   被**过期快照**当非法动作**整组丢掉** → `fallbackNone` → 船空转 ✗✗。
+   *
+   * → 校验**以当前事实为准** ✓；块里的清单只当提示 ✓。
+   *   返回 `undefined`（或空数组）= 拿不到当前事实 → **退回快照** ✓（绝不因为查不到就丢单 ✗）。
+   */
+  allowedActionsFor?: (ship: string) => Promise<string[] | undefined>
   /** 'live' = 会话答案算数 ✓；'shadow' = 只观察、单发算数 ✓（默认 'live' ✓） */
   mode?: 'live' | 'shadow'
   /** 忙会话要不要插队（默认 **false** ✓ —— 设计书：不插队，直接落单发 ✓） */
@@ -249,6 +262,60 @@ const nowMs = (): number => Date.now()
 /** 合并默认预算与调用方覆盖 ✓（一处算法，三处用 ✓） */
 function budgetOf(override?: Partial<Budgets>): Budgets {
   return { ...BUDGETS, ...(override ?? {}) }
+}
+
+// ---------------------------------------------------------------------------
+// ★★ 校验用的动作边界：**当场重查**（2026-10-20 ✓）
+//
+// 真机事故（`decisions.live.log` 2026-10-20 14:32:19 ✓）：
+//   投递块里印的可选动作 = [Travel, Sell, Scout] ✗（船刚加载完、炮塔还没恢复时取的快照）；
+//   十几秒后她答 `action=Mine`（那时船卡已经是 Mining:4 ✓）→
+//   校验拿**快照**当白名单 → `BAD_ACTION` → 整组丢掉 → `fallbackNone` → 船空转 ✗✗，
+//   而同一时刻用 `fleet_order` 直下**一次就成** ✓（说明她答的动作是对的 ✓）。
+//
+// 治法（主人指定的首选 ✓）：校验以**当前事实**为准 ——
+//   · 有 `allowedActionsFor` 且查到了 → 用它 ✓（并把她看到过的那份快照记下来 ✓）；
+//   · 查不到 / 抛错 / 空 → 退回投递时快照 ✓（**绝不**因为查不到就丢单 ✗）。
+// ---------------------------------------------------------------------------
+
+/** 两组动作是否**同集合**（顺序无关 ✓；比较用，不影响行为 ✓） */
+function sameActionSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const sa = [...a].sort()
+  const sb = [...b].sort()
+  return sa.every((v, i) => v === sb[i])
+}
+
+/**
+ * 校验前解析出**这一刻**的动作边界 ✓。
+ * 返回值带上 `fresh`（是不是当场查到的 ✓）与 `snapshot`/`freshList`，好让拒绝理由能原样写清楚 ✓。
+ */
+async function allowListFor(
+  deps: DispatchDeps,
+  ship: string | undefined,
+  snapshot: string[],
+  say: (line: string) => void,
+): Promise<{ actions: string[]; fresh: boolean }> {
+  const name = typeof ship === 'string' ? ship : ''
+  const refresh = deps.allowedActionsFor
+  if (name === '' || typeof refresh !== 'function') return { actions: snapshot, fresh: false }
+  try {
+    const live = await refresh(name)
+    if (Array.isArray(live) && live.length > 0) {
+      const fresh = live.filter((a): a is string => typeof a === 'string' && a !== '')
+      if (fresh.length === 0) return { actions: snapshot, fresh: false }
+      if (!sameActionSet(fresh, snapshot)) {
+        // ★ 这条就是"块里的清单过期了"的**证据** ✓（进 decisions.live.log ✓）
+        say(`  [session] 动作边界当场重查：${name} 投递时 [${snapshot.join(',')}] → 当前 [${fresh.join(',')}]（**以当前为准** ✓）`)
+      }
+      return { actions: fresh, fresh: true }
+    }
+    say(`  [session] 动作边界当场重查没拿到（${name}）→ 退回投递时快照 [${snapshot.join(',')}] ✓`)
+    return { actions: snapshot, fresh: false }
+  } catch (error) {
+    say(`  [session] 动作边界当场重查异常（${name}：${String(error)}）→ 退回投递时快照 [${snapshot.join(',')}] ✓`)
+    return { actions: snapshot, fresh: false }
+  }
 }
 
 /**
@@ -787,11 +854,14 @@ async function runSessionRungBatch(
     }
 
     // ★ 每条船用**自己**的 allowedActions ✓（不同船的动作边界不同 ✓）
-    const specs = waiters.map((w) => ({
-      taskId: w.req.taskId,
-      ship: w.req.ship,
-      allowedActions: w.deps.allowedActions,
-    }))
+    // ★★ 2026-10-20：但**以当场重查**为准 ✓（块里那份是投递时快照，船刚加载完时可能还缺 Mine ✗）
+    const specs: AnswerGroupSpec[] = []
+    const allowByTask = new Map<string, { actions: string[]; fresh: boolean; snapshot: string[] }>()
+    for (const w of waiters) {
+      const allow = await allowListFor(w.deps, w.req.ship, w.deps.allowedActions, say)
+      specs.push({ taskId: w.req.taskId, ship: w.req.ship, allowedActions: allow.actions })
+      allowByTask.set(w.req.taskId, { actions: allow.actions, fresh: allow.fresh, snapshot: w.deps.allowedActions })
+    }
     const multi = validateAnswers(joined, specs)
     say(`  [session] 合并块解析：看到 ${multi.groups} 组 / task= 回显对上 ${multi.echoedGroups} 组` +
       `${multi.stray.length > 0 ? `；**别船/未知 task=** ${multi.stray.join(',')} 已丢弃 ✗` : ''}`)
@@ -825,6 +895,12 @@ async function runSessionRungBatch(
         answered: false, code: v.code, message: v.message, steps, tookMs, usage, raw: joined, batchSize: n,
       })
       say(`  [session] ✘ ${w.req.ship} 校验没过：${v.code}（${v.message ?? ''}）`)
+      if (v.code === 'BAD_ACTION') {
+        // ★ 被拒的答复**必须留痕** ✓（投递时快照 vs 当场边界 ✓；拒绝理由由 index.ts 回给会话 ✓）
+        const a = allowByTask.get(w.req.taskId)
+        say(`  [session] ✘ ${w.req.ship} 被拒原因：${v.message ?? ''}）—— 投递时快照 [${(a?.snapshot ?? []).join(',')}]` +
+          `，当场边界 [${(a?.actions ?? []).join(',')}]，当场查到的=${a?.fresh === true ? '是 ✓' : '否（退回快照 ✗）'}`)
+      }
     }
     return out
   } catch (error) {
@@ -968,7 +1044,9 @@ async function runSessionRung(
         usage,
       }
     }
-    const verdict = validateAnswer(last, req.taskId, deps.allowedActions)
+    // ★★ 2026-10-20：校验前**当场重查**动作边界 ✓（块里那份是投递时的快照，可能过期 ✓）
+    const allow = await allowListFor(deps, req.ship, deps.allowedActions, say)
+    const verdict = validateAnswer(last, req.taskId, allow.actions)
     if (verdict.ok) {
       say(`  [session] ✔ 校验通过${verdict.echoed ? '（回显 task 对上了 ✓）' : '（她没回显 task，但内容合格 ✓）'}`)
       return { answered: true, answer: verdict.answer, steps: texts.length, tookMs, usage, raw: last }
@@ -978,6 +1056,11 @@ async function runSessionRung(
       return { answered: false, code, question: verdict.question, steps: texts.length, tookMs, usage, raw: last }
     }
     say(`  [session] ✘ 校验没过：${code}（${verdict.message ?? ''}）`)
+    if (code === 'BAD_ACTION') {
+      // ★ 被拒的答复**必须留痕** ✓：两条清单都摆出来（投递时 / 当场 ✓），下一步由 index.ts 回给会话 ✓
+      say(`  [session] ✘ 被拒原因（${code}）：${verdict.message ?? ''}）—— 投递时快照 [${deps.allowedActions.join(',')}]` +
+        `，当场边界 [${allow.actions.join(',')}]，当场查到的=${allow.fresh ? '是 ✓' : '否（退回快照 ✗）'}`)
+    }
 
     // ---- 只对"完全没有动作行"再给一次机会 ✓（同 today 的重试 ✓，只此一次 ✓）----
     const retryable = code === 'NO_ACTION_LINE' || code === 'EMPTY_REPLY'

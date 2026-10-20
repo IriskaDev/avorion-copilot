@@ -173,8 +173,21 @@ export interface DispatchDeps {
      *   于是整个阶梯可以在 Node 里**完全离线**测（`test/commander-dispatch.mjs` ✓✓）。
      */
     followup: (agent: AgentLike, block: string, req: TaskRequest) => void;
-    /** 每艘船此刻允许的动作 ✓（校验用 ✓） */
+    /** 每艘船此刻允许的动作 ✓（校验用 ✓）—— ★ 但它是**投递时**的快照 ✗（见 `allowedActionsFor` ✓） */
     allowedActions: string[];
+    /**
+     * ★★ 2026-10-20 真机丢单的修：**校验前当场重查**这艘船的动作边界 ✓✓。
+     *
+     * 病根（`decisions.live.log` 2026-10-20 14:32:19 逐字 ✓）：
+     *   `[session] ✘ 校验没过：BAD_ACTION（action Mine 不在允许集合内（Travel, Sell, Scout，以及 None））`
+     *   —— 船刚加载完、**炮塔还没恢复**时取的 `facts.goalOptions` 快照 = [Travel, Sell, Scout] ✗；
+     *   十几秒后她答 `action=Mine`（那时 `fleet_query{what:'ship'}` 已显示 Mining:4 ✓）→
+     *   被**过期快照**当非法动作**整组丢掉** → `fallbackNone` → 船空转 ✗✗。
+     *
+     * → 校验**以当前事实为准** ✓；块里的清单只当提示 ✓。
+     *   返回 `undefined`（或空数组）= 拿不到当前事实 → **退回快照** ✓（绝不因为查不到就丢单 ✗）。
+     */
+    allowedActionsFor?: (ship: string) => Promise<string[] | undefined>;
     /** 'live' = 会话答案算数 ✓；'shadow' = 只观察、单发算数 ✓（默认 'live' ✓） */
     mode?: 'live' | 'shadow';
     /** 忙会话要不要插队（默认 **false** ✓ —— 设计书：不插队，直接落单发 ✓） */

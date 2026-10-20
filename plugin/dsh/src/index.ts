@@ -1862,6 +1862,52 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     'ASKED_OWNER',
   ])
 
+  // ---------------------------------------------------------------------------
+  // ★★ 被拒的答复**必须回给会话**（2026-10-20 ✓）
+  //
+  // 真机事故的另一半（`decisions.live.log` 2026-10-20 14:32:19 ✓）：答复被判 `BAD_ACTION` 之后，
+  //   拒绝理由只落在插件自己的流水里 ✗ —— 会话那边**一个字都没看到** ✗，
+  //   于是下一轮（180s 后重投）她还在猜同一个动作，同一个坑会再踩一次 ✓。
+  //
+  // 治法：记一条**一次性**的拒绝条 ✓，塞进下一次投递块的「上一单的结果」行 ✓
+  //   （块里那条线本来就有 ✓，2026-10-17 加的 ✓）；看过即删，免得它一直刷屏 ✗
+  //   —— 块体积契约是 ~200 字节，所以这里先把原因裁到放得下 ✓（裁不出就说清楚裁了 ✓）。
+  // ---------------------------------------------------------------------------
+  interface RejectNote { text: string; atMs: number }
+  const rejectNotes = new Map<string, RejectNote>()
+  /** 拒绝条最多留多久（超了就当旧的丢掉 ✓ —— 半小时后的"上次"没有信息量 ✓） */
+  const REJECT_NOTE_MAX_MS = 30 * 60_000
+
+  /** 按 UTF-8 字节截断（不切断半个字符 ✓）；截了就加省略号 ✓ */
+  const clipUtf8 = (s: string, maxBytes: number): string => {
+    if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s
+    let cut = s
+    while (cut !== '' && Buffer.byteLength(cut + '…', 'utf8') > maxBytes) cut = cut.slice(0, -1)
+    return cut === '' ? '' : cut + '…'
+  }
+
+  /** 组装「答复被拒」那条（保证整行塞得进 prevResult 的 200 字节预算 ✓） */
+  const rejectBody = (code: string, why: string): string => {
+    const head = `上次答复被拒 ${code}：`
+    const suffix = '（块里清单=投递时快照；以当前船卡 allowedActions 为准）'
+    const fixed = Buffer.byteLength(`★ 上一单的结果：${head}`, 'utf8') + Buffer.byteLength(suffix, 'utf8')
+    const room = PREV_RESULT_BUDGET_BYTES - fixed - 1
+    if (room < 24) return head + clipUtf8(why, Math.max(0, PREV_RESULT_BUDGET_BYTES - fixed))
+    return head + clipUtf8(why, room) + suffix
+  }
+
+  /** 取走这条船的一次性拒绝条 ✓（取过就删 ✓；过期的直接丢 ✓） */
+  const takeRejectNote = (ship: string): string | undefined => {
+    const e = rejectNotes.get(ship)
+    if (e === undefined) return undefined
+    rejectNotes.delete(ship)
+    if (Date.now() - e.atMs > REJECT_NOTE_MAX_MS) return undefined
+    return e.text
+  }
+
+  /** 这些 code = **她的答复被拒** → 原因必须回给会话 ✓（其余 code 是"没收到"，没有"她的错"可回 ✗） */
+  const REJECT_FEEDBACK_CODES = new Set(['BAD_ACTION', 'TASK_MISMATCH'])
+
   // 内层：真正的决策逻辑（边做边填 rec ✓）
   const decideInner = async (
     req: DecideRequest,
@@ -2541,6 +2587,39 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
       prefetch: prefetchSingleShot,
       singleShot: runSingleShot,
       allowedActions: facts.goalOptions.length > 0 ? facts.goalOptions : [...ALL_ACTIONS],
+      /**
+       * ★★ 2026-10-20 真机丢单的修 ✓：校验前**当场重查**这艘船的动作边界 ✓✓。
+       *
+       * 真机证据（`moddata/copilot/decisions.live.log` 2026-10-20 14:32:19 逐字 ✓）：
+       *   `[session] ✘ 校验没过：BAD_ACTION（action Mine 不在允许集合内（Travel, Sell, Scout，以及 None））`
+       *   → `fallbackNone` → 船保持 `busy:false`；而同一刻 `fleet_query{what:'ship'}` 已是 `Mining:4` ✓，
+       *   用 `fleet_order` 直下**一次就成** ✓。根因 = 校验拿**投递时**的 `facts.goalOptions` 快照当白名单 ✗。
+       *
+       * 这里与 `facts.goalOptions` **完全同源** ✓（游戏侧 `query{what:"goal"}` → `goal.describe`
+       * → `Card.allowedActions` → `deriveActions` 现读炮塔/船长/货舱 ✓，见
+       * `data/scripts/lib/copilot/goal.lua:147-182` 与 `card.lua:708-712`），
+       * 所以"船刚加载完、炮塔还没恢复"那种过期快照会被**当场纠正** ✓✓。
+       * 拿不到 → `undefined` → dispatch 退回投递时快照 ✓（绝不因为查不到就丢单 ✗）。
+       */
+      allowedActionsFor: async (name: string): Promise<string[] | undefined> => {
+        const norm = (v: unknown): string[] | undefined => {
+          if (!Array.isArray(v)) return undefined
+          const list = v.filter((x): x is string => typeof x === 'string' && x !== '')
+          // ★ 与上面 `facts.goalOptions` 同一口径 ✓：空 = 不限 → 全集 ✓
+          return list.length > 0 ? list : [...ALL_ACTIONS]
+        }
+        const g = await ask(peer, 'query', { what: 'goal', ship: name }, 10)
+        if (g.ok) {
+          const opts = norm((g.data as Record<string, unknown> | undefined)?.options)
+          if (opts !== undefined) return opts
+        }
+        const s = await ask(peer, 'query', { what: 'ship', ship: name, brief: true }, 10)
+        if (s.ok) {
+          const opts = norm((s.data as Record<string, unknown> | undefined)?.allowedActions)
+          if (opts !== undefined) return opts
+        }
+        return undefined
+      },
       mode: decideMode,
       steerWhenBusy,
       retrySessionOnce,
@@ -2602,7 +2681,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         //   ★ 单发那条路的档案是**另一个渲染**（`dossier.ts` ✓），两条路共享数据不共享渲染 ✓✓。
         deadlineHintSec: Math.round(BUDGETS.sessionDeadlineMs / 1000),
         // ★ 上一单结果（2026-10-17 补 ✓）：下一轮就能看到"上次成没成"，不触发回投也看得见 ✓
-        prevResult: fitPrev(lastResultFor(ship)),
+        //   ★★ 2026-10-20：**被拒理由优先** ✓（她那句话被校验拒了 → 下一次块里必须看见为什么 ✓）
+        prevResult: fitPrev(takeRejectNote(ship) ?? lastResultFor(ship)),
         // ★★ B（2026-10-18）：漏答**必须可见** ✓ —— 块末尾一行「上次未答：X 艘」✓
         unansweredBefore: unansweredRetry.size,
       })
@@ -2687,6 +2767,13 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
         live(`  ├ ★ 漏答（不是决策 ✗）：${ship} 这一轮没答到（来源 ${outcome.source}` +
           `${missCode !== undefined ? ` / ${missCode}` : ''}；第 ${misses}/${unansweredMaxMisses} 次）` +
           `→ **${Math.round(unansweredRetryMs / 1000)}s 后重投** ✓（不进 ${Math.round(noneCooldownMs / 60000)} 分钟冷却 ✓）`)
+        // ★★ 2026-10-20：答复被拒的**理由必须回给会话** ✓ —— 下一次投递块里带一行 ✓
+        if (missCode !== undefined && REJECT_FEEDBACK_CODES.has(missCode)) {
+          const why = outcome.session?.message ?? outcome.session?.code ?? ''
+          const body = rejectBody(missCode, why)
+          rejectNotes.set(ship, { text: body, atMs: Date.now() })
+          live(`  ├ ★ 拒绝理由回给会话 ✓：下次投递块会带「${body}」`)
+        }
       } else if (missKind === 'unanswered') {
         unansweredRetry.delete(ship)
         live(`  └ ★ 连续 ${misses} 次没答到 → 落到 None + ${Math.round(noneCooldownMs / 60000)} 分钟冷却 ✓` +
@@ -2699,6 +2786,8 @@ export function apply(ctx: CopilotCtx, config: CopilotConfig = {}): void {
     } else if (answer.action !== 'None') {
       // ★ 这一单真的定了动作 → 清掉漏答计数 ✓（下一次漏答重新从 1 数 ✓）
       unansweredRetry.delete(ship)
+      // ★ 已经答对了 → 那条"上次被拒"的一次性提示也作废 ✓（不再回给会话 ✗）
+      rejectNotes.delete(ship)
     }
 
     logger.info(
