@@ -188,20 +188,19 @@ export function renderTaskBlock(req: TaskRequest): string {
   L.push(`<fleet_task id="${req.taskId}" ship="${req.ship}" deadline_hint="${req.deadlineHintSec}s">`)
   L.push('★ 插件投递的舰队决策请求（不是主人在说话 ✗）。')
   L.push(`  ${req.ship} 现在**空闲**了，需要一个决策。`)
-  L.push('  ★ 只告知、不带数据 ✗ —— 需要什么**自己查** ✓（路由如下）。')
+  L.push('  ★ 只告知；要什么**自己查** ✓（路由见下）。')
   L.push('')
   L.push('查证工具（先 list 再查）：')
-  L.push('  · {what:"list"} → 船名单（名字/忙闲/船长/星区）')
+  L.push('  · {what:"list"} → 船名单（名/忙闲/船长/星区）')
   L.push(`  · {what:"ship", ship:"${req.ship}", brief:true} → 这艘船现状`)
-  L.push(`  · {what:"systemsFacts", ship:"${req.ship}"} → 槽位/模块/处理能力（只读）`)
+  L.push(`  · {what:"systemsFacts", ship:"${req.ship}"} → 槽位/模块（只读）`)
   L.push(`  · {what:"goal", ship:"${req.ship}"} → 目标边界`)
   L.push('  · {what:"sectorFacts", x, y} → 星区事实')
-  L.push('  · {what:"tradeRoutes"} → 框内路线；{what:"tradeEvaluate", boxes, deposits} → 多框×商品×本金（净利/小时降序 + rejected）')
-  L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY, …} → 一框一动作预测')
-  L.push('  · 材料升级：mountQuote/shipQuote/blockQuote → 只读报价；' +
-    'mountUpgrade/blockUpgrade/shipUpgrade → 需 confirm:true（★ 先报价 ✓）')
-  L.push('  · 侦察：predict{Scout, 21x21} → 未知/已知/总数 + revealsNothingNew')
-  L.push('  · legacy 计划(扫67框+排序)：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan')
+  L.push('  · {what:"tradeRoutes"} → 框内路线；{what:"tradeEvaluate", boxes, deposits} → 多框×商品×本金')
+  L.push('  · {what:"predict", ship, action, x, y, sizeX, sizeY} → 一框一动作预测')
+  L.push('  · 材料升级：*Quote 只读；*Upgrade 需 confirm:true（★ 先报价 ✓）')
+  L.push('  · Scout：predict{Scout, 21x21} → 未知/已知/总数')
+  L.push('  · legacy 计划：tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan')
   // ★★ 2026-10-19：主人的**自然语言目标**终于进提示词了 ✗→✓
   //   链路：`query{what:"goal"}.text` → index.ts 的 facts.goalText → 这里 ✓
   //   （旧版只渲染 goalOptions，文字目标**一句都没进提示词** ✗✓ —— 于是"在面板里写一句话"
@@ -214,19 +213,25 @@ export function renderTaskBlock(req: TaskRequest): string {
   // ★★ 2026-10-19 退役「玩家限定动作」✗→✓：`goalOptions` 现在是**按船自动推导**的白名单
   //   （游戏侧 `lib/copilot/card.lua` 的 `M.deriveActions` ✓，`query{what:"goal"}.options` ✓）。
   //   白名单**语义不变**（仍然"只有这些 + None"✓），只是不再由主人/模型填 ✓✓。
+  // ★★ 2026-10-20：**这份清单是投递时的快照** ✗✓ —— 真机事故（`decisions.live.log`
+  //   2026-10-20 14:32:19 ✓）：船刚加载完、炮塔还没恢复 → 快照只有 [Travel, Sell, Scout] ✗，
+  //   十几秒后她答 `action=Mine`（那时船卡已是 Mining:4 ✓）却被**快照**判非法 ✗✗。
+  //   → 所以这行**必须**写明"过期以当前船卡为准" ✓（校验侧已经改成当场重查 ✓，
+  //     校验器 dispatch.ts 的 `allowListFor` ✓；这行只是告示 ✓）。
   if (req.goalOptions.length > 0) {
-    L.push(`  · 可选动作（按船自动）：${req.goalOptions.join(', ')}（只有这些 + None）`)
+    L.push(`  · 可选动作（按船自动）：${req.goalOptions.join(', ')}（只有这些 + None；` +
+      '投递时快照，过期以 {what:"ship"} 的 allowedActions 为准 ✓）')
   }
   L.push(`  · fleet_decisions {ship:"${req.ship}"} → 历史决策`)
   L.push('  ★ fleet_query；legacy 用 compact/top。')
   L.push('')
   L.push('答复格式（★ **第一行**请直接写结论行 action=…，之后写理由）：')
   L.push('  第 1 行 action=<Mine | Salvage | Trade | Sell | Scout | Travel | Refine | None>')
-  L.push(`  第 2 行 task=${req.taskId}  ← ★必须回显（回显即唯一凭据）；`)
+  L.push(`  第 2 行 task=${req.taskId}  ← ★必须回显（唯一凭据）；`)
   L.push('    写错 → 判无效（别船答案不许混用 ✗）。')
-  L.push('  之后按需要：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=')
-  L.push('  需要主人拍板就写出来（不写 action 行 = 等主人裁决）。')
-  L.push('  任务行后照常**跟主人聊天 ✓（舰队只看上面几行）。')
+  L.push('  再补：x= y= sizeX= sizeY= duration= goodName= deposit= safeMode= escorts= goodsToSell= reason=')
+  L.push('  要主人拍板就写出来（无 action 行 = 等裁决）。')
+  L.push('  之后照常**跟主人聊天 ✓（舰队只看上面几行）。')
   // ★ 上一单结果（2026-10-17 补 ✓）：决策者下一轮就能看到"上次成没成"，失败回投时也能看到"为什么失败" ✓。
   //   体积预算 ~200 字节：超了就当没加 ✗✓（调用方 index.ts 会先截断并在流水里说明 ✓）。
   if (typeof req.prevResult === 'string' && req.prevResult.trim() !== '') {
@@ -288,7 +293,10 @@ export function renderTaskBatchBlock(batch: TaskBatchRequest): string {
   L.push(`待决策 ${items.length} 条（每条 = 船名 + 任务号 ✓）：`)
   for (const it of items) {
     // ★ 可选动作 = **按船自动推导**（2026-10-19 起 ✗✓，不再是玩家填的）
-    const lim = it.goalOptions.length > 0 ? `  可选动作(按船自动): ${it.goalOptions.join(', ')}` : ''
+    // ★ 2026-10-20：★ 这是**投递时快照**（船刚加载完可能还缺 Mine ✗）→ 写明以当前船卡为准 ✓
+    const lim = it.goalOptions.length > 0
+      ? `  可选动作(按船自动·投递时快照): ${it.goalOptions.join(', ')}（过期以该船 allowedActions 为准）`
+      : ''
     // ★ 自然语言目标也要带上（主人 2026-10-19 的用法 ✓）；空 = 自动，不写 ✓
     const gt = typeof it.goalText === 'string' ? clipGoalText(it.goalText) : ''
     const goal = gt !== '' ? `  主人目标: ${gt}` : ''
