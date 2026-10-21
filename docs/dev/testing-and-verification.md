@@ -102,8 +102,9 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 |---|---|
 | `_atomic_selftest` | `atomicSelfTest: OK`（47 项断言） |
 | `_mounts_selftest` | `OK: 100 checks, 0 failure(s)` |
-| `_panel_roster_selftest` | `OK: 69 checks, 0 failure(s)` |
-| `_weapons_card_selftest` | `55 checks, 0 failures` |
+| `_panel_roster_selftest` | `OK: 78 checks, 0 failure(s)`（2026-10-22 加 ⑧：面板关着不刷新 ✓） |
+| `_periodic_selftest` | `26 checks, 0 failures`（2026-10-22 加：周期任务按需化/降频 + perf 探针 ✓） |
+| `_weapons_card_selftest` | `59 checks, 0 failures`（2026-10-22 加 ⑧：不许读文档里没有的属性 ✓） |
 | `_job_equipment_error_selftest` | `checks=37  failures=0` |
 | `_ship_identity_selftest` | `26 checks, 0 failure(s)` + `ALL SHIP-IDENTITY ASSERTIONS PASSED` |
 | 其余 18 个 | `*SelfTest: OK` / `ALL … ASSERTIONS PASSED` |

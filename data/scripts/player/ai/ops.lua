@@ -215,11 +215,32 @@ end
 -- 主循环
 -- ---------------------------------------------------------------------------
 
+-- ★★ 2026-10-22：5 → **15 秒**（服务端模拟掉帧排查 ✓）
+--
+-- 依据（任务书 §4「周期任务降频」+ §1「标出战斗中会变重的那些」✓）：
+--   这个周期的语义是「名单里有没有空闲又没船长的船」——**秒级精度完全不需要** ✗
+--   （补船长是人分钟级的事 ✓）。而 5 秒意味着每 5 秒就要把 6 艘船挨个摸一遍 ✓；
+--   15 秒 = 服务端这笔固定开销直接降到 1/3 ✓✓
+--
+-- ★ 配套（同一提交）：周期body**不再建完整能力卡** ✓ —— 见 updateServer 的注释。
+--   降频与按需化是两件事，缺一个都还剩一份 O(船数 × 炮塔) 的白活 ✗✓
 function CopilotOps.getUpdateInterval()
-    return 5      -- 战略决策是秒级场景
+    return 15
 end
 
-function CopilotOps.updateServer()
+-- 轻量探测：这艘船有没有船长（**不建整张能力卡** ✓）
+--
+-- 为什么单开一个：补船长只需要一个布尔 ✓；`capabilityCard` 会读炮塔表 / 舰载机 /
+-- 鱼雷 / DPS 并扫本星区全部船 ✗ —— 那些是"报卡"用的，不该在每 15 秒的周期里跑 ✓✓
+function CopilotOps.hasCaptain(player, name)
+    local entry = ShipDatabaseEntry(player.index, name)
+    if entry == nil then return false end
+    local okC, captain = probe(entry, "getCaptain")
+    if not okC then return false end
+    return captain ~= nil
+end
+
+function CopilotOps.updateServerBody()
     if not onServer() then return end
 
     local player = Player()
@@ -240,33 +261,87 @@ function CopilotOps.updateServer()
 
     for _, name in ipairs(names) do
         if name ~= pilotedName then
-            local card, err = CopilotOps.capabilityCard(player, name)
+            -- ★★ 2026-10-22 按需化（任务书 §4 ✓）：周期路径**只做轻查询** ✓
+            --
+            -- 旧写法每 5 秒对**每艘船**调 `capabilityCard` —— 那会走
+            -- `card.lua` 的 `equipmentFacts`：读整张炮塔表、每门炮的类别与名字、
+            -- 舰载机、鱼雷、DPS，还要 `Sector():getEntitiesByType(EntityType.Ship)`
+            -- **扫一遍本星区全部船** ✗（6 艘船 = 6 次全星区扫描 / 每 5 秒；
+            -- 战斗中星区实体一多就是 O(N)，正是任务书要求标的"战斗中变重"那类 ✓）。
+            --
+            -- 而这段周期的**真实目的只有两件** ✓：
+            --   ① 首次见到这艘船 ➜ 报一次能力卡（本鱼的验证通道 ✓）
+            --   ② 空闲 + 没船长 ➜ 补一个船长（后台命令的硬门槛 ✓）
+            -- → 所以：卡只在 ① 造一次 ✓；② 用轻量 `isBusy` + `hasCaptain` 判 ✓✓
+            local busy, avail = CopilotOps.isBusy(player, name)
 
-            if card == nil then
-                if not self.reported[name] then
-                    self.reported[name] = true
-                    note(player, name .. "  -> " .. tostring(err))
+            if busy == nil then
+                if not self.reported["busy:" .. name] then
+                    self.reported["busy:" .. name] = true
+                    note(player, name .. "  -> cannot read availability: " .. tostring(avail))
                 end
             else
-                -- 每艘船只报一次完整能力卡（本鱼的验证通道）
+                -- ① 每艘船只报**一次**完整能力卡（旧逻辑也是"只报一次"，只是过去为了报
+                --    这一次，**每一轮都得先把卡算出来** ✗ —— 那才是白活 ✓）
                 if not self.reported[name] then
                     self.reported[name] = true
-                    note(player, CopilotOps.cardSummary(card))
+                    local card, err = CopilotOps.capabilityCard(player, name)
+                    if card == nil then
+                        note(player, name .. "  -> " .. tostring(err))
+                    else
+                        note(player, CopilotOps.cardSummary(card))
+                    end
                 end
 
-                -- 空闲 + 没船长 → 补一个（硬门槛）
-                if card.isBusy == false and not card.hasCaptain then
-                    local ok, why = CopilotOps.ensureCaptain(player, name, card)
-                    if ok then
-                        note(player, name .. "  -> captain hired")
-                    elseif not self.reported["cap:" .. name] then
-                        self.reported["cap:" .. name] = true
-                        note(player, name .. "  -> hiring failed: " .. tostring(why))
+                -- ② 空闲 + 没船长 → 补一个（硬门槛）
+                --    `ensureCaptain` 只读 `card.hasCaptain`（见它第一行 ✓），
+                --    所以这里给一张**只有这个字段**的轻卡片 ✓ —— 不必造整张卡 ✓
+                if busy == false then
+                    local light = { name = name, hasCaptain = CopilotOps.hasCaptain(player, name) }
+                    if light.hasCaptain == false then
+                        local ok, why = CopilotOps.ensureCaptain(player, name, light)
+                        if ok then
+                            note(player, name .. "  -> captain hired")
+                        elseif not self.reported["cap:" .. name] then
+                            self.reported["cap:" .. name] = true
+                            note(player, name .. "  -> hiring failed: " .. tostring(why))
+                        end
                     end
                 end
             end
         end
     end
+end
+
+-- ★★ 2026-10-22：**服务端耗时探针**（任务是「查服务端每帧/每秒开销」✓）
+--
+-- 引擎调的是这个 `updateServer` ✓，它只做两件事：
+--   ① 跑真正的周期 body（`updateServerBody` ✓）
+--   ② 量它花了多久，**超过 20 ms 就写一行**到 `moddata/copilot/perf.log` ✓
+--
+-- 规矩（与 lib/copilot/perf.lua 同一套 ✓）：
+--   · 平时**一条都不写** ✗（亚毫秒级，不刷屏 ✓）
+--   · 每 30 秒最多一条 ✓
+--   · 探针本身全程 pcall，**不许拖垮周期任务** ✓
+--   · 出错时**重新抛出**（`error(err, 0)`）—— 保持引擎原本的报错可见性 ✗ 绝不静默吞错 ✓
+function CopilotOps.updateServer()
+    local t0 = os.clock()
+    local ok, err = pcall(CopilotOps.updateServerBody)
+
+    local Perf = CopilotOps.perfModule()
+    if Perf ~= nil then
+        Perf.log("ops.updateServer", t0, ok and "" or ("ERR " .. tostring(err)))
+    end
+
+    if not ok then error(err, 0) end
+end
+
+-- 懒加载 perf 库（**失败一次就记住失败** ✓ 别每 15 秒重试 include ✗）
+function CopilotOps.perfModule()
+    if self._perf ~= nil then return self._perf or nil end
+    local ok, mod = pcall(include, "copilot/perf")
+    self._perf = (ok and type(mod) == "table") and mod or false
+    return self._perf or nil
 end
 
 return CopilotOps

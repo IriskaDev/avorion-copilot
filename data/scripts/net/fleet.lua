@@ -85,14 +85,17 @@ function CopilotFleet.scan()
         if name == pilotedName or self.inFlight[name] ~= nil then
             -- 跳过：玩家在开 / 已经在处理 ✓
         else
-            local goal = Goal.describe(player, name)
-            -- ★★ 没设目标也决策 ✓✓（主人 2026-10-16 要求）
+            -- ★★ 2026-10-22 按需化（服务端模拟掉帧排查 ✓）：
             --
-            --   原话：「在玩家未设置明确说明的时候，也可以试着根据船的装备/命名，
-            --          来决定给船派什么指令」
-            --   → 所以这里不再要求 hasGoal ✓；没目标时把 goal.hasGoal=false 传给 DSH ✓，
-            --     由 DSH 侧的 prompt 告诉模型"玩家没给目标，请按船名与装备自行判断" ✓✓
-            --     （prompt 里早就写了这个分支 ✓，只需放行 ✓）
+            -- 旧写法**每轮扫描 × 每艘船**都先算一次 `Goal.describe(player, name)` ✗。
+            -- 而 `goal.lua` 的 `describe` 会调 `Card.allowedActions` →
+            -- `capabilityFacts` → `card.lua equipmentFacts`（读整张炮塔表、舰载机、
+            -- 鱼雷、DPS，并 `Sector():getEntitiesByType(Ship)` **扫一遍本星区全部船** ✗）。
+            -- 也就是：每 10 秒 × 6 艘船 = 6 次全星区扫描 + 6 份完整装备卡，
+            -- **只为了给 decide 准备 goal 字段** ✓ —— 而 decide 每轮最多发一条 ✗✓。
+            --
+            -- 现在：goal **只在真要发 decide 的那一艘上算** ✓（见下面的 if 分支）；
+            -- 其余船这一轮只花一次 `Card.isBusy`（一次 API 调用 ✓）✓✓
             do
                 local busy, avail = Card.isBusy(player, name)
                 if busy == false then
@@ -111,6 +114,16 @@ function CopilotFleet.scan()
                     local cooldown = (lastAt == nil) or (now - lastAt > self.REDECIDE_COOLDOWN)
 
                     if (not wasIdle) or cooldown then
+                        -- ★★ 没设目标也决策 ✓✓（主人 2026-10-16 要求）
+                        --
+                        --   原话：「在玩家未设置明确说明的时候，也可以试着根据船的装备/命名，
+                        --          来决定给船派什么指令」
+                        --   → 所以这里不再要求 hasGoal ✓；没目标时把 goal.hasGoal=false 传给 DSH ✓，
+                        --     由 DSH 侧的 prompt 告诉模型"玩家没给目标，请按船名与装备自行判断" ✓✓
+                        --     （prompt 里早就写了这个分支 ✓，只需放行 ✓）
+                        --
+                        -- ★ 2026-10-22：这段**只在真要发 decide 时**才算 ✓（见上面 scan 的注释）
+                        local goal = Goal.describe(player, name)
                         self.idleSeen[name] = true
                         self.decided[name] = now
                         self.inFlight[name] = { at = now }
@@ -134,10 +147,27 @@ function CopilotFleet.maybeScan()
     local now = os.clock()
     if now - self.lastScanAt < self.SCAN_INTERVAL then return end
     self.lastScanAt = now
+
+    -- ★ 2026-10-22：耗时探针（超 20 ms 才写一行到 moddata/copilot/perf.log ✓）
+    --   扫描是服务端主线程上的活 ✓ —— 它变慢就是"模拟掉帧"的候选 ✗✓
+    local t0 = os.clock()
     local ok, err = pcall(CopilotFleet.scan)
+    local Perf = CopilotFleet.perfModule()
+    if Perf ~= nil then
+        Perf.log("fleet.scan", t0, ok and "" or ("ERR " .. tostring(err)))
+    end
+
     if not ok then
         CopilotNet.emit("error", "fleet scan failed: " .. tostring(err))
     end
+end
+
+-- 懒加载 perf 库（失败一次就记住失败 ✓ 别每次扫描都重试 include ✗）
+function CopilotFleet.perfModule()
+    if self._perf ~= nil then return self._perf or nil end
+    local ok, mod = pcall(include, "copilot/perf")
+    self._perf = (ok and type(mod) == "table") and mod or false
+    return self._perf or nil
 end
 
 -- ---------------------------------------------------------------------------
