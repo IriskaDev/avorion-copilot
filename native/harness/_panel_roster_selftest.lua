@@ -625,6 +625,62 @@ check("⑦ 炮塔底座子窗口 closeableWithEscape = true",
 Panel.mountsWindow:hide()
 
 -- ---------------------------------------------------------------------------
+-- ⑧ ★★ 面板**关着**时不做面板数据轮询（2026-10-22 加 —— 服务端模拟掉帧排查 ✓）
+--
+-- 任务书 §4 最想省的那一刀：「面板没打开时不做面板数据轮询」✗→✓
+--   · `updateClient` 每 1 秒被引擎调一次（`getUpdateInterval` = 1 ✓）；
+--   · 面板数据（Autopilot 开关/状态、名单自检行）只有**看得见**时才有意义 ✓；
+--   · 但 RPC 面板开关**必须一直跑**（它正是用来把面板打开的 ✗→✓）——
+--     所以本节的断言是「**数据刷新**归零」，不是「整个 updateClient 归零」✓✓
+--
+-- 真机意义：面板关着时，服务端这边不该因为面板而多花任何一次读 ✓
+-- ---------------------------------------------------------------------------
+print("== ⑧ 面板关着时不刷新面板数据（面板开关的 RPC 仍然照跑 ✓）==")
+do
+    -- 防止 pollPanelCommand 读到"命令序号"而顺手开关窗（替身里没有这个 value ✓）
+    Panel.panelCmdSeq = 999999
+
+    local refreshCount, rosterCount, mountsCount = 0, 0, 0
+    local realRefresh, realRoster, realMounts =
+        Panel.refresh, Panel.refreshRosterReport, Panel.refreshMounts
+    Panel.refresh = function(...) refreshCount = refreshCount + 1; return realRefresh(...) end
+    Panel.refreshRosterReport = function(...) rosterCount = rosterCount + 1; return realRoster(...) end
+    if realMounts ~= nil then
+        Panel.refreshMounts = function(...) mountsCount = mountsCount + 1; return realMounts(...) end
+    end
+
+    Panel.window:hide()
+    if Panel.mountsWindow ~= nil then Panel.mountsWindow:hide() end
+    local okClosed = pcall(function()
+        for _ = 1, 5 do Panel.updateClient(0.016) end
+    end)
+    check("⑧ 面板关着：5 拍不报错", okClosed, tostring(okClosed))
+    check("⑧ 面板关着：refresh 调用 **0** 次", refreshCount == 0, tostring(refreshCount))
+    check("⑧ 面板关着：refreshRosterReport 调用 **0** 次", rosterCount == 0, tostring(rosterCount))
+    check("⑧ 面板关着：refreshMounts 调用 **0** 次", mountsCount == 0, tostring(mountsCount))
+    check("⑧ 面板关着：窗口没有被 updateClient 打开（它无权开关 ✓）",
+        Panel.window.visible == false, tostring(Panel.window.visible))
+
+    Panel.window:show()
+    local okOpen = pcall(function()
+        for _ = 1, 3 do Panel.updateClient(0.016) end
+    end)
+    check("⑧ 面板打开：3 拍不报错", okOpen, tostring(okOpen))
+    check("⑧ 面板打开：refresh 每拍 1 次（3 拍 = 3 次）", refreshCount == 3, tostring(refreshCount))
+    check("⑧ 面板打开：refreshRosterReport 每拍 1 次（3 拍 = 3 次）",
+        rosterCount == 3, tostring(rosterCount))
+
+    -- 关掉之后**下一拍**就该停（不是等几秒 ✓）
+    Panel.window:hide()
+    local frozen = refreshCount
+    Panel.updateClient(0.016)
+    check("⑧ 关窗后下一拍立刻停止刷新", refreshCount == frozen, tostring(refreshCount))
+
+    Panel.refresh, Panel.refreshRosterReport, Panel.refreshMounts =
+        realRefresh, realRoster, realMounts
+end
+
+-- ---------------------------------------------------------------------------
 print("")
 if failures == 0 then
     print(string.format("OK: %d checks, 0 failure(s)", checks))
