@@ -48,8 +48,31 @@ EntityType = { None = 0, Ship = 1, Drone = 2, Station = 3 }
 --   · 纯数字            → tonumber 那条路 ✓
 --   · { value = n }     → .value 那条路 ✓
 --   · {}                → 三条路全失败 → **读不出来** ✓（测"绝不填 0" ✓）
-local function turret(categoryValue, weaponType)
-    return { category = categoryValue, weaponType = weaponType or "Laser" }
+--
+-- ★★ 2026-10-22：炮塔替身改成**严格表**（读不存在的键 = 抛错 + 记账）✗→✓
+--
+-- 为什么必须这样 ✗→✓（真机铁证，本机 serverlog）：
+--   旧代码读了 `turret.weaponType` —— 而 `TurretTemplate` **没有**这个属性
+--   （Documentation/TurretTemplate.html 的属性表里没有 weaponType ✓）。
+--   真机上每读一次，引擎就抛异常 + 构造 30 行调用栈 + 写 serverlog
+--   （"Property not found or not readable: TurretTemplate.weaponType"），
+--   10 分钟写满 10 MB、一晚两个归档合计 **11911 次** ✗✓；pcall 挡不住这笔开销 ✗。
+--   → 所以测试替身也要**像真机一样对未知属性抛错** ✓，并记下谁摸过 ✗✓。
+--   否则这个坑永远测不出来（普通 Lua 表读不存在的键只会安静地给 nil ✗）。
+local STRICT_HITS = {}
+local function strictRecord(t, kind)
+    return setmetatable(t, {
+        __index = function(_, k)
+            STRICT_HITS[#STRICT_HITS + 1] = kind .. "." .. tostring(k)
+            error("Property not found or not readable: " .. kind .. "." .. tostring(k), 2)
+        end,
+    })
+end
+
+local function turret(categoryValue, weaponName)
+    -- 字段取自文档真实属性：category（WeaponCategory ✓）+ weaponName（string ✓）
+    return strictRecord({ category = categoryValue, weaponName = weaponName or "Laser" },
+        "TurretTemplate")
 end
 
 -- ★ 真机的形状（别搞错，这是旧 bug 的同一个坑 ✗✓）：
@@ -403,6 +426,40 @@ do
     check("⑦ 不在本星区的船：inThisSector 不写", far.inThisSector == nil, tostring(far.inThisSector))
     check("⑦ 不在本星区的船：liveArmedTurrets 不写（绝不猜 ✗）",
         far.liveArmedTurrets == nil, tostring(far.liveArmedTurrets))
+end
+
+-- ---------------------------------------------------------------------------
+-- ⑧ ★★ 不读**不存在**的属性（2026-10-22 加 —— 服务端掉帧的同一条根 ✗→✓）
+-- ---------------------------------------------------------------------------
+--
+-- 真机铁证：旧代码读 `turret.weaponType`，而 `TurretTemplate` 没这个属性
+-- （Documentation/TurretTemplate.html）。每一次读取 = 引擎抛异常 + 30 行堆栈 +
+-- 写一条 serverlog，一晚两个 10 MB 归档合计 11911 条 ✗✓（pcall 挡不住 ✗）。
+-- → 替身表设了严格 `__index`（读未知键就抛错并记账），所以这里断言：
+--   **整个测试过程里没有一次访问过不存在的炮塔属性** ✓✓
+print("== ⑧ 炮塔替身是严格表：不许读文档里没有的属性 ==")
+do
+    check("⑧ 全程没有访问过不存在的 TurretTemplate 属性（曾读过：" ..
+        (#STRICT_HITS > 0 and table.concat(STRICT_HITS, ", ") or "无") .. "）",
+        #STRICT_HITS == 0, table.concat(STRICT_HITS, ", "))
+
+    local c = cardOf("Raven")
+    check("⑧ turretTypes 改从真实属性 `weaponName` 得名（Bolter × 2 ✓）",
+        type(c.turretTypes) == "table" and (c.turretTypes.Bolter or 0) == 2,
+        c.turretTypes and tostring(c.turretTypes.Bolter))
+    check("⑧ Raven 的炮名分布 = Bolter 2 / Laser 1 / RailGun 1 / Mining Laser 2",
+        type(c.turretTypes) == "table"
+        and (c.turretTypes.Bolter or 0) == 2 and (c.turretTypes.Laser or 0) == 1
+        and (c.turretTypes.RailGun or 0) == 1 and (c.turretTypes["Mining Laser"] or 0) == 2,
+        c.turretTypes and (tostring(c.turretTypes.Bolter) .. "/" .. tostring(c.turretTypes.Laser)
+            .. "/" .. tostring(c.turretTypes.RailGun) .. "/" .. tostring(c.turretTypes["Mining Laser"])))
+    check("⑧ 严格表确实在拦：没人摸过 weaponType（旧病根）",
+        (function()
+            for _, hit in ipairs(STRICT_HITS) do
+                if hit:find("weaponType", 1, true) ~= nil then return false end
+            end
+            return true
+        end)(), table.concat(STRICT_HITS, ", "))
 end
 
 -- ---------------------------------------------------------------------------

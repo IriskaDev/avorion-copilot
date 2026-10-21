@@ -294,9 +294,33 @@ function M.equipmentFacts(player, entry, card, probeNotes)
                 unknown = unknown + 1
             end
 
-            -- 旧的 `turretTypes`（weaponType 计数 ✓）保留 —— 有消费方在看它 ✓
-            local okW, wt = pcall(function() return turret.weaponType end)
-            if okW and wt ~= nil then
+            -- ★★ 2026-10-22 修（服务端日志铁证 ✗→✓）：**不许读 `turret.weaponType`** ✗
+            --
+            -- 病根：`TurretTemplate` **没有** `weaponType` 这个属性。文档属性表
+            -- （Documentation/TurretTemplate.html）里只有 accuracy/ancient/armed/category/
+            -- dps/name/weaponName/weaponPrefix/weaponIcon … ✗ 没有 weaponType。
+            -- 而**每读一个不存在的属性**，引擎不只是抛个 Lua 错误：它会构造完整调用栈、
+            -- 往 serverlog 写一条 "Property not found or not readable: TurretTemplate.weaponType"
+            -- + 30 行 traceback，还起 `Stacktrace Sender` 线程 ✗✓ ——
+            -- pcall 拦得住「Lua 崩溃」，**拦不住这笔引擎侧开销** ✗✓。
+            --
+            -- 真机证据（本机 serverlog，2026-10-21/22 两次 10 MB 归档）：
+            --   serverlog 2026-10-21 22-46-00.txt     5988 次（22:46:23 → 22:56:36 写满 10 MB）
+            --   serverlog 2026-10-21 22-46-00_a.txt   5923 次（01:04:19 → 01:18:39 又写满 10 MB）
+            --   而 `_a` 里**只有**这一种 Property-not-found ✓ → 全部来自本行 ✗。
+            --   每造一张卡 = 每门炮一次；堆栈显示调用方是 fleetSnapshot/shipCard
+            --   （即 DSH 的 query）与 ops/fleet 的周期路径 ✓。
+            --
+            -- 修法：改读**真实存在**的 `weaponName`（文档 `property string weaponName
+            -- [read-only]` ✓）—— 它就是旧代码想要的"炮名"（Bolter / Laser …）✓，
+            -- `turretTypes` 字段名与语义都不变 ✓。读不到再退到 `name`（`property var name` ✓），
+            -- 两个都读不到就**不写这个键**（与本文件其它字段同一规矩 ✓）。
+            local okW, wt = pcall(function() return turret.weaponName end)
+            if not okW or wt == nil then
+                local okW2, wt2 = pcall(function() return turret.name end)
+                if okW2 then wt = wt2 end
+            end
+            if wt ~= nil then
                 local k = tostring(wt)
                 types[k] = (types[k] or 0) + 1
             end
