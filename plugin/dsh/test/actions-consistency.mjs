@@ -108,7 +108,12 @@ check('单发档案的候选行仍印「本次概率」', /本次概率\$\{pct\(
 
 // ── ⑦ 我们自造的经验系数必须被标注为估计，且原版数字优先 ✓
 check('ESCORT_RISK_FACTOR 有"估计"标注', /我们自己的估计/.test(idx))
-check('优先用原版 attackChanceWithEscorts', /best\.withEscorts \?\?/.test(idx))
+// ★ 2026-10-24：阈值语义搬进了 `escortNeedFor`（`escortNeedOf` 成了形状适配器 ✓），
+//   所以这里断言的是**那条语义本身** ✓ —— 原版给的带护航概率优先，缺了才退经验系数 ✓。
+check('优先用原版带护航概率（withEscortsRisk）',
+  /withEscortsRisk \?\? \(risk \* ESCORT_RISK_FACTOR\)/.test(idx))
+check('legacy 适配器仍把原版 attackChanceWithEscorts 交给数字判据',
+  /withEscortsRisk: best\.withEscorts/.test(idx))
 
 // ── ⑧ ★★ RPC 返回值契约（2026-10-17 实测血案 ✓✓）
 //   游戏侧 query 分支必须写成 `return true, <payload>` ✓ —— RPC 契约是 (ok, payload, why) ✓。
