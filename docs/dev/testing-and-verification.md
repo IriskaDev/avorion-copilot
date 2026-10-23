@@ -82,7 +82,7 @@ node "$env:LOCALAPPDATA\Temp\luacheck-copilot\check.js" .
 Get-ChildItem native\harness\_*_selftest.lua | ForEach-Object {
   & build\harness\lua.exe $_.FullName; "{0} -> exit {1}" -f $_.Name, $LASTEXITCODE
 }
-#    ★ 数量会随用例增加（2026-10-24：28 → 30）—— 别把旧数字当基线 ✗
+#    ★ 数量会随用例增加（2026-10-24：28 → 31）—— 别把旧数字当基线 ✗
 
 # 3) RPC 链装配检查（net/ 只放定义、能被 include）
 & build\harness\lua.exe native\harness\_linkin_check.lua      # 期望 COMPILE OK + RUN: OK
@@ -108,7 +108,8 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 |---|---|
 | `_atomic_selftest` | `atomicSelfTest: OK`（47 项断言） |
 | `_mounts_selftest` | `OK: 100 checks, 0 failure(s)` |
-| `_panel_roster_selftest` | `OK: 77 checks, 0 failure(s)`（2026-10-24 ⑧ 改为断言 `refresh` 已随实体层移除 ✓） |
+| `_panel_roster_selftest` | `OK: 98 checks, 0 failure(s)`（2026-10-24 ⑧ 改为断言 `refresh` 已随实体层移除 ✓；⑨ 装备面板只当显示器：推状态时 `getFullPlanCopy` **0 次**、无 COST、无整船重建、材料列只剩 1 列 ✓） |
+| `_trace_io_selftest` | `16 checks, 0 failures` + `OK`（2026-10-24 新增：trace 的 I/O 契约 —— 连写 N 行只 `io.open` **1 次**、每行 `flush`、每行带 `HH:MM:SS`、超 `TRACE_MAX_BYTES` 轮转成 `.1`、写失败不抛错 ✓） |
 | `_periodic_selftest` | `40 checks, 0 failures`（2026-10-24 加 ⑧：fleet 分帧 —— 单轮调用数 ≤ `MAX_SHIPS_PER_SCAN`、游标绕圈不饿死、6 艘名单仍是 2、空名单不崩 ✓；⑦ 加：节流**按名字**各一份、`thresholdMs` 可调、`QUERY_THRESHOLD_MS=100` ✓） |
 | `_rpc_query_timing_selftest` | `20 checks, 0 failures` + `OK`（2026-10-24 新增：慢查询探针 —— >100 ms 留一行 `rpc.query:<what>` + 毫秒 ✓、亚阈值不写 ✓、按名字节流 ✓、报错也记 ERR ✓、阈值可调 ✓） |
 | `_netpump_selftest` | `29 项断言 / 失败 0` + `OK`（2026-10-24 加 ④：`net.pump` 探针 —— 超阈值留一行、平时不写 ✓） |

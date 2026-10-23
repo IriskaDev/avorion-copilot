@@ -65,6 +65,26 @@
   回归：`plugin/dsh/test/rendezvous.mjs`（18 → **49 项**；新增 ⑯~㉝，其中 ㉖ 用 `/plan/i` 钉住
   「判护航需求时不发任何 `*Plan`」✓、㉜/㉝ 钉住投递块渲染与 320 字节预算 ✓）。
   生效方式：只改插件 → **重启 DSH** ✓。
+- ★ **主循环减负四条（2026-10-24 ✓，主人原话：「任何 21 秒的查询会把心跳整段拖停」）**：
+  ① **RPC 泵有时间预算**（`net/net.lua:114-179` ✓）：每拍最多 **2 帧** + 跑完一帧核账，
+  超 **~30 ms** 就停手，剩下的**留在 DLL 队列**下一拍取（不丢帧 ✗、不饿死 ✓）；
+  真机病历：`rpc_trace.log` 01:35:54 `onQuery what=dossier` → 下一条 hb **01:36:25**（31 秒无心跳 ✗）。
+  ② **card 不再白扫本星区**（`lib/copilot/card.lua:283-310` ✓）：实体解析**合并成一份**
+  `M.resolveSectorEntity(player, name)` —— **没有船名就一次都不扫** ✓；旧版 `eq = {}` 拿
+  `tostring(nil)` 去比船名 → 必然匹配不上（真机 100% 白扫 ✗），`equipmentFacts ⑤` 与
+  `systemsFacts ①` 两份逐行拷贝同时合并 ✓。
+  ③ **trace 不再每行开关文件**（`net/rpc.lua:30-100` ✓）：句柄常开 + **每行 flush**
+  （猝死前最后一句必须在 ✓）+ 每行仍带 `HH:MM:SS` ✓ + **4 MB 上限轮转**成 `.1`
+  （真机那份 **3.4 MB / 81701 行** ✓）；旧版 ≈0.97 ms/行 × 6~8 行 ≈ 6~8 ms/条 ✗。
+  ④ **装备面板只当显示器**（`player/ui/panel.lua:965-1243` + `lib/copilot/cli.lua:1744-1817` ✓）：
+  开窗**只推船列表**（`SHIP|name|turrets`，**一次 `getFullPlanCopy` 都不做** ✓）；
+  **报价挪到第一次点 Apply 时现算** ✓；**不再出整船重建预览** ✗（旧版实测 Miner-00002 = **4269 块** ✗）。
+  ⑤ 死码：`net/link_out.lua` 的 `maybePushState()`（自动推 state）**全仓零调用方** →
+  连同 `autoState` / `stateInterval` 两个永不为真的开关一起删掉 ✓（`pushState()` 留作**手动**入口 ✓）。
+  回归：`_netpump_selftest`（预算 ①②）、`_periodic_selftest` ②b（不扫本星区）、
+  `_trace_io_selftest`（16 项：1 次 open / 每行 flush / 时间戳 / 轮转）、
+  `_panel_roster_selftest` ⑨（98 项：plan 复制 0 次 / 无 COST / 无预览 / 只 1 列）。
+  生效方式：改 Lua → **重载存档** ✓。
 
 ## 未完成
 
