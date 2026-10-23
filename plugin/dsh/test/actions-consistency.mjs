@@ -93,11 +93,18 @@ check(
 )
 
 // ── ⑥ 风险判定必须活到模型眼前（缺陷 #6 ✓）
+//   ★★ 2026-10-24：`compactJobPlan` **已删除** ✗✓（legacy jobPlan 预取不再存在 ✓ ——
+//     主人原话：「去掉吧，是旧的那套 JOB 之前直接扫区域，而非你去决策扫是吧」）。
+//     所以这条断言换成**现在还活着的两个出口** ✓：
+//       (a) 游戏侧**原子** `predict` 的回包仍带闸门三件套 ✓（≤24 框、调用方点名 ✓）；
+//       (b) 单发档案的候选行仍印「基准风险 / 本次概率」✓（两条概率都要看得见 ✓）。
+check('原子 predict 回包仍带 riskLimit', /resp\.riskLimit = gate/.test(lua))
 check(
-  'compactJobPlan 保留 exceedsRiskLimit',
-  /exceedsRiskLimit: e\.exceedsRiskLimit/.test(idx),
+  '原子 predict 的候选行仍带 exceedsRiskLimit 说明',
+  /exceedsRiskLimit=true 的候选/.test(lua),
 )
-check('compactJobPlan 保留 riskLimit', /riskLimit: e\.riskLimit/.test(idx))
+check('单发档案的候选行仍印「基准风险」', /基准风险\$\{pct\(r\.baseAttackChance\)\}/.test(dossier))
+check('单发档案的候选行仍印「本次概率」', /本次概率\$\{pct\(r\.attackChance\)\}/.test(dossier))
 
 // ── ⑦ 我们自造的经验系数必须被标注为估计，且原版数字优先 ✓
 check('ESCORT_RISK_FACTOR 有"估计"标注', /我们自己的估计/.test(idx))
@@ -144,7 +151,18 @@ check(
 
 // ── ⑩ 插件侧：「没取到」必须与「没有候选」分开 ✓✓
 check('DecideFacts 有 planFetchFailures', /planFetchFailures\?/.test(idx))
-check('空载荷被当成取失败', /emptyPayload/.test(idx))
+//   ★★ 2026-10-24：`emptyPayload` 那段随 legacy 计划预取一起删了 ✗✓ ——
+//     换成这次主人点名的新不变量 ✓✓：**插件侧一个 legacy 计划都不许再向游戏要** ✗
+//     （它们全在游戏主循环里同步扫 67~71 个区域并自排序 ✓；要数据请用原子接口 ✓）。
+{
+  const LEGACY = ['tradePlan', 'minePlan', 'salvagePlan', 'sellPlan', 'scoutPlan', 'jobPlan']
+  const asked = LEGACY.filter((w) => new RegExp(`what:\\s*'${w}'`).test(idx))
+  check('插件侧不再请求任何 legacy 计划（★ 2026-10-24 ✓）', asked.length === 0, `仍在请求: ${asked.join(',')}`)
+  // 单发兜底的档案里 plans 必须是**空数组** ✓（不是"没写"、更不是偷偷翻旧计划 ✗）
+  check('dossierInputOf 的 plans 是空数组', /plans:\s*\[\]\s*as\s*unknown\[\]/.test(idx))
+  // 那句"没有计划"必须**明说**给模型 ✓（沉默会被读成"没有候选" ✗✓）
+  check('单发档案明说「无计划（已移除预扫描）」', /无计划（已移除预扫描）/.test(dossier))
+}
 check('提示词里明说"没取到 ≠ 没有候选"', /并不代表那里没有候选/.test(dossier))
 check('取失败会重试一次', /重试一次/.test(idx))
 

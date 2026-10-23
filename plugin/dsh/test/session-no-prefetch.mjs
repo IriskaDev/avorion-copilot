@@ -14,8 +14,13 @@
  *      只有 `goal` —— ★ 2026-10-20 起是 **1~2 次** ✓：第 2 次 = 校验前的「动作边界当场重查」
  *      （`dispatch.ts` 的 `allowListFor` ✓），同样是毫秒级、且发生在**她答完之后** ✓
  *      （真机理据：`BAD_ACTION` 丢单，`decisions.live.log` 2026-10-20 14:32:19 ✓）。
- *   B. 单发路径（没有会话服务）：decide 期间 `game.queries` **仍含** legacy 计划，
- *      且**有界**（≤ 5 个计划查询：mine/salvage/sell/scout/trade ✓）。
+ *   B. 单发路径（没有会话服务）：★★ 2026-10-24 改了 ✓✓（主人原话：「去掉吧，是旧的那套
+ *      JOB 之前直接扫区域，而非你去决策扫是吧」✓）——
+ *      单发兜底现在**也只取轻量原子事实**（`ship` + `fleet`），
+ *      **一个 legacy 计划都不许出现** ✗（原来这条断言是"必须预取、≤5 个" ✗）。
+ *      理由（真机 rpc_trace 2026-10-24 01:35 ✓）：jobPlan 828/884 ms、scoutPlan 1321 ms、
+ *      sellPlan 8248 ms、tradePlan 12633~15415 ms，全是游戏**主循环同步**算的 ✓；
+ *      正确做法 = 决策者先选框、再点名 `predict`（≤24 框）/ `tradeRoutes` / `tradeEvaluate` ✓。
  *
  * 跑法（仓库根或 plugin/ 下都行 ✓）：  node test/session-no-prefetch.mjs
  *
@@ -222,7 +227,7 @@ async function scenarioSessionPath() {
 }
 
 // ---------------------------------------------------------------------------
-// 场景 B：单发路径（没有会话服务）—— 仍预取计划，且**有界** ✓
+// 场景 B：单发路径（没有会话服务）—— ★★ 2026-10-24：也**不再预取任何计划** ✓✓
 // ---------------------------------------------------------------------------
 
 async function scenarioSingleShotPath() {
@@ -253,9 +258,14 @@ async function scenarioSingleShotPath() {
 
   console.log(`\n[B] 单发路径 decide 期间的 query: ${qDuring.join(', ')}`)
   check('B. decide 成功', r.ok === true, r)
-  check('B. ★ 仍含 legacy 计划（单发没工具，必须预取 ✓）', legacyDuring.length > 0, legacyDuring.join(','))
-  check('B. ★ legacy 计划查询**有界**（≤ 5 个：mine/salvage/sell/scout/trade ✓）',
-    legacyDuring.length <= 5, `${legacyDuring.length} 个: ${legacyDuring.join(',')}`)
+  // ★★ 2026-10-24（主人点名的拆 ✓）：单发兜底**也不许**预取 legacy 计划 ✗✓
+  check('B. ★ 单发路径**不含任何** legacy 计划（tradePlan/minePlan/salvagePlan/jobPlan/sellPlan/scoutPlan/dossier ✓）',
+    legacyDuring.length === 0, legacyDuring.join(','))
+  // ★ 只许轻量原子事实：goal（分支①，毫秒级 ✓）+ 船卡 + 舰队名单 ✓（都不扫区域 ✓）
+  check('B. ★ 只拉轻量原子事实（goal + ship + fleet，且没有别的 ✓）',
+    qDuring.length > 0 && qDuring.every((w) => w === 'goal' || w === 'ship' || w === 'fleet'), qDuring.join(','))
+  check('B. ★ 船卡与舰队名单**都要**取（单发没工具，这两样还是得给它 ✓）',
+    qDuring.includes('ship') && qDuring.includes('fleet'), qDuring.join(','))
 
   for (const d of disposers) { try { d() } catch { /* noop */ } }
   close()

@@ -361,10 +361,24 @@ function render(d, goalText, goalOptions, gate, planList, o, escorts, missing) {
         L.push(...acts);
         L.push('');
     }
-    // ★ 护航候选：有 Trade 段时才写 ✓（别的动作不吃护航 ✓）
-    if (escorts.length > 0 && planList.some((p) => p.action === 'Trade')) {
+    // ★ 护航候选 = **舰队名单里**能来护航的船 ✓（判据见 index.ts 的那段 ✓）。
+    //   ★★ 2026-10-24：门控从 `有 Trade 计划段` 改成 `名单非空` ✗→✓ ——
+    //     单发兜底**不再预取任何 legacy 计划** ✓，所以"有 Trade 计划才印名单"会让这份名单
+    //     永远不出现 ✗。名单本身是**原子事实**（一次 roster 读 ✓，不扫区域 ✓），照旧给模型看 ✓。
+    if (escorts.length > 0) {
         L.push(`护航候选（★ 原版判据：与行动船距离 ≤ 护卫**自己一跳的航程** —— **不要求同星系** ✗✓）：${escorts.join(', ')}`);
         L.push('  候选路线的伏击概率偏高时，可以带 1~2 艘护航把它压到闸门内；`attackChanceBase` 是不带护航的基准 ✓。');
+        L.push('');
+    }
+    // ★★ 2026-10-24：**没有计划**就明说 ✗✓（单发兜底不再预扫描 ✓ —— 见 index.ts 的
+    //   `prefetchSingleShot` ✓）。这一句是**显式事实**，不是沉默：
+    //   模型据此老实给 None / 先侦察 / 换个动作 ✓，**绝不凭空编一个框心** ✗✓。
+    if (planList.length === 0) {
+        L.push('★ 计划：**无计划（已移除预扫描）** —— 本次**没有**预取 tradePlan / minePlan /');
+        L.push('  salvagePlan / sellPlan / scoutPlan ✓（它们会在游戏主循环里同步扫 67~71 个区域 ✗）。');
+        L.push('  → 想挖 / 捞 / 跑商 / 侦察，请**先给 None**（或只做能凭现有事实判断的事）✓，');
+        L.push('    **不要凭空编一个框心** ✗✓；要真候选框，得让决策者用原子接口点名');
+        L.push('    （`predict` ≤24 框 / `tradeRoutes` / `tradeEvaluate`）✓。');
         L.push('');
     }
     for (const item of planList) {

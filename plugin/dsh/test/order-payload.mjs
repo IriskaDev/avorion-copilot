@@ -43,6 +43,9 @@ process.env.HOMEPATH = ''
 process.env.USERPROFILE = process.env.TEMP ?? ''
 
 const { apply } = await import('../lib/index.js')
+// ★ 2026-10-24：单发兜底不再预取 sellPlan/tradePlan ✗ → f/h 两组改测**渲染器**的契约 ✓，
+//   所以这里直接 import 渲染器（不碰游戏、不碰模型 ✓）。
+const { renderDossier } = await import('../lib/dossier.js')
 
 const PORT = 18811 // ★ 与 rendezvous-flow 的 18799 分开，免得并行跑冲突 ✓
 const SHIP = 'Miner-00001'
@@ -505,18 +508,36 @@ try {
   }
 
   // ---- f. ★★ Sell 的**逐货数字**必须真的送到模型眼前（主人 2026-10-17 要求 ✓✓）----
-  //   "送到眼前"= facts.sellPlan → buildPrompt 的 JSON 里**逐字**出现 ✓。
+  //   "送到眼前"= **单发档案**（`dossier.ts`）的渲染里**逐字**出现 ✓。
   //   （游戏侧 _sell_scan_selftest 的 S9 段证明这些数字**会被算出来** ✓；
   //     这里证明它们**不会被插件丢掉** ✓✓ —— 两边合起来才是完整的一条链 ✓。）
+  //   ★★ 2026-10-24 改測点 ✗→✓：插件侧**不再预取 sellPlan** ✗（主人点名的拆 ✓），
+  //     所以"不丢数字"这条契约现在由**渲染器**单独证明 ✓ —— 直接喂一份 sellPlan 载荷给它 ✓。
+  //     （计划的**取**归决策者点名 ✓；插件的责任只剩**渲染不丢** ✓✓。）
   {
-    game.shipCard.holdHasGoods = true     // ★ 有货才会拉 Sell 计划 ✓（与游戏侧同一触发条件 ✓）
+    game.shipCard.holdHasGoods = true
     modelCalls = 0
     prompts.length = 0
-    const { rpc, order } = await decideOnce(`action=Sell\nx=${HERE.x}\ny=${HERE.y}\nreason=卖货\n`)
-    const seen = prompts.join('\n')
-    console.log(`\n[f] 模型看到的 Sell 计划片段: ${seen.includes('expectedRevenue') ? '含 expectedRevenue ✓' : '缺失 ✗'}`)
-    check('f. Sell 逐货: decide 成功', rpc.ok === true, rpc)
-    check('f. Sell 逐货: ★ 模型提示里出现 expectedRevenue ✓（预计卖多少 ✓✓）',
+    const sell = sellPlan()
+    const rendered = renderDossier({
+      payload: {
+        what: 'dossier', ship: SHIP, gate: 0.1, goal: game.goal, card: game.shipCard,
+        plans: [{
+          ...sell, action: 'Sell', ship: SHIP,
+          // ★ 游戏侧 `trim=true` 会给每个候选补 `origin`（粗扫/细扫 ✓）—— 夹具照做 ✓
+          areaRanking: (sell.areaRanking ?? []).map((a) => ({ ...a, origin: a.origin ?? 'coarse' })),
+        }],
+        planFetchFailures: null,
+      },
+      fallbackCard: game.shipCard,
+      goalText: game.goal.text,
+      goalOptions: [],
+      escortCandidates: [],
+      budgetBytes: 24000,
+    })
+    const seen = rendered.text
+    console.log(`\n[f] 单发档案里的 Sell 片段: ${seen.includes('expectedRevenue') ? '含 expectedRevenue ✓' : '缺失 ✗'}`)
+    check('f. Sell 逐货: ★ 档案里出现 expectedRevenue ✓（预计卖多少 ✓✓）',
       seen.includes('expectedRevenue'), seen.slice(0, 200))
     check('f. Sell 逐货: ★ 出现 priceDeltaPercent ✓（涨跌幅 ±% ✓）',
       seen.includes('priceDeltaPercent'), '')
@@ -533,6 +554,8 @@ try {
       seen.includes('isHoldFull') && seen.includes('usedPercent') && seen.includes('blocksTradeLoading'), '')
     check('f. Sell 逐货: ★ 每个候选框都带**绝对坐标** x/y 与 origin（模型不做算术 ✓）',
       seen.includes('"origin"'), '')
+    // ★ 下单那半条链**照旧**要验 ✓（单发答应 Sell + x/y，order 必须带出去 ✓）
+    const { order } = await decideOnce(`action=Sell\nx=${HERE.x}\ny=${HERE.y}\nreason=卖货\n`)
     check('f. Sell 逐货: 卖单照旧下得出去（x/y + goodsToSell ✓）',
       order !== null && order.action === 'Sell' && order.x === HERE.x && order.y === HERE.y,
       show(order))
@@ -586,17 +609,27 @@ try {
   }
   // ---- h. ★★ 提示词里必须**看得见多个候选**（主人 2026-10-17 要求 ✓✓）----
   //   "她应该总是框选几块不同区域，看看情况再做决策" →
-  //   所以提示词里要有**多个候选框并排摆出来**（不是"一个赢家 + 一句说明" ✗）。
-  //   ★ 2026-10-17 起这段提示词由 `dossier.ts` 渲染（有界档案 ✓）——
-  //     形状与旧 `renderCandidateTables` 的表格不同 ✓，但**要求一模一样** ✗：
-  //     多个框、每个框的绝对坐标、形状、以及"框的位置可以平移"这条事实 ✓。
+  //   所以候选要**多个并排摆出来**（不是"一个赢家 + 一句说明" ✗）。
+  //   ★★ 2026-10-24 改测点 ✗→✓：单发兜底**不再预取 tradePlan** ✗（主人点名的拆 ✓），
+  //     所以这条**渲染**契约改为直接喂一份 tradePlan 载荷给渲染器 ✓ ——
+  //     它仍然保证：多个框、每框绝对坐标、两种合法形状、"框可以平移"这条事实 ✓✓。
   {
     modelCalls = 0
     prompts.length = 0
-    const { rpc } = await decideOnce(`action=Mine\nx=${HERE.x}\ny=${HERE.y}\nduration=1\nreason=挖矿\n`, [])
-    const seen = prompts.join('\n')
-    console.log(`\n[h] 提示词里的候选：${['候选框', 'Trade', '框的位置可以变'].filter((k) => seen.includes(k)).join(' / ') || '(无 ✗)'}`)
-    check('h. 候选表: decide 成功', rpc.ok === true, rpc)
+    const rendered = renderDossier({
+      payload: {
+        what: 'dossier', ship: SHIP, gate: 0.1, goal: game.goal, card: game.shipCard,
+        plans: [{ ...tradePlan(), action: 'Trade', ship: SHIP }],
+        planFetchFailures: null,
+      },
+      fallbackCard: game.shipCard,
+      goalText: game.goal.text,
+      goalOptions: [],
+      escortCandidates: [ESCORT],
+      budgetBytes: 24000,
+    })
+    const seen = rendered.text
+    console.log(`\n[h] 档案里的候选：${['候选框', 'Trade', '框的位置可以变'].filter((k) => seen.includes(k)).join(' / ') || '(无 ✗)'}`)
     check('h. 候选表: ★ 提示词里有 Trade 的**多个候选框**（并排摆开 ✓✓）',
       /★★ Trade/.test(seen) && /候选框（共 \d+ 个，这里列前 \d+ 个/.test(seen), '')
     check('h. 候选表: ★ 每个候选框都带**绝对星区坐标**（不是只有 offset ✓）',
@@ -611,17 +644,24 @@ try {
       !/照抄第一行|直接照抄/.test(seen), '')
   }
 
-  // ---- i. ★★ 缺陷①：空舱且能 Scout 时也必须拉 scoutPlan ✓✓ ----
-  //   之前 scoutPlan 被包在 holdHasGoods && canSell 里 → 侦察船通常空舱 → 永远拿不到 ✗
+  // ---- i. ★★ 2026-10-24 主人点名的拆：单发兜底**不预取任何 legacy 计划** ✓✓ ----
+  //   它们全在游戏主循环里**同步**扫 67~71 个区域并自排序 ✓（真机：jobPlan 828/884 ms、
+  //   scoutPlan 1321 ms、sellPlan 8248 ms、tradePlan 12633~15415 ms ✓），
+  //   正确做法是**决策者先选框、再点名**（predict ≤24 框 / tradeRoutes / tradeEvaluate ✓）。
+  //   这里端到端钉住：单发那一轮**一个 *Plan 都不许出现** ✗✓，而且照样能给 None ✓。
   {
-    game.shipCard.holdHasGoods = false        // ★ 侦察船通常空舱 —— 正是缺陷①的场景 ✗
+    game.shipCard.holdHasGoods = false        // ★ 侦察船通常空舱（当年缺陷①的场景 ✓，现在也一样安全 ✓）
     const qBefore = game.queries.length
     const { rpc } = await decideOnce(`action=None\nreason=先看看\n`, ['Scout'])
     const qDuring = game.queries.slice(qBefore)
-    console.log(`\n[i] 空舱 + 能 Scout（goal=Scout）时 decide 拉取的 query: ${qDuring.join(', ')}`)
-    check('i. scoutPlan: ★ 空舱且能 Scout 时也必须拉 scoutPlan（不再被 holdHasGoods 挡住 ✓✓）',
-      qDuring.includes('scoutPlan'), qDuring.join(','))
-    check('i. scoutPlan: decide 成功', rpc.ok === true, rpc)
+    const LEGACY = ['tradePlan', 'minePlan', 'salvagePlan', 'sellPlan', 'scoutPlan', 'jobPlan', 'dossier']
+    const hit = qDuring.filter((w) => LEGACY.includes(w))
+    console.log(`\n[i] 单发 decide 拉取的 query: ${qDuring.join(', ') || '(空)'}`)
+    check('i. ★ 单发兜底**不再拉任何 legacy 计划**（含 dossier 深查询 ✓）',
+      hit.length === 0, hit.join(','))
+    check('i. ★ 只拉轻量原子事实（ship + fleet ✓）',
+      qDuring.includes('ship') && qDuring.includes('fleet'), qDuring.join(','))
+    check('i. decide 成功（没有计划也能给 None ✓）', rpc.ok === true, rpc)
   }
 } catch (err) {
   console.log(`\n✗ 测试抛异常: ${err?.stack ?? err}`)
