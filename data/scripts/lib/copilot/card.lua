@@ -265,6 +265,50 @@ end
 
 M.weaponCategoryName = weaponCategoryName
 
+-- ---------------------------------------------------------------------------
+-- ★★ 「本星区实体」解析 —— **唯一一份**（2026-10-24 合并 ✓✓）
+--
+-- 合并前有**两份拷贝** ✗：`equipmentFacts ⑤`（479-515）与 `systemsFacts ①`
+-- （1430-1459）逐行同一个逻辑，改一处漏一处 ✓。
+--
+-- 同时修掉一条**真机 100% 白扫** ✗：`capabilityFacts` 传进来的 `eq` 是**空表**，
+-- 于是 ⑤ 用 `tostring(card.name)` 比船名 → 拿到 `"nil"` → **永远匹配不上** ✗，
+-- 可 `Sector():getEntitiesByType(Ship)` 已经把本星区**全部船**扫了一遍 ✗
+-- （周期路径 × 名单里每艘船 = O(星区实体) 白活 ✓）。
+--
+-- 现在的合同（很硬 ✓）：
+--   * **没有船名 → 一次都不扫** ✓（要实体的人必须把名字给出来；不猜 ✗）
+--   * 先查玩家自己那条船（最便宜 ✓），没命中才扫本星区 ✓
+--   * 全程 pcall：读不到就是 `nil`（「不知道」✓），不抛错 ✓
+function M.resolveSectorEntity(player, name)
+    if type(name) ~= "string" or name == "" then return nil end
+    local target = tostring(name)
+
+    -- ① 玩家自己开的那条船
+    local okCraft, craft = pcall(function() return player and player.craft end)
+    if okCraft and craft ~= nil then
+        local okN, craftName = pcall(function() return craft.name end)
+        if okN and craftName ~= nil and tostring(craftName) == target then
+            return craft
+        end
+    end
+
+    -- ② 本星区扫描（贵 ✓ —— 只有 ① 没命中才走 ✓）
+    local okSector, sector = pcall(function() return Sector() end)
+    if not okSector or sector == nil then return nil end
+    local okType, shipType = pcall(function() return EntityType.Ship end)
+    if not okType or shipType == nil then return nil end
+    local okList, ships = pcall(function() return { sector:getEntitiesByType(shipType) } end)
+    if not okList or type(ships) ~= "table" then return nil end
+    for _, e in ipairs(ships) do
+        local okEN, eName = pcall(function() return e.name end)
+        if okEN and eName ~= nil and tostring(eName) == target then
+            return e
+        end
+    end
+    return nil
+end
+
 -- 往 `card` 上写装备事实；`probeNotes` 收"为什么没取到" ✓。
 -- ★ 公开导出（`M.equipmentFacts`）：`player/ai/ops.lua` 的单发小卡也调它 ✓
 --   —— 免得同一件事在两个地方各算一遍、各错一遍 ✗✓
@@ -476,33 +520,15 @@ function M.equipmentFacts(player, entry, card, probeNotes)
     end
 
     -- ⑤ 实体口径（**只有船在本星区时才读得到** ✓）：原版 checkArmed 看的就是它 ✓
-    do
-        local entity = nil
-        local okCraft, craft = pcall(function() return player and player.craft end)
-        if okCraft and craft ~= nil then
-            local okN, craftName = pcall(function() return craft.name end)
-            if okN and craftName ~= nil and tostring(craftName) == tostring(card.name) then
-                entity = craft
-            end
-        end
-        if entity == nil then
-            local okSector, sector = pcall(function() return Sector() end)
-            if okSector and sector ~= nil then
-                local okType, shipType = pcall(function() return EntityType.Ship end)
-                if okType and shipType ~= nil then
-                    local okList, ships = pcall(function() return { sector:getEntitiesByType(shipType) } end)
-                    if okList then
-                        for _, e in ipairs(ships) do
-                            local okN, eName = pcall(function() return e.name end)
-                            if okN and eName ~= nil and tostring(eName) == tostring(card.name) then
-                                entity = e
-                                break
-                            end
-                        end
-                    end
-                end
-            end
-        end
+    --
+    -- ★★ 2026-10-24 修（真机 100% 白扫 ✗→✓）：这里**必须有船名**才做 ✓ ——
+    --   实体口径的唯一用途是「哪条实体 = 这条船」，没有名字它就没有意义 ✓。
+    --   旧版不看 `card.name` 是否存在，空表进来照样 `Sector():getEntitiesByType(Ship)`
+    --   把本星区全扫一遍、然后必然匹配不上（`tostring(nil)` ✗）—— 纯白扫 ✓。
+    --   `capabilityFacts` 只要炮塔类别/数量（③ 已给 ✓），**不需要**实体口径 ✓，
+    --   所以它传进来的 `eq` 没有 name → 这里一步都不做 ✓（选的是「删白扫」那条 ✓）。
+    if type(card.name) == "string" and card.name ~= "" then
+        local entity = M.resolveSectorEntity(player, card.name)
         if entity ~= nil then
             card.inThisSector = true
             local okA, armed = pcall(function() return entity:getNumArmedTurrets() end)
@@ -706,6 +732,11 @@ function M.capabilityFacts(player, name)
     end
 
     -- ② 炮塔类别（整套复用 equipmentFacts ✓）
+    --
+    -- ★★ 2026-10-24：`eq` **故意不带 name** ✓ —— 这里只要 `turretCategories` /
+    -- `turretCount`（下面三行 ✓），**不要**实体口径。带 name 会白白触发
+    -- `equipmentFacts ⑤` 的本星区全船扫描 ✗（旧版更糟：不带 name 也照扫一遍，
+    -- 因为 ⑤ 当时不看 name 在不在 ✗）。这就是「白扫直接删掉」那条修法 ✓。
     local eq = {}
     M.equipmentFacts(player, entry, eq, notes)
     facts.turretCategories = eq.turretCategories
@@ -1426,37 +1457,10 @@ function M.systemsFacts(player, name)
         return nil, "NO_SUCH_SHIP", "ShipDatabaseEntry is nil for '" .. tostring(name) .. "'"
     end
 
-    -- ① 实体（只有**本星区**的船才有）—— 与设备事实 ⑤ 同一套解析 ✓
-    local entity = nil
-    do
-        local okCraft, craft = pcall(function() return player.craft end)
-        if okCraft and craft ~= nil then
-            local okN, craftName = pcall(function() return craft.name end)
-            if okN and craftName ~= nil and tostring(craftName) == name then
-                entity = craft
-            end
-        end
-        if entity == nil then
-            local okSector, sector = pcall(function() return Sector() end)
-            if okSector and sector ~= nil then
-                local okType, shipType = pcall(function() return EntityType.Ship end)
-                if okType and shipType ~= nil then
-                    local okList, ships = pcall(function()
-                        return { sector:getEntitiesByType(shipType) }
-                    end)
-                    if okList and type(ships) == "table" then
-                        for _, e in ipairs(ships) do
-                            local okEN, eName = pcall(function() return e.name end)
-                            if okEN and eName ~= nil and tostring(eName) == name then
-                                entity = e
-                                break
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
+    -- ① 实体（只有**本星区**的船才有）
+    --   ★ 2026-10-24：这份**逐行拷贝**已删除 ✗ → 统一走 `M.resolveSectorEntity` ✓
+    --     （与设备事实 ⑤ 同一个函数 ✓；两份拷贝改一处漏一处的坑到此为止 ✓）
+    local entity = M.resolveSectorEntity(player, name)
     res.inThisSector = (entity ~= nil)
 
     -- ② 槽位（ShipSystem 需要实体 ✓）

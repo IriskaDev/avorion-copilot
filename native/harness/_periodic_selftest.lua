@@ -205,7 +205,12 @@ do
     Ops.updateServer()
     local firstTurrets, firstScans = COUNTS.getTurrets, COUNTS.sectorScans
     check("② 首轮：3 艘船各造一次卡（getTurrets = 3）", firstTurrets == 3, tostring(firstTurrets))
-    check("② 首轮：每艘船扫一次本星区（sectorScans = 3）", firstScans == 3, tostring(firstScans))
+    -- ★ 2026-10-24 改断言（✗ 3 → ✓ 0）：旧版这里是 3，因为 `equipmentFacts ⑤`
+    --   不看 `card.name` 在不在，空表也照样 `Sector():getEntitiesByType(Ship)` 扫一遍，
+    --   而且**必然匹配不上**（`tostring(nil)` ✗）→ 真机 100% 白扫 ✗✓。
+    --   现在 ⑤ 没有船名就一步都不做 → 造能力卡**零星区扫描** ✓（也只能是 0 ✓）。
+    check("② 首轮：造卡**不扫本星区**（sectorScans = 0；旧版是 3 次纯白扫 ✗）",
+        firstScans == 0, tostring(firstScans))
 
     -- 第二、三、四轮：reported 已置 → 一张卡都不该再造 ✓
     Ops.updateServer()
@@ -219,6 +224,29 @@ do
 end
 
 -- ---------------------------------------------------------------------------
+-- ②b ★ 直接钉 `card.lua` 那个「100% 白扫」（2026-10-24 ✓✓）
+--
+--     `equipmentFacts ⑤` 旧版不看 `card.name` 在不在：空表进来也照样
+--     `Sector():getEntitiesByType(Ship)` 扫一遍，然后拿 `tostring(nil)` 去比船名，
+--     **必然匹配不上** → 扫了 100% 白扫 ✗✓。
+--     现在：没有船名 → 一步都不做 ✓；有船名（`shipCard` 那条路）才解析 ✓
+--     （后者由 `_weapons_card_selftest ⑦` 钉住 ✓）。
+-- ---------------------------------------------------------------------------
+print("== ②b capabilityFacts：只要炮塔类别 → **一次星区都不扫** ✓ ==")
+do
+    COUNTS.sectorScans, COUNTS.getTurrets = 0, 0
+    local okF, facts = pcall(CardMod.capabilityFacts, player, "Ship-A")
+    check("②b capabilityFacts 不抛错", okF, tostring(facts))
+    check("②b turretCount == 2（功能没丢 ✓）",
+        okF and type(facts) == "table" and facts.turretCount == 2,
+        okF and tostring(facts and facts.turretCount) or tostring(facts))
+    check("②b **不扫本星区**（sectorScans = 0 ✓；`eq` 无 name → 白扫已删 ✓）",
+        COUNTS.sectorScans == 0, tostring(COUNTS.sectorScans))
+    check("②b 仍然读了炮塔表（getTurrets = 1 ✓，不是『什么都没做』✗）",
+        COUNTS.getTurrets == 1, tostring(COUNTS.getTurrets))
+end
+
+-- ---------------------------------------------------------------------------
 -- ③ ops：空闲 + 没船长 → 补船长（按需化的**功能**不能丢 ✓）
 -- ---------------------------------------------------------------------------
 print("== ③ ops 周期：空闲且没船长的船仍然会被补上船长 ==")
@@ -227,11 +255,12 @@ do
     CAPTAIN["Ship-C"] = false
 
     local before = COUNTS.captainHired
+    local beforeTurrets = COUNTS.getTurrets        -- ★ 相对比较（别写死 3，见 ②b ✓）
     Ops.updateServer()
     check("③ 空船 + 没船长 → 真的补了一个（按需化没有砍掉这条功能 ✓）",
         COUNTS.captainHired == before + 1, tostring(COUNTS.captainHired))
     check("③ 补船长**不需要**造能力卡（getTurrets 不增加 ✓）",
-        COUNTS.getTurrets == 3, tostring(COUNTS.getTurrets))
+        COUNTS.getTurrets == beforeTurrets, tostring(COUNTS.getTurrets - beforeTurrets) .. " 次")
 
     -- 已经有船长了 → 不再补 ✓
     local after = COUNTS.captainHired
