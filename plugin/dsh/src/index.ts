@@ -1605,6 +1605,11 @@ export async function buildEscortHint(
 
   const me = ships.find((s) => s.name === obs.ship)
   const mySec = (me?.sector ?? {}) as { x?: unknown; y?: unknown }
+  // ★ 绝不把「坐标读不到」当成 (0,0) 也当成「同星系」✗✓（本仓库的老纪律 ✓）：
+  //   只有**行动船自己的坐标真的读到了**（两个都是数字）才判同星系 ✓；
+  //   读不到 → 一律进池子（保守只会多查几条 ✓，绝不含糊地排除人家 ✗）。
+  const myX = toNum(mySec.x)
+  const myY = toNum(mySec.y)
   const sameSector: string[] = []
   const pool: Record<string, unknown>[] = []
   for (const s of ships) {
@@ -1613,7 +1618,8 @@ export async function buildEscortHint(
     if (s.busy === true) continue                 // 忙船派不动 ✓
     if (s.hasCaptain === false) continue          // 没船长接不了后台命令 ✓（nil = 未知，不排除 ✓）
     const sec = (s.sector ?? {}) as { x?: unknown; y?: unknown }
-    if (me !== undefined && sec.x === mySec.x && sec.y === mySec.y) sameSector.push(nm)
+    const same = myX !== undefined && myY !== undefined && sec.x === myX && sec.y === myY
+    if (same) sameSector.push(nm)
     else pool.push(s)
   }
   // ②b 用**同一套判据**再确认一次 ✓（同星系有可用护航 = 现有流程就够 ✓ —— 原语义 ✓）

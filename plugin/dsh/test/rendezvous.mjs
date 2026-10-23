@@ -326,6 +326,19 @@ const LEGACY_PLAN = /plan/i
     renderTaskBlock({ ...base, escortHint: '护'.repeat(400) }).includes('护航建议'), false)
 }
 
+{
+  // 行动船坐标读不到 → **绝不**当作同星系 ✓（两边的 x/y 都是 undefined 若直接比就"相等" ✗）
+  const { q, calls } = stubQuery({ list: { ships: [
+    { name: 'Trader-00001', busy: false, hasCaptain: true },                              // 没坐标
+    { name: 'Combat-00001', busy: false, hasCaptain: true },                              // 也没坐标
+  ] }, ship: armed })
+  const hint = await buildEscortHint(q, obsOf(), { nowMs: NOW })
+  check('㉞ 坐标都读不到 → 不当作同星系（仍给建议 ✓）',
+    typeof hint === 'string' && hint.includes('Combat-00001'), true)
+  check('㉞ 且照常只查 list + ship（无 *Plan）',
+    calls.every((c) => !LEGACY_PLAN.test(c.what)), true)
+}
+
 // ---------------------------------------------------------------------------
 
 let failed = 0
