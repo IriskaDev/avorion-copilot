@@ -29,7 +29,7 @@
 | `jobPlan` | `:116-118` | ★ 有策略（Mine/Salvage 共用） | `data.action` 选 |
 | `sellPlan` | `:120-121` | ★ 有策略 | — |
 | `scoutPlan` | `:123-124` | ★ 有策略 | — |
-| `dossier` | `:126-133` | ★ 有策略（内部扫 6 个计划） | `:4051` 起 |
+| `dossier` | `:126-133` | ★ **只读**（卡片 / 目标；2026-10-24 起**不再**跑计划 ✓） | `CopilotLinkIn.dossier :5875` |
 | 其它 | `:247-248` | — | 回 `UNSUPPORTED` |
 
 除 `query` 外，还有这些**已经是原子**的入口：`order`（`onOrder :383`）、`setGoal`（`:4154`）、`recall`（`:4201`）、`ping`（`:4220`）、`reload`（`:4188`）、`decide`（`:4182`，恒 `NOT_IMPLEMENTED`）。
@@ -314,7 +314,7 @@ B.6 的 `mountQuote/mountUpgrade` 只认**炮塔底座那 4 个 BlockType** ✗�
 ### C.1 降级为「显式可选」（永不作默认）
 
 - **6 个计划查询** `tradePlan / minePlan / salvagePlan / sellPlan / scoutPlan / jobPlan`：保留为 **legacy 便利口**（一次性拿「游戏排好的榜 + 推荐」），但**不再是决策默认路径**；现 `compact` 缺省（`planQuery :4023`）语义改为「legacy 快捷」。
-- **`dossier`**：保留给**单发路径**（无工具、读不了文件）作兜底；agent 路径**不再默认走它**。
+- **`dossier`**：保留给**单发路径**（无工具、读不了文件）作兜底 —— ★ **2026-10-24 起只读卡片/目标**（`plans` 恒为空数组 + 明说「无计划（已移除预扫描）」✓），**不再**在游戏侧同步扫那 6 个计划 ✗；要真数据由**决策者点名** `predict` / `tradeRoutes` / `tradeEvaluate` ✓。agent 路径**不再默认走它**。
 
 ### C.2 废弃
 

@@ -57,7 +57,10 @@
 - **原子（已是/已落地）**：`list`、`ship`、`goal`、`sectorFacts`、`predict`、`tradeRoutes`、`order`（原子化后）、`recall`、`escort`、`setGoal`。
 - **legacy（降级为显式可选，永不作默认）**：`tradePlan` / `minePlan` / `salvagePlan` / `sellPlan` / `scoutPlan` / `jobPlan` —— 它们自己在游戏侧扫框 + 排序 + 推荐 ✗，只作便利口。
 - **废弃**：`orderSchema`（本就 `NOT_IMPLEMENTED`，已改 `DEPRECATED`）。
-- **单发路径专属**：`dossier` —— 只给「无工具、读不了文件」的单发调用兜底，且由**插件**组合原子渲染有界档案，游戏侧不再替它扫 6 个计划。
+- **单发路径专属**：`dossier` —— 只给「无工具、读不了文件」的单发调用兜底 ✓。★ **2026-10-24 起它只读卡片/目标**（
+  `plans` 恒为空数组 + 明说「无计划（已移除预扫描）」✓）：游戏侧**不再**替它扫那 6 个计划 ✓，
+  插件侧也**不再预取**任何一个 legacy 计划 ✗ —— 单发兜底拿不到框就老实给 `None` ✓；
+  要真数据的那条路由**决策者自己点名** `predict`（≤24 框）/ `tradeRoutes` / `tradeEvaluate` ✓✓。
 
 ## 落地检查（工程自检守这些）
 
