@@ -13,9 +13,12 @@
 --   ② **完整答复（compact=false）也不是无界** ✗→✓
 --        · 逐候选内嵌的 `analysis` 逐星区表被裁成计数 ✓（那正是 8.7 MB 的来源 ✓）；
 --        · `areaRanking` 有硬闸 ✓、`planCompaction` 说明裁了什么 ✓。
---   ③ **dossier（单发路径）是有界的、且带着保证事实** ✓
---        · 只有标量、`top` 个候选 ✓；
---        · 船 / 目标 / 能做什么 / 每个计划的最佳候选 / 风险闸门**都在** ✓；
+--   ③ **dossier（单发路径）只读、且带着保证事实** ✓（★ 2026-10-24 改 ✓✓）
+--        · **不再跑任何计划** ✗ —— `plans` 恒为空数组 ✓，并**明说**「无计划（已移除预扫描）」✓
+--          （旧实现会在服务端同步扫 67~71 个区域：jobPlan 828/884ms、sellPlan 8248ms、
+--           tradePlan 12~15s ✓ —— 主人原话「去掉吧，是旧的那套 JOB 之前直接扫区域，
+--           而非你去决策扫是吧」✓）；
+--        · 船 / 目标 / 能做什么 / 风险闸门**仍在** ✓（这些是毫秒级属性读 ✓）；
 --        · 同一个输入跑两次 → **同样大小**（确定性 ✓，便于插件侧的预算裁剪 ✓）。
 --
 -- ## 用**实测字符数**说话（不是"看起来小了" ✓✓）
@@ -172,7 +175,7 @@ Stub.reset(spec())
 local okD, d1 = LinkIn.dossier(player, { ship = Stub.SHIP })
 check("C3 dossier ok ✓", okD == true, d1)
 local dBytes = sizeOf(d1)
-print(string.format("  [measured] dossier（top=6）= %s", fmt(dBytes)))
+print(string.format("  [measured] dossier（只读卡片/目标，★ 不跑计划 ✓）= %s", fmt(dBytes)))
 
 check("C3 dossier 是表且 what=dossier ✓", type(d1) == "table" and d1.what == "dossier", d1 and d1.what)
 check("C3 ★ 带着船的事实（名字/星区/能做什么 ✓）",
@@ -181,40 +184,23 @@ check("C3 ★ 带着船的事实（名字/星区/能做什么 ✓）",
     d1.card and JSON.encode({ name = d1.card.name, sector = d1.card.sector }))
 check("C3 ★ 带着玩家的规则（目标文字/边界/风险闸门 ✓）",
     d1.goal ~= nil and type(d1.gate) == "number", JSON.encode({ gate = d1.gate }))
-check("C3 ★ 每个计划都有推荐或**明说的**零候选原因 ✓", (function()
-    for _, p in ipairs(d1.plans or {}) do
-        local hasRec = p.recommendation ~= nil
-        local hasWhy = p.riskWarning ~= nil or p.noCandidatesReason ~= nil
-        if not (hasRec or hasWhy) then return false end
-    end
-    return #(d1.plans or {}) > 0
-end)(), #(d1.plans or {}))
-check("C3 ★ dossier 里每个计划的候选都被裁到 top 个 ✓", (function()
-    for _, p in ipairs(d1.plans or {}) do
-        if type(p.areaRanking) == "table" and #p.areaRanking > d1.top then return false end
-    end
-    return true
-end)(), d1.top)
-check("C3 ★ dossier 逐框**只有标量**（单发路径的模型没有工具，但也不该被灌巨表 ✓）", (function()
-    for _, p in ipairs(d1.plans or {}) do
-        for _, a in ipairs(p.areaRanking or {}) do
-            for _, k in ipairs({ "area", "unknown", "analysis", "perGoodByArea" }) do
-                if a[k] ~= nil then return false end
-            end
-        end
-    end
-    return true
-end)(), "")
-check("C3 ★ dossier 声明了「取不到 ≠ 没有候选」的字段 ✓", d1.planFetchFailures ~= nil
-    or d1.note:find("取不到", 1, true) ~= nil, "")
-check("C3 dossier 的自述里写明了它是有界的 ✓",
-    type(d1.note) == "string" and d1.note:find("有界", 1, true) ~= nil, d1.note)
-check("C3 ★ dossier 的每个计划都带了 trim 标记（散文不进单发路径 ✓）", (function()
-    for _, p in ipairs(d1.plans or {}) do
-        if p.trimmed ~= true then return false end
-    end
-    return true
-end)(), "")
+-- ★★ 2026-10-24（主人点名的拆 ✓）：「去掉吧，是旧的那套 JOB 之前直接扫区域，
+--   而非你去决策扫是吧」—— dossier 现在**只读**卡片/目标 ✓，**一个计划都不跑** ✗。
+--   旧的四条断言（每个计划有推荐/裁到 top 个/逐框标量/带 trim）随计划一起删 ✓，
+--   换成下面这条**更硬**的：plans 必须是**空数组** ✓（不是 nil ✗ —— nil 会被读成"字段没给"）。
+check("C3 ★ dossier 不再跑任何计划：plans 是**空数组** ✓",
+    type(d1.plans) == "table" and #d1.plans == 0,
+    type(d1.plans) == "table" and #d1.plans or d1.plans)
+check("C3 ★ 明说「无计划（已移除预扫描）」✓（沉默会被读成「没有候选」✗）",
+    type(d1.plansNote) == "string" and d1.plansNote:find("无计划（已移除预扫描）", 1, true) ~= nil,
+    d1.plansNote)
+check("C3 ★ 明说「空的 plans **不代表**那里没有候选」✓",
+    type(d1.note) == "string" and d1.note:find("不代表", 1, true) ~= nil, d1.note)
+check("C3 ★ 自述里写明计划已移除 / 改用点名要数 ✓",
+    type(d1.note) == "string" and d1.note:find("计划已移除", 1, true) ~= nil
+    and d1.note:find("predict", 1, true) ~= nil, d1.note)
+check("C3 ★ 仍然带着能做什么（actionNames 数量不变 ✓）",
+    d1.card ~= nil and type(d1.card.actionNames) == "table" and type(d1.planParams) == "table", "")
 
 -- 确定性 ✓：同样的输入 → 同样的**字符数**（插件侧按预算裁剪要可复现 ✓）
 Stub.reset(spec())

@@ -5466,7 +5466,11 @@ end
 --   ② **闸门**：`compact=false` 也**不是**无界 ✗ —— 超过 `PLAN_HARD_BUDGET` 条目上限时
 --      按同一套规则裁，并把"裁了什么"写进 `planTruncated` ✓（**绝不静默** ✗✓）。
 --   ③ **dossier**：单发路径（无工具、无文件）要一份**有界**的档案 ✓ ——
---      它是"预取 + 裁剪"，不是上面那条"告知 + 自拉" ✓（两条路**共享数据、不共享渲染** ✓✓）。
+--      ★★ 2026-10-24 起它**只读**（卡片 / 目标 ✓），**不跑任何计划** ✗✓：
+--      原来它在这里同步跑 minePlan/salvagePlan/tradePlan/sellPlan/scoutPlan（真机实测
+--      jobPlan 828/884 ms、scoutPlan 1321 ms、sellPlan 8248 ms、tradePlan 12633~15415 ms ✓，
+--      全在游戏主循环 ✓）—— 主人原话：「去掉吧，是旧的那套 JOB 之前直接扫区域，
+--      而非你去决策扫是吧」✓✓。现在 `plans` 恒为空数组 ✓ + 一句明说原因 ✓。
 --
 -- ★ 与主人的设计一致（原话）：「你应该仅投递决策请求，就仅仅是告知会话，有东西需要决策
 --   就行了，然后会话再根据插件提供的工具自行查询」✓ —— agent 路径 = 告知 ✓；
@@ -5639,7 +5643,9 @@ function CopilotLinkIn.compactPlan(resp, top, whole)
     --   11.8 KB 里它们占了大半 ✓）。
     --   ★ 对那些散文，正确的处置**不是删掉** ✗ —— 它们该由**提示词**与**工具说明**承担 ✓
     --   （主人要的：机制在提示词里，数据在查询里 ✓✓）。所以这里做成**可选的极简视图** ✓：
-    --     · 只给 `dossier`（单发路径）用 ✓ —— 因为那条路**没法再查**，越短越安全 ✓；
+    --     · 原本只给 `dossier`（单发路径）用 ✓ —— 因为那条路**没法再查**，越短越安全 ✓；
+    --       ★ 2026-10-24 起 dossier **不再跑任何计划** ✗（见 `CopilotLinkIn.dossier` 的说明 ✓），
+    --       所以 `trim` 目前**没有调用方** ✓ —— 留着（手动深查询/将来要时直接能开 ✓，别删 ✓）；
     --     · agent 路径**不用**它 ✗（它会话里有提示词，也能再查 ✓）。
     --   ★ `trim=true` 时**逐候选只留**：位置 / 形状 / 来源 / 风险 / 收益 / 时长 / 层级 /
     --     可选项标签 ✓ —— 一个字节的解释文字都不带 ✓。
@@ -5852,18 +5858,20 @@ function CopilotLinkIn.planQuery(player, data, action)
     return true, payload
 end
 
--- ★★ 单发路径的**有界档案**：船 + 规则 + 能做什么 + 每个计划前几个候选 ✓✓
+-- ★★ 单发路径的**档案**：船卡 + 目标 + 名单 ✓✓ ——  ★ 2026-10-24 起**只读**，不跑任何计划 ✗
 --
---   为什么这条路的形状**必须**是"预取 + 裁剪"而不是"告知 + 自拉" ✗→✓：
---   单发是一个**没有工具、没有文件访问**的模型调用 ✓ —— 它**不能**自己查任何东西 ✓。
---   所以它必须**带着数据**上桌 ✓；但"带多少"必须**有界** ✓（旧行为是带**全部** ✗）。
+--   ★ 原来这里**在服务端同步跑计划** ✗：minePlan / salvagePlan / tradePlan / sellPlan /
+--     scoutPlan 全在游戏**主循环里**算，而且每个都**自己扫 67~71 个区域再自排序** ✓
+--     （真机 rpc_trace 2026-10-24 01:35 逐条：`jobPlan Mine … 扫描=71区域/828ms`、
+--      `jobPlan Salvage … 884ms`、`scoutPlan … 1321ms`、`sellPlan … 8248ms`、
+--      `tradePlan … 12633~15415ms` ✓；同一刻 serverlog: `had a very long tick of over 19214ms` ✓）。
+--     主人原话：「去掉吧，是旧的那套 JOB 之前直接扫区域，而非你去决策扫是吧」✓ —— 说对了 ✓。
 --
---   ★ 两条路**共享数据、不共享渲染** ✓✓（主人点出的根因）：
---     · 数据（卡片 / 计划）来自**同一批** plan 函数 ✓ —— 口径不会漂 ✓；
---     · 渲染则**彻底分开**：agent 路径 = 一行通知（渲染在 task.ts ✓）；
---       单发路径 = 这份有界档案（渲染在 plugin/dsh/src/dossier.ts ✓，那里还有一道字节预算 ✓）。
---
---   `top` = 每个计划留几个候选（缺省 6 ✓）—— 比工具缺省（4）宽一点，因为这条路**没法再查** ✓。
+--   ★ 现在它**只读**：卡片 / 目标 ✓（都是毫秒级的属性读，不扫任何区域 ✗✓）。
+--     `plans` 恒为**空数组** ✓，并带一句 `plansNote` 明说原因 ✓ ——
+--     别让调用方把"这次没有预取"读成"那里没有候选" ✗✓（那是本仓库踩过的血案 ✓）。
+--   ★ 要**真候选框**的那条路由**决策者自己点名**：predict（≤24 框 ✓）/ tradeRoutes /
+--     tradeEvaluate ✓✓ —— 见 docs/dev/interface-atomicity.md ✓。
 function CopilotLinkIn.dossier(player, data)
     data = data or {}
     local ship = data.ship
@@ -5882,68 +5890,24 @@ function CopilotLinkIn.dossier(player, data)
     end)
     if not goalOk then goal = nil end
 
-    local top = math.floor(tonumber(data.top) or 6)
-    if top < 1 then top = 1 end
-    if top > 24 then top = 24 end
     local gate = tonumber(data.maxAttackChance) or 0.10
-
-    local dossierData = { ship = ship, top = top, maxAttackChance = gate, compact = true }
-    local actions = card.actionNames or { "Mine", "Salvage", "Trade", "Travel", "Sell", "Scout", "Refine" }
-
-    -- 只拉**这艘船真的能做**的计划 ✓（少一次没意义的扫描 ✓，也少一份体积 ✓）
-    local planSpecs = {
-        { what = "minePlan",    action = "Mine" },
-        { what = "salvagePlan", action = "Salvage" },
-        { what = "tradePlan",   action = "Trade" },
-        { what = "sellPlan",    action = "Sell" },
-        { what = "scoutPlan",   action = "Scout" },
-    }
-    local function canDo(name)
-        for _, a in ipairs(actions) do if a == name then return true end end
-        return false
-    end
-
-    local plans, failures = {}, {}
-    for _, spec in ipairs(planSpecs) do
-        if canDo(spec.action) then
-            local pcallOk, ok, payload, why = pcall(function()
-                if spec.action == "Trade" then
-                    return CopilotLinkIn.tradePlan(player, dossierData)
-                elseif spec.action == "Sell" then
-                    return CopilotLinkIn.sellPlan(player, dossierData)
-                elseif spec.action == "Scout" then
-                    return CopilotLinkIn.scoutPlan(player, dossierData)
-                else
-                    return CopilotLinkIn.jobPlan(player, dossierData, spec.action)
-                end
-            end)
-            if not pcallOk then
-                failures[#failures + 1] = { what = spec.what, why = "pcall: " .. tostring(ok) }
-            elseif ok ~= true then
-                failures[#failures + 1] = { what = spec.what, why = tostring(payload) }
-            else
-                local tagged = CopilotLinkIn.informOnly(payload, dossierData)
-                trimNestedPlan(tagged, top)
-                local compacted = CopilotLinkIn.compactPlan(tagged, top, { trim = true })
-                plans[#plans + 1] = compacted
-            end
-        end
-    end
 
     return true, {
         what = "dossier",
         ship = ship,
         action = "dossier",
-        generatedFor = "single-shot (no tools, no file access) —— 所以这里是**预取 + 裁剪** ✓",
+        generatedFor = "single-shot (no tools, no file access) —— **只读**卡片/目标 ✓（2026-10-24 起不跑计划 ✓）",
         gate = gate,
         goal = (goalOk and type(goal) == "table") and goal or nil,
         card = brief,
-        plans = plans,
-        planFetchFailures = (#failures > 0) and failures or nil,
-        top = top,
-        note = "★ 这是**有界**档案 ✓：每个计划只回前 " .. tostring(top) .. " 个候选框、" ..
-            "逐框只有标量 ✓；插件侧**另有一道字节预算** ✓（超了就按固定顺序继续裁，并记录裁了什么 ✓）。" ..
-            "★ 计划**取不到** ≠ **没有候选** ✗ —— 看 planFetchFailures / noCandidatesReason ✓。",
+        -- ★ 恒为空数组 ✓（不是 nil ✗ —— nil 会被读成"字段没给"）
+        plans = {},
+        plansNote = "无计划（已移除预扫描）—— 本接口只读卡片/目标，不再跑 " ..
+            "tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan ✓",
+        note = "★ 2026-10-24：**计划已移除** ✗✓ —— 旧实现会在服务端**同步**扫 67~71 个区域" ..
+            "（jobPlan 828/884ms、sellPlan 8248ms、tradePlan 12~15s ✓），把游戏主循环占住 ✗。" ..
+            "要候选框请**点名**要：predict（≤24 框 ✓）/ tradeRoutes / tradeEvaluate ✓。" ..
+            "★ 空的 plans **不代表**那里没有候选 ✗ —— 是这次**没有预取** ✓。",
         planParams = Card.PLAN_PARAMS,
     }
 end
