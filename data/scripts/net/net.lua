@@ -89,6 +89,24 @@ function CopilotNet.getUpdateInterval()
     return 1                                -- 每秒拉一次；决策是秒级场景，够用
 end
 
+-- ★★ 接收泵的**时间预算**（2026-10-24 修 ✓✓）
+--
+-- 病根（真机 `moddata/copilot/rpc_trace.log` 铁证 ✗）：一拍**最多 32 帧**，而且
+-- **逐帧同步**跑 handler ——
+--   01:35:54  dispatch type=request ... onQuery what=dossier
+--   01:36:25  hb connected=...            ← 中间**一条日志都没有**，31 秒 ✗✓
+-- 也就是：只要队里排着一个 tradePlan/dossier（21 秒级），这一拍就把
+-- 心跳、RPC 超时扫描、两段式下单、空闲扫描**全部拖停** ✗✓（画面不卡、逻辑卡 ✓）。
+--
+-- 现在：一拍**最多处理 1~2 帧** ✓，且**每跑完一帧看表，超 ~30 ms 就停手** ✓✓。
+-- ★ 不丢帧 ✓：帧不是「本函数取走再自己排队」，而是**留在 DLL 的接收队列里** ——
+--   本拍少取两帧，下一拍 `recv()` 照样拿得到 ✓（所以不需要 Lua 侧游标 ✓）。
+self.RECV_MAX_FRAMES = self.RECV_MAX_FRAMES or 2      -- ★ 每拍最多跑 1~2 帧 ✓
+self.RECV_BUDGET_SEC = self.RECV_BUDGET_SEC or 0.03   -- ★ 每拍最多占用 ~30 ms ✓
+
+-- 上一拍的实际用量（诊断 / 自检取证用 ✓；不是业务状态）
+self.lastPump = self.lastPump or { frames = 0, ms = 0, hitBudget = false, hitCap = false }
+
 function CopilotNet.updateServer()
     if not onServer() then return end
 
@@ -122,14 +140,32 @@ function CopilotNet.updateServer()
     end
     self.lastConnectAt = nil
 
-    -- 把 DLL 里已到的完整帧全部取干净，一条一条 emit 出去。
-    -- 用上限防止坏帧导致死循环；recv 是非阻塞的，没有就返回 nil。
-    for _ = 1, 32 do
+    -- 把 DLL 里已到的完整帧取出来，一条一条 emit 出去。
+    -- ★ **有预算**：最多 RECV_MAX_FRAMES 帧，且跑完一帧就核账（超 ~30 ms 停手）✓✓
+    --   停手 ≠ 丢帧：没取的帧**仍躺在 DLL 队列里**，下一拍接着取 ✓
+    --   （旧写法 `for _ = 1, 32` 无预算 → 队里有长 handler 就整拍拖停 ✗）
+    local t0 = os.clock()
+    local frames = 0
+    local hitBudget, hitCap = false, false
+    for _ = 1, self.RECV_MAX_FRAMES do
         local text = nil
         if not CopilotNet.SKIP_RECV then text = cp.recv() end   -- ★ 二分：跳过 recv ✓
         if text == nil then break end
+        frames = frames + 1
         CopilotRpc.trace("收到一帧 " .. tostring(#text) .. " 字节")
         CopilotNet.emit("message", text)    -- 原始文本；解析交给 inbound
+        if os.clock() - t0 >= self.RECV_BUDGET_SEC then
+            hitBudget = true
+            break                           -- ★ 本拍超预算 → 剩下的留到下一拍 ✓
+        end
+        if frames >= self.RECV_MAX_FRAMES then hitCap = true end
+    end
+    local pumpMs = (os.clock() - t0) * 1000
+    self.lastPump = { frames = frames, ms = pumpMs, hitBudget = hitBudget, hitCap = hitCap }
+    if hitBudget then
+        -- ★ 只在**真超预算**时留痕：这是排查「心跳为什么变慢/变快」的锚点 ✓
+        CopilotRpc.trace(string.format("泵：本拍 %d 帧 / %.1f ms 超预算 → 若队里还有帧，下一拍继续 ✓",
+            frames, pumpMs))
     end
 
     -- ★ 扫 RPC 超时（Lua 没有定时器 → 由这个 tick 泵驱动 ✓，和 recv 同一个 1 Hz 节拍）
