@@ -107,6 +107,9 @@ include = function(name)
     if name == "copilot/card" then return dofile("data/scripts/lib/copilot/card.lua") end
     if name == "copilot/goal" then return dofile("data/scripts/lib/copilot/goal.lua") end
     if name == "copilot/rename" then return dofile("data/scripts/lib/copilot/rename.lua") end
+    -- ★ 2026-10-24 ⑨：装备面板的服务端（cli.lua）与升级库（mounts.lua）也真加载 ✓
+    if name == "copilot/mounts" then return dofile("data/scripts/lib/copilot/mounts.lua") end
+    if name == "copilot/cli" then return dofile("data/scripts/lib/copilot/cli.lua") end
     if name == "captainutility" then return { ClassType = {} } end
     if name == "areaanalysis" then return nil end
     if name == "commandfactory" then return { makeCommand = function() return {} end } end
@@ -682,6 +685,104 @@ do
     check("⑧ 关窗后下一拍立刻停止刷新", rosterCount == frozen, tostring(rosterCount))
 
     Panel.refreshRosterReport, Panel.refreshMounts = realRoster, realMounts
+end
+
+-- ---------------------------------------------------------------------------
+-- ⑨ ★ 2026-10-24：装备面板 = **纯显示器**（面板整船重建病历）
+--
+--   病根（主人第二步 2.4 ✗）：每次「开窗 / 选船 / 选材料 / 刷新」都推**全量状态**：
+--     全星区扫描 + **每艘船一份 `getFullPlanCopy`** + 选中船**再一次**全船复制
+--     + **7 档报价** + **整船重建预览**（实测 Miner-00002 = 4269 块 ✗✓）
+--   本节钉住新合同：
+--     ① 推状态时 **plan 复制 0 次**（`getFullPlanCopy` 计数 = 0 ✓✓）
+--     ② 输出里**没有 COST**、没有预览（REPORT 空 ✓）、**不调 mountsUpgrade** ✗
+--     ③ SHIP 行 = `name|turrets`（解析器认它 ✓），排序 + 只列自己的船 ✓
+--     ④ Apply 时才给文字（reportOverride → REPORT 原样 ✓）
+--     ⑤ 面板显示 side：船列写 「N turrets」、材料列 **1 列**（不再有报价列 ✓）
+-- ---------------------------------------------------------------------------
+print("== ⑨ 装备面板只当显示器（plan 复制 0 次 / 无 COST / 无预览）==")
+do
+    EntityType = { Ship = 1 }
+
+    local PLAN_COPIES = 0
+    local function mkShip(name, faction, turrets)
+        local e = { name = name, factionIndex = faction }
+        e.getTurrets = function() return { 1, 2, 3, 4, 5 } end   -- 前 turrets 门有效
+        e.getFullPlanCopy = function() PLAN_COPIES = PLAN_COPIES + 1; return nil end
+        return e
+    end
+    local SHIPS = {
+        mkShip("Zeta", 1, 5),
+        mkShip("Alpha", 1, 5),      -- 排序后应排在 Zeta 之前 ✓
+        mkShip("Foreign", 2, 5),    -- 别人的船：不许出现 ✓
+    }
+    Sector = function()
+        return { getEntitiesByType = function(self, t) return table.unpack(SHIPS) end }
+    end
+
+    local Cli = include("copilot/cli")
+
+    local p = { index = 1, craft = { name = "Raven" } }
+
+    -- ★ mountsUpgrade 一旦被调 = 面板又在整船重建 ✗（钉死）
+    local UPGRADE_CALLS = 0
+    local realUpgrade = Cli.mountsUpgrade
+    Cli.mountsUpgrade = function() UPGRADE_CALLS = UPGRADE_CALLS + 1; return { lines = { "REBUILT" } } end
+
+    local state = Cli.mountsPanelState(p, "", 99)   -- MAT 99 → 夹到 1 ✓
+
+    check("⑨ 推状态时 `getFullPlanCopy` **0 次**（旧版每船一次 ✗）", PLAN_COPIES == 0,
+        tostring(PLAN_COPIES))
+    check("⑨ 面板不再触发 mountsUpgrade / 整船重建", UPGRADE_CALLS == 0, tostring(UPGRADE_CALLS))
+    check("⑨ 输出里没有 COST 行（报价挪到 Apply ✓）", state:find("COST|", 1, true) == nil, state)
+    check("⑨ REPORT 为空（面板不出预览 ✓）", state:find("REPORT|\n", 1, true) ~= nil
+        or state:sub(-7) == "REPORT|", state)
+    check("⑨ SHIP 行 = name|turrets", state:find("SHIP|Alpha|5", 1, true) ~= nil, state)
+    check("⑨ 只列自己的船（Foreign 不出现 ✓）", state:find("Foreign", 1, true) == nil, state)
+    check("⑨ 按名字排序（Alpha 在 Zeta 之前 ✓）",
+        (state:find("SHIP|Alpha", 1, true) or 0) < (state:find("SHIP|Zeta", 1, true) or 0), state)
+    check("⑨ SEL 回落到自己开的船", state:find("SEL|Raven", 1, true) ~= nil, state)
+    check("⑨ MAT 越界夹到 1", state:find("MAT|1", 1, true) ~= nil, state)
+
+    -- ④ Apply 时才出现的文字 → REPORT 原样带出去 ✓
+    local withReport = Cli.mountsPanelState(p, "Alpha", 3, "PRICE-FROM-APPLY")
+    check("④ reportOverride → REPORT 原样（Apply 时现算的价格 ✓）",
+        withReport:find("REPORT|PRICE%-FROM%-APPLY") ~= nil, withReport)
+    check("④ 有 reportOverride 时也不重建", UPGRADE_CALLS == 0, tostring(UPGRADE_CALLS))
+
+    -- ③ 解析器（panel.lua 那份）认新格式 ✓
+    local parsed = Panel.parseMountsState(state)
+    check("③ 解析器认出 2 艘船", #parsed.ships == 2, tostring(#parsed.ships))
+    check("③ 解析器读出炮塔数", parsed.ships[1] ~= nil and parsed.ships[1].turrets == 5,
+        tostring(parsed.ships[1] and parsed.ships[1].turrets))
+    check("③ 解析器读出 SEL/MAT", parsed.selectedShip == "Raven" and parsed.selectedMaterial == 1,
+        tostring(parsed.selectedShip) .. " / " .. tostring(parsed.selectedMaterial))
+
+    -- ③b 旧格式（存档里可能留着）仍能读，不显示乱码 ✓
+    local legacy = Panel.parseMountsState(
+        "SHIP|Old|12|3|4\nTOTAL|1\nSEL|Old\nMAT|2\nREPORT|")
+    check("③b 旧 4 字段 SHIP 行仍认（bases=12 / turrets=3 ✓）",
+        legacy.ships[1] ~= nil and legacy.ships[1].bases == 12 and legacy.ships[1].turrets == 3,
+        tostring(legacy.ships[1] and legacy.ships[1].bases))
+
+    -- ⑤ 显示 side：船列写 turrets（没有 bases）、材料列只有 1 列 ✓
+    Panel.buildMountsWindow()
+    Panel.mountsWindow:show()
+    Panel.mountsStateText = nil
+    VALUES["copilot_mounts_state"] = state
+    local okShow = pcall(function() Panel.refreshMounts() end)
+    check("⑤ refreshMounts 不报错", okShow, tostring(okShow))
+    local shipList, matList = Panel.mountsShipList, Panel.mountsMaterialList
+    local shipText = tostring(shipList:getEntry(1, 0) or "")
+    check("⑤ 船列表显示 「N turrets」", shipText:find("5 turrets", 1, true) ~= nil, shipText)
+    check("⑤ 船列表不再显示 bases（服务端不复制 plan ✓）", shipText:find("bases", 1, true) == nil, shipText)
+    check("⑤ 材料列只剩 1 列（报价列已挪走 ✓）", matList.columns == 1, tostring(matList.columns))
+    check("⑤ 材料列表仍是 7 行（0..6）", matList.rows == 7, tostring(matList.rows))
+    local matText = tostring(matList:getEntry(0, 1) or "")
+    check("⑤ 当前材料有标记（> Titanium < ✓）", matText:find(">", 1, true) ~= nil, matText)
+
+    Cli.mountsUpgrade = realUpgrade
+    Panel.mountsWindow:hide()
 end
 
 -- ---------------------------------------------------------------------------

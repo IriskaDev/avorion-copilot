@@ -1741,38 +1741,56 @@ function self.mountSetterProbe(player, shipName)
 end
 
 -- 面板用：把当前状态序列化成 player value（面板块是纯文本，见 panel.lua 的说明）
+--
+-- ★★ 2026-10-24：面板改成**纯显示器** ✓✓（病历：面板点一下 = 整船重建一次 ✗）
+--
+--   旧版每次「开窗 / 选船 / 选材料 / 刷新」都推**全量状态**，里面包含 ✗：
+--     · `Sector():getEntitiesByType(Ship)` 全星区扫描 ✓（这一步便宜 ✓）
+--     · **每艘船** `entity:getFullPlanCopy()` 数底座 ✗ ← 真贵（整船块表复制）
+--     · 选中船**再**复制一次全船 plan ✗
+--     · **7 档报价**（每档一个 24 块微型 plan，还算便宜 ✓ 但它要上面那两份复制 ✗）
+--     · **整船重建预览**：`mountsUpgrade(..., false)` → 实测 Miner-00002 = **4269 块** ✗✓
+--   → 一次点击的主线程代价 = 几艘船 × 全船复制 + 一次整船重建 ✗（纯卡顿、面板卡死）
+--
+--   现在这一份输出的**合同**（panel.lua 的解析器认它 ✓）：
+--     SHIP|name|turrets     ← **只要名字 + 炮塔数**，一个 plan 都不复制 ✓✓
+--     TOTAL|n               ← 行数（自检用 ✓）
+--     SEL|name              ← 选中的船
+--     MAT|int               ← 目标材料
+--     REPORT|text           ← **只有服务端给了文字才显示**（Apply 时现算 ✓）
+--   ★ 报价**挪到 Apply 时现算** ✓ —— `mountsUpgrade(player, ship, mat, false)` 本来就只算不写 ✓
+--   ★ 面板**不再出预览** ✗ —— 没有 `reportOverride` 就是空 REPORT ✓（它只当显示器 ✓）
 function self.mountsPanelState(player, selectedShip, selectedMaterial, reportOverride)
     local Mounts = include("copilot/mounts")
     local lines = {}
 
     -- 本星区里属于玩家的船（面板“挑一艘” = 这里列出的这些）
+    --   ★ 只读实体上**现成**的东西：名字 + `getTurrets()` 个数 ✓ —— **一次 plan 复制都不做** ✓✓
+    --
+    --   ★ `getTurrets()` 的口径（2026-10-24 钉在自检里 ✓）：真机是**一张表**
+    --     （`card.lua` 2026-10-17 那条真机记录：把表当多返回值去 `select("#", ...)`
+    --     → 恒等于 1 ✗）。这里**两种口径都认** ✓：表就数表，多返回值就数返回值 ✓
+    local function turretCount(entity)
+        local ok, pack = pcall(function() return { entity:getTurrets() } end)
+        if not ok or type(pack) ~= "table" then return -1 end
+        if #pack == 1 and type(pack[1]) == "table" then return #pack[1] end
+        return #pack
+    end
+
     local ok, ships = pcall(function() return { Sector():getEntitiesByType(EntityType.Ship) } end)
     if ok and type(ships) == "table" then
-        local baseSet = self.mountsBaseSet()
         local list = {}
         for _, entity in ipairs(ships) do
             if entity ~= nil and entity.factionIndex == player.index then
-                local plan = entity:getFullPlanCopy()
-                local bases = {}
-                if plan ~= nil then bases = Mounts.collectBases(plan, baseSet) end
                 list[#list + 1] = {
                     name = tostring(entity.name),
-                    bases = #bases,
-                    turrets = select("#", entity:getTurrets()),
-                    maxMaterial = (function()
-                        local m = -1
-                        for _, base in ipairs(bases) do
-                            if base.materialValue ~= nil and base.materialValue > m then m = base.materialValue end
-                        end
-                        return m
-                    end)(),
+                    turrets = turretCount(entity),
                 }
             end
         end
         table.sort(list, function(a, b) return a.name < b.name end)
         for _, item in ipairs(list) do
-            lines[#lines + 1] = "SHIP|" .. item.name .. "|" .. tostring(item.bases)
-                .. "|" .. tostring(item.turrets) .. "|" .. tostring(item.maxMaterial)
+            lines[#lines + 1] = "SHIP|" .. item.name .. "|" .. tostring(item.turrets)
         end
     end
     lines[#lines + 1] = "TOTAL|" .. tostring(#lines)
@@ -1787,39 +1805,8 @@ function self.mountsPanelState(player, selectedShip, selectedMaterial, reportOve
     end
     lines[#lines + 1] = "MAT|" .. tostring(target)
 
-    -- 选中船的 7 档报价 —— ★ 用“只含底座的微型 plan”算（Mounts.basesPlan）：
-    --   路径 A（在副本上改 block.material）是空操作 ✗，所以这里**绝不能**用那种写法；
-    --   24 块的微型 plan × 7 档 = 168 次 addBlock，秒出（整船 4617 块 × 7 会卡 ✗）。
-    local ship = self.mountsResolveShip(player, shipName)
-    if ship ~= nil then
-        local baseSet = self.mountsBaseSet()
-        local plan = ship:getFullPlanCopy()
-        if plan ~= nil then
-            local bases = Mounts.collectBases(plan, baseSet)
-            local oldBasePlan = Mounts.basesPlan(bases, nil, Material)
-            local oldRes, oldMoney = Mounts.snapshot(oldBasePlan)
-            for value = 0, Mounts.NUM_MATERIALS - 1 do
-                local newBasePlan = Mounts.basesPlan(bases, value, Material)
-                if newBasePlan ~= nil then
-                    local newRes, newMoney = Mounts.snapshot(newBasePlan)
-                    local quote = Mounts.quote(oldRes, newRes, oldMoney, newMoney, 1.0)
-                    lines[#lines + 1] = "COST|" .. tostring(value) .. "|"
-                        .. tostring(quote.resourceUnits) .. "|" .. tostring(quote.money)
-                        .. "|" .. Mounts.formatResources(quote.resources)
-                end
-            end
-        end
-    end
-
-    -- 选中材料的预览（走完整重建路径，报价与执行时完全同一套代码 ✓）
-    local preview
-    if reportOverride ~= nil and reportOverride ~= "" then
-        preview = tostring(reportOverride)
-    else
-        local result = self.mountsUpgrade(player, shipName, target, false)
-        preview = table.concat(result.lines or {}, " /// ")
-    end
-    lines[#lines + 1] = "REPORT|" .. preview
+    -- 预览：**只有服务端给了文字才显示** ✓（面板自己绝不再触发整船重建 ✗）
+    lines[#lines + 1] = "REPORT|" .. (reportOverride ~= nil and tostring(reportOverride) or "")
     return table.concat(lines, "\n")
 end
 

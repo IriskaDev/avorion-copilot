@@ -960,31 +960,48 @@ local function mountsValue(player, key)
 end
 
 -- 状态字符串的格式（server -> player value -> 这里解析）：
---   SHIP|name|bases|turrets|maxMaterial
---   SEL|name        MAT|int        COST|int|resourceUnits|credits|text     REPORT|text
+--
+-- ★★ 2026-10-24：面板只当**显示器** ✓✓ —— 服务端**不再**推报价（COST）也不再推预览 ✗。
+--   现在的行（`cli.mountsPanelState` 的合同 ✓）：
+--     SHIP|name|turrets          ← 名字 + 炮塔数（**服务端一次 plan 复制都不做** ✓✓）
+--     TOTAL|n   SEL|name   MAT|int
+--     REPORT|text                ← 只有服务端给了文字才显示（报价在 Apply 时现算 ✓）
+--   ★ 旧格式 `SHIP|name|bases|turrets|maxMaterial` 与 `COST|...` **仍然认** ✓ ——
+--     存档里可能还留着上一版推的状态（重载存档后第一次开窗之前 ✓），认它就不会显示乱码 ✓
 function CopilotUI.parseMountsState(text)
     local state = { ships = {}, costs = {}, report = "", selectedShip = "", selectedMaterial = 0 }
     for line in tostring(text or ""):gmatch("[^\n]+") do
         local kind, rest = line:match("^([A-Z]+)|(.*)$")
         if kind == "SHIP" then
-            local name, bases, turrets, maxMaterial =
-                rest:match("^(.-)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+            -- 新格式先试：name|turrets ✓（★ 名字里**不许有 `|`** —— 改名接口本来也禁它 ✓，
+            --   所以 `[^|]+` 既能认新格式，又不会把旧 4 字段行误判成「名字里带竖线」✗）
+            local name, turrets = rest:match("^([^|]+)|(%-?%d+)$")
             if name ~= nil then
                 state.ships[#state.ships + 1] = {
-                    name = name, bases = tonumber(bases),
-                    turrets = tonumber(turrets), maxMaterial = tonumber(maxMaterial),
+                    name = name, turrets = tonumber(turrets),
                 }
+            else
+                -- 旧格式（兼容存档里的旧状态 ✓）：name|bases|turrets|maxMaterial
+                local name2, bases, turrets2, maxMaterial =
+                    rest:match("^(.-)|(%-?%d+)|(%-?%d+)|(%-?%d+)$")
+                if name2 ~= nil then
+                    state.ships[#state.ships + 1] = {
+                        name = name2, bases = tonumber(bases),
+                        turrets = tonumber(turrets2), maxMaterial = tonumber(maxMaterial),
+                    }
+                end
             end
         elseif kind == "SEL" then
             state.selectedShip = rest
         elseif kind == "MAT" then
             state.selectedMaterial = tonumber(rest) or 0
         elseif kind == "COST" then
-            local value, units, credits, text =
+            -- 旧版报价行：新服务端不再发 ✓，但旧存档的值还能读 ✓
+            local value, units, credits, text2 =
                 rest:match("^(%-?%d+)|(%-?%d+)|(%-?%d+)|(.*)$")
             if value ~= nil then
                 state.costs[tonumber(value)] = {
-                    units = tonumber(units), credits = tonumber(credits), text = text,
+                    units = tonumber(units), credits = tonumber(credits), text = text2,
                 }
             end
         elseif kind == "REPORT" then
@@ -1029,14 +1046,14 @@ function CopilotUI.buildMountsWindow()
     shipList.entriesSelectable = true
     shipList.onSelectFunction = "onMountsShipSelected"
 
-    window:createLabel(lister:nextRect(20), "Target material (cost)"%_t, 14)
+    -- ★★ 2026-10-24：这一列**不再显示报价** ✗ → 只选材料 ✓
+    --   报价在服务端「Apply 时现算」✓（旧版每次开窗/点选都重算 7 档 → 面板卡 ✗）。
+    window:createLabel(lister:nextRect(20), "Target material (price shows on Apply)"%_t, 14)
 
     local materialList = window:createListBoxEx(lister:nextRect(196))
     self.mountsMaterialList = materialList
-    materialList.columns = 3
-    materialList:setColumnWidth(0, 140)
-    materialList:setColumnWidth(1, 200)
-    materialList:setColumnWidth(2, MOUNTS_WIDTH - 140 - 200 - 40)
+    materialList.columns = 1
+    materialList:setColumnWidth(0, MOUNTS_WIDTH - 40)
     materialList.rowHeight = 22
     materialList.entriesSelectable = true
     materialList.onSelectFunction = "onMountsMaterialSelected"
@@ -1061,7 +1078,8 @@ function CopilotUI.openMounts()
         self.mountsApplyButton.caption = "Apply upgrade"%_t
     end
 
-    -- 打开时向服务端要一次真实状态（报价在服务端算，客户端只显示 ✓）
+    -- 打开时向服务端要一次**船列表**（★ 只要名字 + 炮塔数 ✓ 不复制 plan、不算价 ✓）
+    --   报价**不在这里** ✗ → 第一次点 Apply 时服务端现算 ✓（2026-10-24 ✓）
     invokeServerFunction("mountsRefresh")
     self.mountsWindow:show()
     Hud():addMouseShowingWindow(self.mountsWindow)
@@ -1094,7 +1112,7 @@ function CopilotUI.refreshMounts()
             .. "   target: " .. (MATERIAL_LABELS[state.selectedMaterial] or "?")
     end
 
-    -- ships
+    -- ships（★ 只有名字 + 炮塔数 —— 服务端不再复制 plan ✗，这里也就没有底座数了 ✓）
     local shipList = self.mountsShipList
     if shipList then
         shipList.onChangedFunction = ""
@@ -1105,15 +1123,15 @@ function CopilotUI.refreshMounts()
             local row = shipList.rows - 1
             shipList:setEntry(0, row, item.name, false, false, ColorRGB(0.9, 0.9, 0.9))
             shipList:setEntryType(0, row, ListBoxEntryType.Text)
-            shipList:setEntry(1, row,
-                tostring(item.bases) .. " bases / " .. tostring(item.turrets) .. " turrets",
-                false, false, ColorRGB(0.7, 0.85, 1.0))
+            local detail = tostring(item.turrets) .. " turrets"
+            if item.bases ~= nil then detail = detail .. " / " .. tostring(item.bases) .. " bases" end
+            shipList:setEntry(1, row, detail, false, false, ColorRGB(0.7, 0.85, 1.0))
             shipList:setEntryType(1, row, ListBoxEntryType.Text)
         end
         shipList.onSelectFunction = "onMountsShipSelected"
     end
 
-    -- materials: always 7 rows (0..6), cost only where the server could price it
+    -- materials: always 7 rows (0..6) —— ★ 只显示名字（报价在 Apply 时现算 ✓）
     local materialList = self.mountsMaterialList
     if materialList then
         materialList.onSelectFunction = ""
@@ -1125,18 +1143,6 @@ function CopilotUI.refreshMounts()
             if value == state.selectedMaterial then label = "> " .. label .. " <" end
             materialList:setEntry(0, row, label, false, false, ColorRGB(0.9, 0.9, 0.9))
             materialList:setEntryType(0, row, ListBoxEntryType.Text)
-
-            local cost = state.costs[value]
-            local resources = "-"
-            local credits = "-"
-            if cost ~= nil then
-                resources = tostring(cost.text)
-                credits = tostring(cost.credits)
-            end
-            materialList:setEntry(1, row, resources, false, false, ColorRGB(0.8, 0.95, 0.8))
-            materialList:setEntryType(1, row, ListBoxEntryType.Text)
-            materialList:setEntry(2, row, credits, false, false, ColorRGB(0.8, 0.9, 1.0))
-            materialList:setEntryType(2, row, ListBoxEntryType.Text)
         end
         materialList.onSelectFunction = "onMountsMaterialSelected"
     end
