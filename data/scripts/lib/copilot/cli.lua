@@ -1846,7 +1846,8 @@ end
 local COPILOT_MOD_ROOT = "C:\\Users\\IriskaDev\\AppData\\Roaming\\Avorion\\mods\\copilot\\"
 
 local RELOADABLE = {
-    "data\\scripts\\player\\ai\\autopilot.lua",
+    -- ★ 2026-10-24：`data\scripts\player\ai\autopilot.lua` **已随实体级自动驾驶移除** ✗
+    --   （文件只剩弃用空壳；这里不再列它 ✓）
     "data\\scripts\\player\\ai\\ops.lua",
     "data\\scripts\\player\\ui\\panel.lua",
     -- ★ 命令中枢（2026-10-16 起逻辑在本文件 ✓）—— 2026-10-18 聊天层退役后
@@ -1919,8 +1920,9 @@ end
 --   · 主人**不用**任何 `/copilot ...` 子命令 ✓；
 --   · 决策者（DSH 侧）**敲不进游戏聊天** ✗ —— 它只有 RPC（`net/link_in.lua`）✓；
 --   → 每个子命令都已经有一个**真机用过**的替代入口，聊天层对双方都没入口价值 ✗：
---       on / off / explore / status → 面板（`player/ui/panel.lua:590` setEnabled /
---         `:608` setExplore / `:520` refresh ✓）
+--       on / off / explore / status → ★ **已随实体级自动驾驶一起移除（2026-10-24）** ✗：
+--         面板不再有开关 / 自动跃迁勾选框，`CopilotUI.setEnabled/setExplore/refresh` 已删 ✓
+--         （这几条旧子命令**没有**替代入口；舰队运营走名单 + 目标输入框 + RPC ✓）
 --       mounts（炮塔底座 / 整船 / 单一方块类型）→ 面板按钮，或 RPC
 --         mountQuote / mountUpgrade / shipQuote / blockQuote / blockUpgrade / shipUpgrade
 --         （`net/link_in.lua:379-468` → 本文件的 mountsQuoteRpc / mountsUpgradeRpc /

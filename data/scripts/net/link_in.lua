@@ -1652,9 +1652,10 @@ function CopilotLinkIn.onOrder(data)
     local sellFilter = nil
 
     -- ★★★ 永不向玩家正在开的船下令（防御性硬排除 ✗✓ 2026-10-17）
-    --   玩家自己的船由实体层（player/ai/autopilot.lua）接管；后台命令
-    --   （startAreaAnalysis/startCommand）会把它塞进后台模拟，抢走玩家控制、打断跃迁 ✗。
-    --   即使 DSH 误下单，也必须在这里拒掉，绝不触碰 player.craft ✗✓。
+    --   ★ 2026-10-24：实体级自动驾驶（player/ai/autopilot.lua）**已移除** ✓，但这条硬排除
+    --   **照旧有效** —— 后台命令（startAreaAnalysis/startCommand）会把这艘船塞进后台模拟，
+    --   抢走玩家控制、打断跃迁 ✗。即使 DSH 误下单，也必须在这里拒掉，
+    --   绝不触碰 player.craft ✗✓。
     local piloted = player.craft
     if piloted ~= nil and valid(piloted) and piloted.name == ship then
         return false, "PILOTED_SHIP",

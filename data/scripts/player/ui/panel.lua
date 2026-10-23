@@ -7,8 +7,10 @@ include("callable")
 --
 -- The round robot button in the top right corner opens a panel. The panel holds
 --
---   * the autopilot switches for the ship you are flying (copilot_enabled / copilot_explore)
---   * the list of ships the AI is allowed to operate on its own
+--   * the list of ships the AI is allowed to operate on its own, plus each ship's goal
+--
+-- ★ 实体级自动驾驶（autopilot）已于 **2026-10-24 移除** ✓ —— 面板里**没有**开关/状态行 ✗，
+--   只剩「舰队运营」：名单（第 0 列唯一开关）、接管状态镜像、任务列、目标输入框 ✓。
 --
 -- The ship list is the important part: only ships ticked there are ever handed to the AI
 -- layer; everything else is left alone.
@@ -44,37 +46,16 @@ local DEBUG = false
 --   加宽的部分全给了「任务」列（110px → 350px）：原来 `在附近星区挖矿…` 那样被截断的文字
 --   现在能多看到两倍多的字 ✓；同时删掉「本船自驾」那一列（死字段 ✗），省下的 60px 也在里面 ✓✓
 local PANEL_WIDTH = 620
--- ★ 2026-10-19：列头行 + 名单自检行 + 说明区(4 行) + **目标输入框** → 500 → 590 → 606 → 658 → 760 → 768 → **782**
---   （目标输入框从 26px 单行 → 100px 多行 ≈ 5 行，另加一行 26px 的「保存目标」按钮 ✓✓；
---    第四次修正把「说明行」从 1 个 74px 的大 Label 拆成 **4 个 16px 的小 Label**
---    （= 64px + 3×6px 间距 = 82px ✓），再给炮塔按钮前加 8px 呼吸位（+14px）→ 高度 782 ✓
---    18 行 + 17 个 6px 间距排到 748，底下还留 ~24px 余量 ✓）
-local PANEL_HEIGHT = 782
+-- ★ 2026-10-24：实体级自动驾驶移除 → 顶部 **开关/状态/自动跃迁** 四行（24+22+32+28）连同
+--   spacer 一起删掉（-114px / -5 个 6px 间距 = -144px）；说明区加回 1 行「已移除」（+22px）。
+--   现在内容 = 22+18+220+16+100+26+18+5×16+8+30 = **538px**，9 个 6px 间距 = 54px，
+--   加 lister 上下各 10px → 538+54+20 = **612px**，高度取 **636**（留 24px 余量 ✓）。
+local PANEL_HEIGHT = 636
 
--- Human readable version of Copilot.state (published by the server side brain).
--- Translated through the game's own language setting: %_t looks the string up in
--- data/localization/<language>.po, and this mod ships its own zh.po for that.
--- ★ 为什么是函数而不是顶层表：顶层写 `"Idle"%_t` 时，`/copilot reload` 用 load() 重执行
---   文件体会把它当**取模运算** → "attempt to perform arithmetic on a string value" ✗
---   （2026-10-17 实测：panel.lua 每次 reload 都挂在这一行）。
---   移进函数体后，文件体可以安全重执行；真脚本 VM 里由引擎把 %_t 变成本地化字面量 ✓。
-local function stateTextTable()
-    return {
-        idle    = "Idle"%_t,
-        combat  = "Engaging hostiles"%_t,
-        mine    = "Mining asteroids"%_t,
-        salvage = "Salvaging wreckage"%_t,
-        full    = "Cargo full, parked"%_t,
-        explore = "Jumping to a new sector"%_t,
-        empty   = "Sector cleared, waiting"%_t,
-    }
-end
+-- ★ 2026-10-24：`stateTextTable()`（idle/combat/mine/salvage/full/explore/empty 的翻译表）
+--   只服务已移除的实体级自动驾驶状态行 → **一起删掉** ✗✓（面板不再显示 AI 实时状态）。
 
 self.window = nil
-self.statusLabel = nil
-self.stateLabel = nil
-self.toggleButton = nil
-self.exploreCheckBox = nil
 self.shipList = nil
 self.rosterLabel = nil          -- ★ 名单自检行（面板 N / 服务端 M）✓
 self.shipRows = nil             -- ★ 每行缓存：{ name, goalText } ✓（auto 列 / 动作白名单都已退役 ✗✓）
@@ -94,16 +75,6 @@ self.hudVisible = nil
 -- interaction; without it the game keeps steering the ship and the player has to hold SHIFT
 -- to use the panel. Only done once, right after the window is first shown.
 self.mouseRegistered = false
-
-self.enabled = false
-self.explore = false
-self.state = nil
-
--- The switches are changed on the server, so a click only becomes visible in the player
--- values one round trip later. Until the server confirms, keep showing what the player just
--- clicked instead of snapping back to the stale value.
-self.enabledPending = false
-self.explorePending = false
 
 -- ---------------------------------------------------------------------------
 -- the list of AI operated ships is stored as a newline separated string in a player value.
@@ -156,7 +127,8 @@ function CopilotUI.initialize()
             CopilotUI.buildHudButton()
         end
 
-        CopilotUI.refresh()
+        -- ★ 2026-10-24：原来这里调 CopilotUI.refresh() 刷自动驾驶开关/状态；
+        --   实体级自动驾驶移除后它已不存在 ✗✓（面板数据只剩打开时的名单自检行）。
     end
 end
 
@@ -229,10 +201,10 @@ function CopilotUI.updateClient(timeStep)
     -- ★ ESC / X 关窗是引擎直接 hide，不走 togglePanel → 在这里补上真实可见性回报 ✓
     CopilotUI.watchPanelVisibility()
 
-    -- the labels only need updating while the panel is open; the ship list is rebuilt when
-    -- the panel is opened so it never fights with the player's clicks
+    -- 面板数据（底部「面板 N / 服务端 M」自检行）只在面板打开时刷新；名单本身只在
+    -- 打开面板 / 勾选时重建，免得和玩家的点击打架 ✓
+    -- ★ 2026-10-24：实体级自动驾驶移除 → 这里**没有**开关/状态标签要刷新了 ✗✓
     if self.window and self.window.visible then
-        CopilotUI.refresh()
         -- ★ 只刷新底部那行「面板 N / 服务端 M」自检（不重建列表，免得和玩家的点击打架）✓
         CopilotUI.refreshRosterReport()
     end
@@ -301,19 +273,9 @@ function CopilotUI.buildPanel()
 
     local lister = UIVerticalLister(Rect(vec2(10, 10), vec2(size.x - 10, size.y - 10)), 6, 0)
 
-    self.statusLabel = window:createLabel(lister:nextRect(24), "", 16)
-    self.statusLabel:setCenterAligned()
-
-    self.stateLabel = window:createLabel(lister:nextRect(22), "", 14)
-    self.stateLabel:setCenterAligned()
-
-    self.toggleButton = window:createButton(lister:nextRect(32), "Enable"%_t, "onTogglePressed")
-    self.toggleButton.tooltip = "Hand the ship you are currently flying over to the AI."%_t
-
-    self.exploreCheckBox = window:createCheckBox(lister:nextRect(28), "Auto-explore after clearing a sector"%_t, "onExploreChecked")
-    self.exploreCheckBox.tooltip = "Allow the AI to jump into neighbouring sectors once the current one is empty."%_t
-
-    lister:nextRect(8)
+    -- ★ 2026-10-24：实体级自动驾驶（autopilot）移除 ✓✓ —— 原来这里依次是
+    --   状态行 24px / AI 状态 22px / Enable 按钮 32px / Auto-explore 勾选框 28px + 8px 呼吸位，
+    --   全部删掉 ✗；面板直接从「AI 自动运营的舰船」开始 ✓（名单、目标、任务列一个不动 ✓）。
 
     window:createLabel(lister:nextRect(22), "Ships operated by the AI"%_t, 16)
 
@@ -408,6 +370,7 @@ function CopilotUI.buildPanel()
         "Column 2 spells out the very same roster in words."%_t,
         "Column 3 = Task: empty = Auto. Click a ship row, type a sentence below, press Save."%_t,
         "RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}"%_t,
+        "Entity autopilot was removed on 2026-10-24: this panel is fleet operations only."%_t,
     }
     for _, line in ipairs(hintLines) do
         window:createLabel(lister:nextRect(16), line, 11)
@@ -433,7 +396,7 @@ function CopilotUI.togglePanel()
         self.window:hide()
     else
         CopilotUI.refreshShipList()
-        CopilotUI.refresh()
+        -- ★ 2026-10-24：这里的 CopilotUI.refresh()（自动驾驶开关/状态）已随实体层移除 ✗✓
         self.window:show()
 
         -- Tells the HUD to keep the mouse released while this window is on screen. Without
@@ -538,7 +501,7 @@ local function goalDisplay(text)
     return "Auto"%_t          -- ★ 默认就是它：不指派、让决策层按分类/装备自己定 ✓
 end
 
--- 每船配置存成 "船名|autopilot|目标" 每行一条，和名单一样是纯字符串
+-- 每船配置存成 "船名|auto|目标" 每行一条，和名单一样是纯字符串
 -- （player:setValue 对表支持未验证，见 AGENTS.md）。
 --
 -- ★★ 2026-10-19 第三次修正：`decodeShipCfg` / `encodeShipCfg` **删掉** ✗✓
@@ -846,109 +809,16 @@ function CopilotUI.updateHudButtonVisibility()
 end
 
 -- ---------------------------------------------------------------------------
--- autopilot switches
+-- ★ 2026-10-24：实体级自动驾驶（autopilot）**已移除** ✓✓
+--
+-- 这里原来有 `CopilotUI.refresh`（读 copilot_enabled / copilot_explore / copilot_state 刷
+-- 开关与状态标签）、`onTogglePressed` / `onExploreChecked`（客户端回调）和
+-- `setEnabled` / `setExplore`（服务端写 player value + 挂 brain）——**整段删掉** ✗✓。
+--
+-- ★ 旧 player value **不删** ✓：`copilot_enabled` / `copilot_explore` / `copilot_state`
+--   留在存档里，但本 mod **不再读** ✓（只服务已移除的实体层）。
+-- ★ 名单 / 目标 / 任务三块**一个没动** ✓（它们属于舰队运营层 ✓）。
 -- ---------------------------------------------------------------------------
-
-function CopilotUI.refresh()
-    local player = Player()
-    if not player then return end
-
-    local serverEnabled = player:getValue("copilot_enabled") and true or false
-    local serverExplore = player:getValue("copilot_explore") and true or false
-    self.state = player:getValue("copilot_state")
-
-    if self.enabledPending then
-        if serverEnabled == self.enabled then self.enabledPending = false end
-    else
-        self.enabled = serverEnabled
-    end
-
-    if self.explorePending then
-        if serverExplore == self.explore then self.explorePending = false end
-    else
-        self.explore = serverExplore
-    end
-
-    if self.statusLabel then
-        if self.enabled then
-            self.statusLabel.caption = "Autopilot: ON"%_t
-        else
-            self.statusLabel.caption = "Autopilot: OFF"%_t
-        end
-    end
-
-    if self.stateLabel then
-        local text = "-"
-        if self.enabled and self.state then
-            text = stateTextTable()[self.state] or tostring(self.state)
-        end
-        self.stateLabel.caption = text
-    end
-
-    if self.toggleButton then
-        if self.enabled then
-            self.toggleButton.caption = "Disable"%_t
-        else
-            self.toggleButton.caption = "Enable"%_t
-        end
-    end
-
-    if self.exploreCheckBox then
-        self.exploreCheckBox.checked = self.explore
-    end
-end
-
-function CopilotUI.onTogglePressed(button)
-    if onClient() then
-        self.enabled = not self.enabled
-        self.enabledPending = true
-        invokeServerFunction("setEnabled", self.enabled)
-        return
-    end
-end
-
-function CopilotUI.onExploreChecked(checkbox)
-    if onClient() then
-        local checked = self.exploreCheckBox and self.exploreCheckBox.checked and true or false
-        self.explore = checked
-        self.explorePending = true
-        invokeServerFunction("setExplore", checked)
-        return
-    end
-end
-
--- Server -------------------------------------------------------------------
-
-function CopilotUI.setEnabled(enabled)
-    if onClient() then
-        invokeServerFunction("setEnabled", enabled)
-        return
-    end
-
-    local player = Player(callingPlayer)
-    if not player then return end
-
-    player:setValue("copilot_enabled", enabled and true or false)
-
-    if enabled then
-        -- mount the brain; it releases the ship again once the value goes false
-        player:addScriptOnce("data/scripts/player/ai/autopilot.lua")
-    end
-end
-callable(CopilotUI, "setEnabled")
-
-function CopilotUI.setExplore(explore)
-    if onClient() then
-        invokeServerFunction("setExplore", explore)
-        return
-    end
-
-    local player = Player(callingPlayer)
-    if not player then return end
-
-    player:setValue("copilot_explore", explore and true or false)
-end
-callable(CopilotUI, "setExplore")
 
 -- Stores the list of ships the AI is allowed to operate on. Kept as a newline separated
 -- string: player:setValue is only proven for simple values.

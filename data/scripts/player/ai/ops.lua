@@ -5,7 +5,8 @@ package.path = package.path .. ";data/scripts/?.lua"
 --
 -- 职责边界（非常重要）：
 --   * 只作用于**面板名单里的船**（player value `copilot_auto_ships` / `copilot_auto_cfg`）
---   * **绝不碰 `player.craft`** —— 替玩家开船是实体层（player/ai/autopilot.lua）的事
+--   * **绝不碰 `player.craft`** —— 替玩家开船随实体级自动驾驶**一起移除**（2026-10-24）✓，
+--     玩家自己开的那艘船**永远不归本层** ✗
 --   * 它负责：空闲检测 → 能力卡 → 补硬门槛 → 两段式下单 → 收割
 --
 -- ## API 全部经过实测或原版源码核对（第一版猜错两个，都被 pcall 接住了）

@@ -197,6 +197,10 @@ msgstr "第 3 列是任务；空=自动。点一行船，在下面框里写一�
 msgid "RPC: query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}"
 msgstr "RPC 开关：query {what=\"panel\", action=\"open\"|\"close\"|\"toggle\"}"
 
+# ★ 2026-10-24：实体级自动驾驶移除 —— 面板说明区第 5 行（必须写明，否则玩家找开关）
+msgid "Entity autopilot was removed on 2026-10-24: this panel is fleet operations only."
+msgstr "实体级自动驾驶已移除（2026-10-24）：本面板只做舰队运营。"
+
 # 缺船长：硬门槛，只提示一次（否则每 tick 重试会刷屏）
 msgid "Copilot: this ship needs a captain before it can mine or salvage."
 msgstr "副驾驶：本舰需要一名船长才能采矿或打捞。"

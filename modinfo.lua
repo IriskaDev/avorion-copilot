@@ -12,7 +12,7 @@ meta =
 
     type = "mod",
 
-    description = "An AI co-pilot that plays alongside you. In-sector it autopilots the ship you're flying; a strategic fleet/economy layer is in development (status: docs/dev/current-status.md).",
+    description = "An AI co-pilot for your fleet: the entity-level autopilot was removed on 2026-10-24, so fleet operations now run through the Copilot panel and the DSH fleet_* tools (status: docs/dev/current-status.md).",
 
     authors = {"DSH"},
 

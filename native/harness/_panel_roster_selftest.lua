@@ -229,7 +229,8 @@ print("== ① 布局：4 列 / 列头和列宽一致 / 多行目标框 / 控件�
 Panel.buildPanel()
 
 -- panel.lua 的几何常量（两个都是文件内 local，这里按源码同步 ✓）
-local PANEL_WIDTH, PANEL_HEIGHT = 620, 782
+-- ★ 2026-10-24：实体级自动驾驶移除 → 顶部四行删掉、说明区加回 1 行 → 782 → **636** ✓
+local PANEL_WIDTH, PANEL_HEIGHT = 620, 636
 
 local list = Panel.shipList
 check("① 列表列数 = 4（「本船自驾」死列已删）", list.columns == 4, tostring(list.columns))
@@ -261,15 +262,17 @@ check("① 列头 = OK / Take-over / Ship / Task（没有 Auto/P ✓）",
 -- ★★ 说明区：**一行一个 Label**（2026-10-19 第四次修正 ✓）
 --   旧版是**一个** 11 号 Label 里塞 3 行、单行 200+ 字符的长文本 ——
 --   `Label` 放不下时是**整体缩字**而不是换行 ✗ → 真机上被缩成 5px 糊字 ✗✓。
---   这里锁死：4 个独立 Label、每行都短、且不含换行符（= 不会再触发缩字 ✓）。
+--   这里锁死：独立 Label、每行都短、且不含换行符（= 不会再触发缩字 ✓）。
+-- ★ 2026-10-24：第 5 行是「实体级自动驾驶已移除」—— 面板不再有开关，必须写明 ✓
 local hintLabels = {}
 for _, l in ipairs(created.labels) do
     local c = tostring(l.caption or "")
-    if l.fontSize == 11 and (c:sub(1, 7) == "Column " or c:sub(1, 4) == "RPC:") then
+    if l.fontSize == 11 and (c:sub(1, 7) == "Column " or c:sub(1, 4) == "RPC:"
+        or c:sub(1, 6) == "Entity") then
         hintLabels[#hintLabels + 1] = l
     end
 end
-check("① 说明区 = 4 个独立 Label（不再是一个大 Label ✓）", #hintLabels == 4,
+check("① 说明区 = 5 个独立 Label（不再是一个大 Label ✓）", #hintLabels == 5,
     tostring(#hintLabels))
 
 local hintOk, longest = true, 0
@@ -629,9 +632,12 @@ Panel.mountsWindow:hide()
 --
 -- 任务书 §4 最想省的那一刀：「面板没打开时不做面板数据轮询」✗→✓
 --   · `updateClient` 每 1 秒被引擎调一次（`getUpdateInterval` = 1 ✓）；
---   · 面板数据（Autopilot 开关/状态、名单自检行）只有**看得见**时才有意义 ✓；
+--   · 面板数据（名单自检行）只有**看得见**时才有意义 ✓；
 --   · 但 RPC 面板开关**必须一直跑**（它正是用来把面板打开的 ✗→✓）——
 --     所以本节的断言是「**数据刷新**归零」，不是「整个 updateClient 归零」✓✓
+--
+-- ★ 2026-10-24：实体级自动驾驶移除 → `CopilotUI.refresh`（开关/状态）**已不存在** ✗，
+--   这里改成断言「它确实没了」，面板数据只剩名单自检行 ✓。
 --
 -- 真机意义：面板关着时，服务端这边不该因为面板而多花任何一次读 ✓
 -- ---------------------------------------------------------------------------
@@ -640,10 +646,11 @@ do
     -- 防止 pollPanelCommand 读到"命令序号"而顺手开关窗（替身里没有这个 value ✓）
     Panel.panelCmdSeq = 999999
 
-    local refreshCount, rosterCount, mountsCount = 0, 0, 0
-    local realRefresh, realRoster, realMounts =
-        Panel.refresh, Panel.refreshRosterReport, Panel.refreshMounts
-    Panel.refresh = function(...) refreshCount = refreshCount + 1; return realRefresh(...) end
+    check("⑧ refresh（自动驾驶开关/状态）**已随实体层移除**", Panel.refresh == nil,
+        tostring(Panel.refresh))
+
+    local rosterCount, mountsCount = 0, 0
+    local realRoster, realMounts = Panel.refreshRosterReport, Panel.refreshMounts
     Panel.refreshRosterReport = function(...) rosterCount = rosterCount + 1; return realRoster(...) end
     if realMounts ~= nil then
         Panel.refreshMounts = function(...) mountsCount = mountsCount + 1; return realMounts(...) end
@@ -655,7 +662,6 @@ do
         for _ = 1, 5 do Panel.updateClient(0.016) end
     end)
     check("⑧ 面板关着：5 拍不报错", okClosed, tostring(okClosed))
-    check("⑧ 面板关着：refresh 调用 **0** 次", refreshCount == 0, tostring(refreshCount))
     check("⑧ 面板关着：refreshRosterReport 调用 **0** 次", rosterCount == 0, tostring(rosterCount))
     check("⑧ 面板关着：refreshMounts 调用 **0** 次", mountsCount == 0, tostring(mountsCount))
     check("⑧ 面板关着：窗口没有被 updateClient 打开（它无权开关 ✓）",
@@ -666,18 +672,16 @@ do
         for _ = 1, 3 do Panel.updateClient(0.016) end
     end)
     check("⑧ 面板打开：3 拍不报错", okOpen, tostring(okOpen))
-    check("⑧ 面板打开：refresh 每拍 1 次（3 拍 = 3 次）", refreshCount == 3, tostring(refreshCount))
     check("⑧ 面板打开：refreshRosterReport 每拍 1 次（3 拍 = 3 次）",
         rosterCount == 3, tostring(rosterCount))
 
     -- 关掉之后**下一拍**就该停（不是等几秒 ✓）
     Panel.window:hide()
-    local frozen = refreshCount
+    local frozen = rosterCount
     Panel.updateClient(0.016)
-    check("⑧ 关窗后下一拍立刻停止刷新", refreshCount == frozen, tostring(refreshCount))
+    check("⑧ 关窗后下一拍立刻停止刷新", rosterCount == frozen, tostring(rosterCount))
 
-    Panel.refresh, Panel.refreshRosterReport, Panel.refreshMounts =
-        realRefresh, realRoster, realMounts
+    Panel.refreshRosterReport, Panel.refreshMounts = realRoster, realMounts
 end
 
 -- ---------------------------------------------------------------------------

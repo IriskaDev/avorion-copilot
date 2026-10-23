@@ -1,4 +1,5 @@
--- Copilot mod: 玩家级挂载点（客户端 UI + 到 DSH 的链 + 自动驾驶大脑）。
+-- Copilot mod: 玩家级挂载点（客户端 UI + 到 DSH 的链 + 舰队运营层）。
+-- ★ 实体级自动驾驶（autopilot）已于 2026-10-24 **移除** ✓ —— 这里不再挂载它 ✗。
 --
 -- 本文件由 VFS **追加**到原版 data/scripts/player/init.lua 末尾，
 -- 所以不能抄原版内容、不能以 return 结尾。
@@ -16,22 +17,15 @@ if onServer() then
     copilotPlayer:addScriptOnce("net/net.lua")   -- ★ 已恢复（二分结束 ✓）
     copilotPlayer:addScriptOnce("ai/ops.lua")
 
-    -- 兼容老存档：脚本曾叫 player/ai/copilot.lua，改名后游戏找不到它，会把它从
-    -- 存档里的对象上**移除**（日志里那句 "Script will be removed ... to avoid
-    -- further errors"）。但 player value 里的 copilot_enabled 仍然是 true，
-    -- 于是出现「开关显示开着、船却不动」的坏状态。
-    -- 这里按需把**新路径**挂回去，让老存档自愈。
-    -- ★ 排查结论（2026-10-14）：服务端消失是**游戏自身的堆损坏**，与本 mod 无关 ✓
+    -- ★ 实体级自动驾驶（player/ai/autopilot.lua）**已移除（2026-10-24）** ✓✓
+    --   这里**不再挂载**它 ✗；面板也不再注入 ✗（旧入口见 git 历史 ✓）。
+    --   旧存档里已挂着的那个脚本由同路径的**弃用空壳**接管：initialize 只做一次
+    --   清理（复位 autoPilotEnabled + 摘掉残留的 mine/salvage 实体脚本）✓。
+    --   旧 player value（`copilot_enabled` / `copilot_explore` / `copilot_state`）
+    --   **不删** ✓（别动别人的存档数据），但**不再读** ✓。
     --
-    -- 证据链：
-    --   1. Windows 事件日志：AvorionServer.exe 崩在 ntdll.dll，
-    --      异常码 **0xC0000374 = STATUS_HEAP_CORRUPTION**
-    --   2. 官方论坛 2022 年就有**完全相同**的签名（无 mod 的 headless 专用服）
-    --      https://community.boxelware.com/index.php?/topic/18295-server-crashes-within-minutes-of-startup-ran-fine-for-several-months/
-    --   3. 二分法实测：**关掉实体自动驾驶仍崩** ✗、**再关掉 net 链仍崩** ✗
-    --   4. 事件日志里 2026-10-11 就崩过（早于本 mod 的 RPC 工作）
-    --   形态：无崩溃报告、无关闭消息、log 戛然而止（堆检查器发现越界时已太晚）
-    if copilotPlayer:getValue("copilot_enabled") then
-        copilotPlayer:addScriptOnce("data/scripts/player/ai/autopilot.lua")
-    end
+    -- ★ 排查结论（2026-10-14）：服务端消失是**游戏自身的堆损坏**，与本 mod 无关 ✓
+    --   证据：Windows 事件日志 `0xC0000374 = STATUS_HEAP_CORRUPTION`；官方论坛 2022 年
+    --   就有完全相同签名的无 mod headless 专用服崩溃；二分法关掉 net 链仍崩；
+    --   2026-10-11 就崩过（早于本 mod 的 RPC 工作）。形态：无崩溃报告、log 戛然而止。
 end
