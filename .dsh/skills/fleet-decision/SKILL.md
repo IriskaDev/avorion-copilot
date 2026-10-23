@@ -56,6 +56,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - ★ **已修：`predict` 与回执现在是同一份代码**（`orderRiskOf` → `self.predict`），带护航的数字逐字相同 ✓。原先 87% vs 2% 的根因**不是公式偏高** ✗，而是**批量 `boxes[]` 丢了顶层的 `escorts`**（护航被静默丢弃 → 整批按裸跑算；2026-10-20 已修：box 内 `escorts` 优先、缺省继承顶层，并回 `escortsApplied`）。所以量多框时**护航写在顶层也可以** ✓，但**必须核对每框的 `escortsApplied`** 是否含目标护航名 —— 空的就说明这框按裸跑算了 ✗（[`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L31）。
 - ★ **`predict` 带护航报高就否掉贴角富框 ✗**：先看该框的 `escortsApplied` —— 有护航名 = 数字可信（原版 `calculateAttackProbability` 的完整模型，含护航 dps/hp 与强护航 ×0.75）；**空的 = 那一框按裸跑算了** ✗（修好后这条不该再出现，出现就是 bug）。可信数字仍 >10% 才换框 ✓；★ 不许为了凑单把闸门调低 ✗。
 - 生效四前提 + 具体步骤 → 作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md) P5 · [`docs/game/lessons/escorts.md`](docs/game/lessons/escorts.md) L2-L4。
+- ★ **投递块里的「★ 护航建议」是插件给的，只告知** ✓（2026-10-24 接回来）：它用**你自己量过的**数字（`predict` 的 `risk.baseAttackChance` / `fleet_order` 回执的 `risk`，15 分钟内有效）+ `list` → `ship{brief:true}` 的 `armedTurrets` / `canFight`（「名单里有没有空闲战斗舰」）算出来，判据就是上面那条「≤10% 不派、加一艘压不进闸门不派」（**一次 `*Plan` 都不发** ✗）。它**不替你下单** ✗ —— 派不派、派谁仍由你决定 ✓；你带 `escorts=` 下单后它就不再提（回执已经证明那件事做过了 ✓）。
 
 ## 7. ★ 短判据速记（下单前若拿不准，先翻 [`docs/game/lessons/README.md`](docs/game/lessons/README.md)）
 - 框含船是**闭区间**（贴边 / 贴角都算含 ✓；原版比 `getShipPosition` 的**原始坐标**、不取整：`simulation.lua:547-548`）。船会动、跳跃途中坐标是小数 → 下单前用 `predict` 的 `box.containsShip` + `shipPosition{x,y,cellX,cellY}` 核（★ 采集类主动贴角 ±7 合法 ✓，见下）。

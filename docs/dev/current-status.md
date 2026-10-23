@@ -44,12 +44,27 @@
   自排序 —— jobPlan **828/884 ms**、scoutPlan **1321 ms**、sellPlan **8248 ms**、
   tradePlan **12633~15415 ms**，serverlog 同时有 `had a very long tick of over 19214ms` ✓。
   要数据改成**调用方点名**：`predict`（≤24 框）/ `tradeRoutes` / `tradeEvaluate` ✓（原子接口未动 ✓）。
-  **连带移除**：护航 rendezvous 的自动派船触发（它只靠 legacy `tradePlan` 判"缺护航" ✓；
+  **连带影响**：护航 rendezvous 的**旧触发**（靠 legacy `tradePlan` 的 `recommendation === null` +
+  `areaRanking`）随之删掉 ✓ —— 2026-10-24 **已经接回来**，但换了判据来源（见下一条 ✓）；
   `escortNeedOf` / `pickRendezvousEscort` 两个纯函数保留、`test/rendezvous.mjs` 仍钉 ✓；
-  日常派护航走决策者的 `fleet_escort` ✓）。
+  日常派护航仍走决策者的 `fleet_escort` ✓。
   回归：`test/session-no-prefetch.mjs`（B 段改成"一个 plan 都不许有"）+
   `test/single-shot-no-plans.mjs`（原 `rendezvous-flow.mjs` 改名重写）+ `test/order-payload.mjs`（f/h/i 段）。
   生效方式：改插件 → **重启 DSH**；改了 Lua → **重载存档** ✓。
+- ★ **护航建议接回来（2026-10-24 ✓，主人原话：「接上吧」）—— 只基于决策者点名的数字，只告知**：
+  新判据 = ① **她自己量到的**风险数字（`fleet_query{what:"predict"}` 的 `risk.baseAttackChance` /
+  `fleet_order` 回执的 `risk` —— 同一份代码、逐字相同 ✓；15 分钟内有效 ✓）+ ② 「名单里有没有空闲
+  战斗舰」（`list` → `ship{brief:true}` 的 `armedTurrets` / `canFight` ✓）。阈值语义**原样沿用**
+  2026-10-17 定下的那条（闸门 10% + 一艘护航 ×0.75 ✓），现在**只有一份实现** = `escortNeedFor` ✓
+  （`escortNeedOf` 退化成 legacy 形状适配器 ✓）。**一次 `*Plan` 都不发** ✗✓。
+  触发时机：**不在**单发兜底 ✗ —— 只在**会话路径投递前**算出一行 `escortHint` 塞进投递块 ✓
+  （`index.ts` 的 `escortHintFor` → `task.ts` 的 `renderTaskBlock` / `renderTaskBatchBlock` ✓）；
+  **只告知，绝不替她下单** ✗✓（她自己派单时回执里本就有 `ESCORT_OK` / `ESCORT_TOO_FAR` /
+  `ESCORT_UNARMED` ✓）。查询数：不需要护航 → **0 次** ✓；需要 → 1 次 `list` + 最多 2 次
+  `ship{brief}`（总预算 2.5 s ✓，全是 `[atomic]` 白名单里的 ✓）。
+  回归：`plugin/dsh/test/rendezvous.mjs`（18 → **49 项**；新增 ⑯~㉝，其中 ㉖ 用 `/plan/i` 钉住
+  「判护航需求时不发任何 `*Plan`」✓、㉜/㉝ 钉住投递块渲染与 320 字节预算 ✓）。
+  生效方式：只改插件 → **重启 DSH** ✓。
 
 ## 未完成
 
