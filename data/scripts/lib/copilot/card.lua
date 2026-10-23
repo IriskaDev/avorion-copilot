@@ -901,6 +901,64 @@ function M.shipCard(player, name)
         end
     end
 
+    -- ------------------------------------------------------------------
+    -- ★★★ 方块数（numBlocks）—— 2026-10-24 加 ✓✓（主人要横向比较「谁方块多」）
+    -- ------------------------------------------------------------------
+    --
+    -- 为什么是**船档案属性**、不是 getter ✗→✓（逐条实读 Documentation ✓）：
+    --   · `property int numBlocks` **_[read-only]_**
+    --     （`Documentation/ShipDatabaseEntry [Server].html:271-275` ✓）
+    --   · `property unsigned int numBlocksWhileMalusActive` **_[read-only]_**
+    --     （同一份文档 `:277-281` ✓；`numBlocksWhileMalusActive` 的说明块是**空的** ✗
+    --      —— 官方没写语义，本 mod 只给原值、不解释 ✓）
+    --   ★ 文档里**没有** `getNumBlocks()` / `getBlocks()` 之类的 getter ✗（全篇搜 `getNumBlocks` = 0 命中 ✓）
+    --     —— 真名就是这两个**属性** ✓。本仓库已有同一套读法：`rename.lua:187`
+    --     `pcall(function() return entry.numBlocks end)`（改名指纹 ✓）。
+    --
+    -- ★★ 为什么放在这里值得记一笔 ✓：`shipQuote` / `blockQuote` 的 blockCount **要求船在本星区** ✗
+    --   （`cli.lua:355-376 mountsResolveShip`：要实体才能 getBlock / setMovePlan ✓），
+    --   而 `numBlocks` 是**船档案**上的字段 ✓ → **远距离也能读** ✓✓（船档案本来就在服务端内存里 ✓）。
+    --   所以「哪艘船方块多」这种横向比较，就该读它 ✓，不该为了一个数字把船调回来 ✗。
+    --
+    -- ★ 读不到的规矩与全文件一致 ✓：不写值 ✗、`*Known=false` ✓、原因进 `probe` ✓ ——
+    --   **绝不填 0 / 绝不当成"没有方块"** ✗✓（0 也是合法真值：真 0 块只有"空设计"才会出现 ✓）。
+    do
+        local okN, vN = pcall(function() return entry.numBlocks end)
+        local n = okN and tonumber(vN) or nil
+        if n ~= nil then
+            card.numBlocks = math.floor(n)
+            card.numBlocksKnown = true
+            card.numBlocksSource = "ShipDatabaseEntry.numBlocks " ..
+                "(ShipDatabaseEntry [Server].html:271-275, property int [read-only])"
+        else
+            card.numBlocksKnown = false
+            probeNotes.numBlocks = (okN and ("entry.numBlocks is not a number: " .. tostring(vN))
+                or ("entry.numBlocks threw: " .. tostring(vN)))
+        end
+
+        local okM, vM = pcall(function() return entry.numBlocksWhileMalusActive end)
+        local m = okM and tonumber(vM) or nil
+        if m ~= nil then
+            card.numBlocksWhileMalusActive = math.floor(m)
+            card.numBlocksWhileMalusActiveKnown = true
+            card.numBlocksWhileMalusActiveSource = "ShipDatabaseEntry.numBlocksWhileMalusActive " ..
+                "(ShipDatabaseEntry [Server].html:277-281, property unsigned int [read-only])"
+        else
+            card.numBlocksWhileMalusActiveKnown = false
+            probeNotes.numBlocksWhileMalusActive = (okM
+                and ("entry.numBlocksWhileMalusActive is not a number: " .. tostring(vM))
+                or ("entry.numBlocksWhileMalusActive threw: " .. tostring(vM)))
+        end
+
+        if card.numBlocksKnown == true then
+            card.numBlocksNote = "numBlocks = 原版船档案里的方块数 ✓（只读属性，" ..
+                "ShipDatabaseEntry [Server].html:271-275 ✓）；它是**船档案**字段，所以" ..
+                "**船不在本星区也读得到** ✓✓（这正是它比 shipQuote.blockCount 更适合横向比较的原因 ✓）。" ..
+                "numBlocksWhileMalusActive 是同档案的另一个原样值（:277-281 ✓）——" ..
+                "官方文档**没写语义** ✗ → 本 mod 只给原值、不解释 ✗✓。"
+        end
+    end
+
     -- 进度描述（`Simulation.getDescription(shipName)` —— 与游戏舰船页显示同一句话）
     --
     -- ⚠️ 暂时不接 ✗：`include` 会**执行**目标文件，而 simulation 是游戏的后台模拟脚本 ✓。
@@ -1241,6 +1299,12 @@ function M.shipBrief(player, name, card)
         --   ★ 三个 title 字段是一组（值 + 原串 + 是否已知 ✓），少给一个就又"口径不一致" ✗✓
         "shipTitle", "shipTitleRaw", "shipTitleKnown", "shipTitleNote",
         "entityType", "entityTypeId",
+        -- ★★ 方块数（2026-10-24 加 ✓✓）：**简报必须有** ✓ —— 主人要的就是"横向比谁方块多"，
+        --   而横向比较恰恰是"船多、要快"的场景 ✓（完整卡的 depth 采样对这件事没用 ✗）。
+        --   与上面三件套同一规矩：值 + `*Known` 成对搬 ✓（少一个就又得靠猜 ✗）；
+        --   读不到时值本来就不存在 ✓，`*Known=false` + `probe` 原因会一起带走 ✓。
+        "numBlocks", "numBlocksKnown", "numBlocksSource", "numBlocksNote",
+        "numBlocksWhileMalusActive", "numBlocksWhileMalusActiveKnown", "numBlocksWhileMalusActiveSource",
         "freeCargoSpace", "cargoUsed", "cargoKinds", "cargoUsedPercent", "cargoCapacity",
         "holdHasGoods", "cargoState", "hyperspace", "actionNames", "actions",
         -- ★★ 这艘船**自己的**可选动作（2026-10-19 ✓✓）：与 `actions`（全集+约束）成对 ✓

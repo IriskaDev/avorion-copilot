@@ -78,7 +78,7 @@ copilot_goal_*（每船目标）        → 全没 ✗
 node "$env:LOCALAPPDATA\Temp\luacheck-copilot\check.js" .
 #    期望：N file(s), 0 failure(s)   ← 逐文件过解析，luaVersion 必须 5.2
 
-# 2) 26 个原生侧自检（每个都以 exit 0 + 末行 OK 为通过）
+# 2) 28 个原生侧自检（每个都以 exit 0 + 末行 OK 为通过）
 Get-ChildItem native\harness\_*_selftest.lua | ForEach-Object {
   & build\harness\lua.exe $_.FullName; "{0} -> exit {1}" -f $_.Name, $LASTEXITCODE
 }
@@ -111,6 +111,7 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 | `_job_equipment_error_selftest` | `checks=37  failures=0` |
 | `_ship_identity_selftest` | `26 checks, 0 failure(s)` + `ALL SHIP-IDENTITY ASSERTIONS PASSED` |
 | `_autopilot_selftest` | `autopilotSelfTest: OK`（28 断言：实体层已移除 + 调用点断开 + 旧存档自愈，2026-10-24） |
+| `_blockcount_selftest` | `OK: 29 checks, 0 failure(s)`（2026-10-24：`shipCard` / `shipBrief` 的 `numBlocks` / `numBlocksWhileMalusActive` —— 远距离可读 ✓、读不到是 nil 不是 0 ✓、真 0 块保留 ✓、不调文档里不存在的 getter ✓） |
 | 其余 18 个 | `*SelfTest: OK` / `ALL … ASSERTIONS PASSED` |
 
 **生效条件**（改完不生效多半是这条）：
