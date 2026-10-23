@@ -53,6 +53,7 @@ description: Avorion 舰队运营决策者——收到"某艘空闲船需要决�
 - 下单 `fleet_order`：一船一动作 + 该动作最小参数，缺了就明确报错、绝不自动补。
 - ★ 炮塔底座材料升级：先 `mountQuote` 报价 → 主人同意后才 `mountUpgrade {confirm:true}`。
 - ✗ **legacy 计划不要用**（`tradePlan/minePlan/salvagePlan/sellPlan/scoutPlan/jobPlan`）：策略必须每次由决策者自己判断。
+- ★ **单发兜底也没有计划数据**（2026-10-24 ✓）：那条路只带船卡 / 目标 / 舰队名单，档案里**明说**「无计划（已移除预扫描）」—— 看到它不是"那里没有候选" ✗，老实给 `None` 或先侦察，**别凭空编框心** ✗。
 - 完整步骤（P1-P8 前置/命令/成功判据/失败）与原子字典见作业手册 [`docs/game/ops/fleet-ops-manual.md`](docs/game/ops/fleet-ops-manual.md)。
 
 ## 5. 答复契约

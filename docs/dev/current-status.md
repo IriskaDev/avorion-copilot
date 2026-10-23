@@ -34,6 +34,22 @@
   `action Mine 不在允许集合内（Travel, Sell, Scout，以及 None）`）—— 船刚加载完炮塔还没恢复 ✓。
   被拒的答复现在**会回到会话**（下次投递块的「上一单的结果」行带拒绝理由 ✓）。
   回归：`plugin/dsh/test/allowed-actions-refresh.mjs`；生效方式 = **重启 DSH**（只改插件 ✓）。
+- ★ **单发兜底不再预取任何 legacy 计划**（2026-10-24 ✓，主人原话：「去掉吧，是旧的那套 JOB
+  之前直接扫区域，而非你去决策扫是吧」）：
+  `index.ts` 的 `prefetchSingleShot` 现在只取**轻量原子事实**（船卡 / 目标 / 舰队名单 / 记忆 ✓），
+  `jobPlan / minePlan / salvagePlan / sellPlan / scoutPlan / tradePlan` **一个都不预取** ✗；
+  `dossierInputOf` 的 `plans` 恒为**空数组**，单发档案明说「无计划（已移除预扫描）」✓；
+  游戏侧 `CopilotLinkIn.dossier` 同步改成**只读卡片/目标**（`plans = {}`）✓。
+  **为什么**（真机证据 2026-10-24 01:35）：那批计划全在游戏**主循环里同步**扫 67~71 个区域并
+  自排序 —— jobPlan **828/884 ms**、scoutPlan **1321 ms**、sellPlan **8248 ms**、
+  tradePlan **12633~15415 ms**，serverlog 同时有 `had a very long tick of over 19214ms` ✓。
+  要数据改成**调用方点名**：`predict`（≤24 框）/ `tradeRoutes` / `tradeEvaluate` ✓（原子接口未动 ✓）。
+  **连带移除**：护航 rendezvous 的自动派船触发（它只靠 legacy `tradePlan` 判"缺护航" ✓；
+  `escortNeedOf` / `pickRendezvousEscort` 两个纯函数保留、`test/rendezvous.mjs` 仍钉 ✓；
+  日常派护航走决策者的 `fleet_escort` ✓）。
+  回归：`test/session-no-prefetch.mjs`（B 段改成"一个 plan 都不许有"）+
+  `test/single-shot-no-plans.mjs`（原 `rendezvous-flow.mjs` 改名重写）+ `test/order-payload.mjs`（f/h/i 段）。
+  生效方式：改插件 → **重启 DSH**；改了 Lua → **重载存档** ✓。
 
 ## 未完成
 
