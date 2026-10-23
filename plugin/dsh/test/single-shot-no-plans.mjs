@@ -4,8 +4,10 @@
  * 它钉住主人这次点名的改动 ✗✓（原话：「去掉吧，是旧的那套 JOB 之前直接扫区域，
  * 而非你去决策扫是吧」）：
  *
- *   ① 单发那一轮**一个 legacy 计划都不许查** ✗
- *      （tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan|jobPlan|dossier）——
+ *   ① 单发那一轮**一个计划都不许查** ✗ —— ★ 2026-10-24 强化成
+ *      「**任何名字含 plan 的 what**」（`/plan/i` 正则 ✓）+ `dossier` 也不再预取
+ *      （`tradePlan|minePlan|salvagePlan|sellPlan|scoutPlan|jobPlan` 及以后任何 `*Plan` ✗），
+ *      并且单发只许碰 `docs/dev/interface-whitelist.txt` 的 `[atomic]` 白名单 ✓ ——
  *      它们全在游戏**主循环里同步**扫 67~71 个区域并自排序 ✓
  *      （真机 rpc_trace 2026-10-24 01:35：jobPlan 828/884 ms、scoutPlan 1321 ms、
  *       sellPlan 8248 ms、tradePlan 12633~15415 ms ✓）。
@@ -56,8 +58,32 @@ const { apply } = await import('../lib/index.js')
 const PORT = 18799
 const ACTION_SHIP = 'Trader-00001'
 const TARGET_SECTOR = { x: -399, y: 81 }
-/** 旧版每次自动预取的那几个（一个都不许再出现 ✓） */
-const LEGACY_PLANS = ['tradePlan', 'minePlan', 'salvagePlan', 'sellPlan', 'scoutPlan', 'jobPlan', 'dossier']
+/**
+ * ★ 2026-10-24 强化：**不再靠一张手写名单** ✓✓ ——
+ *   **任何名字含 `plan`（不分大小写）的 `what`** 都算「计划查询」✗
+ *   （`tradePlanV2` / `jobPlan2` / `planAnything` 这种新名字同样红 ✓）。
+ *   `dossier` 单列：它已瘦身成只读卡片/目标 ✓，但单发路径仍**不必**为它多跑一次往返 ✓。
+ */
+const isForbiddenInSingleShot = (w) => /plan/i.test(w) || w === 'dossier'
+
+/**
+ * ★ 名单（唯一真相 = docs/dev/interface-whitelist.txt 的 [atomic] 节 ✓）：
+ *   单发路径**只许**碰白名单里的原子 what ✓ —— 名单外的（新加的自扫描接口）这里也会红 ✗✓
+ */
+function loadAtomicWhitelist() {
+  const file = new URL('../../../docs/dev/interface-whitelist.txt', import.meta.url)
+  const set = new Set()
+  let section = null
+  for (const raw of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim()
+    if (line === '') continue
+    const header = line.match(/^\[(\w+)\]$/)
+    if (header !== null) { section = header[1]; continue }
+    if (section === 'atomic') set.add(line)
+  }
+  return set
+}
+const ATOMIC = loadAtomicWhitelist()
 
 // ---------------------------------------------------------------------------
 // 假游戏：按 what 回数据；把 query 与 order **逐条记下来** ✓
@@ -215,15 +241,17 @@ try {
   const qBefore = game.queries.length
   const r1 = await call('decide', { ship: ACTION_SHIP, hasGoal: true })
   const qDuring = game.queries.slice(qBefore)
-  const legacy = qDuring.filter((w) => LEGACY_PLANS.includes(w))
+  const legacy = qDuring.filter(isForbiddenInSingleShot)
   const prompt = seenPrompts.join('\n')
 
   console.log(`\n单发 decide 期间的 query: ${qDuring.join(', ') || '(空)'}`)
   console.log(`模型收到的档案 ${prompt.length} 字；下单 ${game.orders.length} 张`)
 
   check('① decide 成功', r1.ok === true, r1)
-  check('① ★ 没有查任何 legacy 计划（扫 67~71 区的那批 ✗）',
+  check('① ★ 没有查任何「名字含 Plan」的 what（正则卡，不靠手写名单 ✗）',
     legacy.length === 0, legacy.join(','))
+  check('① ★ 单发只碰白名单 [atomic] 里的 what（名单外 = 新自扫描接口 ✗）',
+    qDuring.length > 0 && qDuring.every((w) => ATOMIC.has(w)), qDuring.join(','))
   check('① ★ 只拉轻量原子事实（goal + ship + fleet ✓，别的都不要 ✓）',
     qDuring.length > 0 && qDuring.every((w) => w === 'goal' || w === 'ship' || w === 'fleet'), qDuring.join(','))
   check('① 船卡与舰队名单都取到了 ✓',

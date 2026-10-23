@@ -78,10 +78,11 @@ copilot_goal_*（每船目标）        → 全没 ✗
 node "$env:LOCALAPPDATA\Temp\luacheck-copilot\check.js" .
 #    期望：N file(s), 0 failure(s)   ← 逐文件过解析，luaVersion 必须 5.2
 
-# 2) 28 个原生侧自检（每个都以 exit 0 + 末行 OK 为通过）
+# 2) 原生侧自检（**全部** `native\harness\_*_selftest.lua`；每个都以 exit 0 + 末行 OK 为通过）
 Get-ChildItem native\harness\_*_selftest.lua | ForEach-Object {
   & build\harness\lua.exe $_.FullName; "{0} -> exit {1}" -f $_.Name, $LASTEXITCODE
 }
+#    ★ 数量会随用例增加（2026-10-24：28 → 30）—— 别把旧数字当基线 ✗
 
 # 3) RPC 链装配检查（net/ 只放定义、能被 include）
 & build\harness\lua.exe native\harness\_linkin_check.lua      # 期望 COMPILE OK + RUN: OK
@@ -90,6 +91,9 @@ Get-ChildItem native\harness\_*_selftest.lua | ForEach-Object {
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1   # 期望 0 error TS
 node scripts/check-mechanics.mjs        # 期望 exit 0：BRIEF ↔ src/mechanics.ts 逐字一致
 node test/order-payload.mjs             # 期望 61 项断言 / 失败 0（2026-10-19 实测）
+node test/what-whitelist.mjs            # ★ 期望 9/9：src 里每个 what 字面量都在白名单 [atomic] 里
+                                        #   （名单唯一真相 = docs/dev/interface-whitelist.txt ✓）
+node test/single-shot-no-plans.mjs      # ★ 期望 10/10：单发里**任何名字含 Plan** 的 what 都不许查
 
 # 5) 文档链接（搬文件/改路径后必跑；含两种约定：相对本文件、相对仓库根）
 node tools/check-links.mjs              # 期望 ALL LINKS OK ✓
@@ -112,6 +116,7 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 | `_ship_identity_selftest` | `26 checks, 0 failure(s)` + `ALL SHIP-IDENTITY ASSERTIONS PASSED` |
 | `_autopilot_selftest` | `autopilotSelfTest: OK`（28 断言：实体层已移除 + 调用点断开 + 旧存档自愈，2026-10-24） |
 | `_blockcount_selftest` | `OK: 29 checks, 0 failure(s)`（2026-10-24：`shipCard` / `shipBrief` 的 `numBlocks` / `numBlocksWhileMalusActive` —— 远距离可读 ✓、读不到是 nil 不是 0 ✓、真 0 块保留 ✓、不调文档里不存在的 getter ✓） |
+| `_what_whitelist_selftest` | `15 checks, 0 failures` + `OK`（2026-10-24 新增：`link_in.lua` 的每个 `what` 分支 ⊆ 白名单、名字含 Plan 只许 legacy、`card.WHATS` 不许吹牛 ✓ —— 往 `link_in.lua:547` 塞一个 `tradePlanV2` 会当场红 ✓） |
 | 其余 18 个 | `*SelfTest: OK` / `ALL … ASSERTIONS PASSED` |
 
 **生效条件**（改完不生效多半是这条）：
