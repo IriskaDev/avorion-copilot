@@ -52,7 +52,7 @@ CopilotUI = {}                 -- 错：重载即失忆，守卫和引用全丢
 
 | 文件 | 当年可重载 |
 |---|---|
-| `player/ai/autopilot.lua`、`player/ai/ops.lua`、`player/ui/panel.lua`、`commands/copilot.lua` | ✅ |
+| `player/ai/ops.lua`、`player/ui/panel.lua`、`commands/copilot.lua` | ✅（`player/ai/autopilot.lua` 已移除，2026-10-24） |
 | ★ **`lib/copilot/cli.lua`**（2026-10-16 重构后逻辑在这里 ✓） | ✅ **必须在表里** ✗✓ |
 | `player/init.lua`（**入口**，VFS 追加到原版） | ❌ 只在玩家加载时执行一次 |
 | `bin\copilot.dll` | ❌ 重编后仍需重启（且 `keep_resident` 让它故意卸不掉） |

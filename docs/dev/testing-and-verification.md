@@ -53,8 +53,10 @@ SetCursorPos/mouse_event 点击 → keybd_event（**带扫描码**）按键 → 
 ```
 copilot_auto_ships（面板名单）   → 变回空 ✗
 copilot_goal_*（每船目标）        → 全没 ✗
-copilot_enabled（总开关）         → 也可能回默认 ✗
 ```
+
+> ★ 实体级自动驾驶已移除（2026-10-24）→ 旧值 `copilot_enabled` / `copilot_state` 还在存档里，
+> 但本 mod **不再读**，所以不列进这张"会丢什么"的表 ✓。
 
 **现象**：重启后 `[net]` 心跳里 `roster=0`、`fleet_query{goal}` 返回 `hasGoal:false` ✓。
 
@@ -102,12 +104,13 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 |---|---|
 | `_atomic_selftest` | `atomicSelfTest: OK`（47 项断言） |
 | `_mounts_selftest` | `OK: 100 checks, 0 failure(s)` |
-| `_panel_roster_selftest` | `OK: 78 checks, 0 failure(s)`（2026-10-22 加 ⑧：面板关着不刷新 ✓） |
+| `_panel_roster_selftest` | `OK: 77 checks, 0 failure(s)`（2026-10-24 ⑧ 改为断言 `refresh` 已随实体层移除 ✓） |
 | `_periodic_selftest` | `33 checks, 0 failures`（2026-10-24 加 ⑧：fleet 分帧 —— 单轮调用数 ≤ `MAX_SHIPS_PER_SCAN`、游标绕圈不饿死、6 艘名单仍是 2、空名单不崩 ✓） |
 | `_namespace_decl_selftest` | `OK: 6 checks, 0 failure(s)`（2026-10-24 加：声明行只能是纯声明形状、名字只含 `[A-Za-z0-9_]` ✓） |
 | `_weapons_card_selftest` | `59 checks, 0 failures`（2026-10-22 加 ⑧：不许读文档里没有的属性 ✓） |
 | `_job_equipment_error_selftest` | `checks=37  failures=0` |
 | `_ship_identity_selftest` | `26 checks, 0 failure(s)` + `ALL SHIP-IDENTITY ASSERTIONS PASSED` |
+| `_autopilot_selftest` | `autopilotSelfTest: OK`（28 断言：实体层已移除 + 调用点断开 + 旧存档自愈，2026-10-24） |
 | 其余 18 个 | `*SelfTest: OK` / `ALL … ASSERTIONS PASSED` |
 
 **生效条件**（改完不生效多半是这条）：

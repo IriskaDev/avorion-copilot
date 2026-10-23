@@ -5,7 +5,8 @@
 
 ## 这是什么 / 仓库布局
 
-Avorion 的「AI 副驾驶」mod：实体级自动驾驶（已完成）+ 战略级运营大脑（规划中）。
+Avorion 的「AI 副驾驶」mod：**舰队运营**（RPC + 面板，已可用）+ 战略级运营大脑（规划中）。
+★ 实体级自动驾驶已于 **2026-10-24 移除** ✓（只留弃用空壳，见 [`docs/dev/current-status.md`](docs/dev/current-status.md)）。
 游戏目录 `D:\SteamLibrary\steamapps\common\Avorion`（2.5.13），原版脚本在 `data/scripts/`（全部可读）。
 本仓库 = mod 根（`data/` + `native/` + `plugin/` + 文档）。完整布局见 [`docs/dev/overview.md`](docs/dev/overview.md)。
 

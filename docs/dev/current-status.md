@@ -4,13 +4,14 @@
 
 ## 已实现
 
-- 实体级自动驾驶：`player/ai/autopilot.lua` 大脑 + **面板开关**（`/copilot on|off|explore|status`
-  聊天命令**已于 2026-10-18 退役** ✗ —— 现在只有面板按钮 / 勾选框 ✓；替代入口对照见
-  [`game/ops/chat-commands.md`](../game/ops/chat-commands.md) 顶部表 ✓）。
+- ~~实体级自动驾驶~~ **已移除（2026-10-24）** ✓：面板开关 / AI 实时状态 / 自动跃迁勾选框全部删掉；
+  `player/ai/autopilot.lua` 只剩**弃用空壳**（老存档加载时自愈一次：复位 autoPilotEnabled +
+  摘掉残留的 mine/salvage 实体脚本）。旧 player value（`copilot_enabled` / `copilot_explore` /
+  `copilot_state`）**不删、只不再读** ✓。舰队运营层（`player/ai/ops.lua`）**保留** ✓。
 - 自绘 HUD 按钮 + Copilot 面板（`player/ui/panel.lua`，经 `player/init.lua` 追加挂载）：
-  显示开关状态与 AI 实时状态，可切换自动驾驶与自动跃迁；**并按勾选框列出全舰船，指定哪些船
-  允许 AI 自动运营**（存在 `player:setValue("copilot_auto_ships", ...)`，换行分隔字符串）。
-  跨脚本只能靠 player value 通信（独立 VM）。
+  **按勾选框列出全舰船，指定哪些船允许 AI 自动运营**（存在
+  `player:setValue("copilot_auto_ships", ...)`，换行分隔字符串）+ 每船自然语言目标 +
+  炮塔底座材料升级。跨脚本只能靠 player value 通信（独立 VM）。
 - 多语言：所有界面文字标了 `%_t`，**跟随游戏语言设置**（mod 不做自己的语言开关）；
   自带 `data/localization/zh.po`，VFS 会把它追加到原版 `zh.po` 后面。
   唯一原版没有的拼写要以**原版的大小写**为准（例：`On`/`Off`/`None`，不是 `ON`/`OFF`）。
@@ -52,8 +53,6 @@
   投进**主人自己那个会话** ✓ + 把结论交回游戏下单 ✓（范围与理由见 `plugin/AGENT-DESIGN.md`
   顶部的「2026-10-17 修订」✓；用法见 `plugin/README.md` ✓）。
   ⚠️ **部署坑（实测）**见 [`install-and-deploy.md`](install-and-deploy.md)。
-- **面板体验**：底部提示文字还没说清「主开关只管玩家自己那条船、名单只管非玩家船」；
-  每船的「目标」是点击行循环切换（`ListBoxEx` 放不下下拉框）。
 - **收尾**：临时诊断（原 `/copilot probe`，聊天入口已退役 ✗；函数还在 `cli.lua` ✓）
   与 DLL 里的 `numprobe`/逐步日志待清理；
   `native\` 下的实验残留（`copilotprobe.c` 等源码）待清理 —— **二进制产物**已于 2026-10-19

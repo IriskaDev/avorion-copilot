@@ -8,7 +8,7 @@
 
 | 你是谁 | 想干什么 | 读 |
 |---|---|---|
-| **玩家侧** | 开/关自动驾驶、看船、升级炮塔底座、看空间站 | [`ops/chat-commands.md`](ops/chat-commands.md) §4（面板）· [`ops/mount-material-upgrade.md`](ops/mount-material-upgrade.md) · [`ops/station-operations.md`](ops/station-operations.md) |
+| **玩家侧** | 看船/名单与目标、升级炮塔底座、看空间站（★ 实体级自动驾驶已移除，2026-10-24） | [`ops/chat-commands.md`](ops/chat-commands.md) §4（面板）· [`ops/mount-material-upgrade.md`](ops/mount-material-upgrade.md) · [`ops/station-operations.md`](ops/station-operations.md) |
 | **决策者侧**（DSH 会话 / 单发模型） | 一艘船空闲了，定下一步动作 | 本文件 §2「决策者第一屏」→ [`ops/fleet-ops-manual.md`](ops/fleet-ops-manual.md)（作业手册）→ 细节按需读 mechanics/rules/lessons |
 | **引擎机制** | 想知道某条命令/风险/框选/护航怎么算 | [`mechanics/index.md`](mechanics/index.md)（机制总目录） |
 
@@ -90,7 +90,7 @@
 - 风险闸门 **`attackChance ≤ 0.10`**；★ 判断"安全"**只看基准概率 `baseAttackChance`**（未经 safeMode 修正）——拿被修正后的数去比是**循环论证** ✗。
 - **safeMode 一般不要开**；基准概率 **< 10% 时绝不要开**；它是**最后手段**，不是默认的求稳手段。
 - 主人说的「**安全**」= **局势的伏击概率 < 10%**，**不是** safeMode 那个开关 ✗。
-- **绝不碰玩家正在开的那艘船**；只对交给 AI 的船下决策。
+- **绝不碰玩家正在开的那艘船**；只对交给 AI 的船下决策（★ 实体级自动驾驶已于 **2026-10-24 移除**，这条硬规矩照旧 ✓）。
 - 细节与理由：[`rules/owner-rules.md`](rules/owner-rules.md)。
 
 ### ★ 拿不准怎么办（重要）：先查再决策

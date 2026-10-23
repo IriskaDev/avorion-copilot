@@ -19,9 +19,9 @@
 >
 > | 旧聊天命令 | 现在怎么做 |
 > |---|---|
-> | `on` / `off` | 面板的 Enable / Disable 按钮（`panel.lua:590` `setEnabled`） |
-> | `explore on|off` | 面板的自动跃迁勾选框（`panel.lua:608` `setExplore`） |
-> | `status` | 面板状态行（`panel.lua:520` `refresh`）+ `fleet_query {what:"list"}` / `{what:"ship"}` |
+> | `on` / `off` | ★ **已随实体级自动驾驶移除（2026-10-24）** —— 面板不再有 Enable / Disable 按钮，**无替代入口** ✗ |
+> | `explore on|off` | ★ **已随实体级自动驾驶移除（2026-10-24）** —— 面板不再有自动跃迁勾选框，**无替代入口** ✗ |
+> | `status` | 面板名单 + `fleet_query {what:"list"}` / `{what:"ship"}`（AI 实时状态行已随实体层移除 ✓） |
 > | `ops` | `fleet_query {what:"ship", ship}`（能力卡）+ `{what:"list"}`（名单快照） |
 > | `goal ...` | `fleet_query {what:"setGoal", ship, text?, options?}`（RPC，`link_in.lua:5608`） |
 > | `mounts ...` | 面板「Turret base materials...」按钮，或 RPC `mountQuote` / `mountUpgrade` / `shipQuote` / `blockQuote` / `blockUpgrade` / `shipUpgrade`（§2.6 ✓） |
@@ -50,7 +50,8 @@
    **客户端面板 UI**（`player/ui/panel.lua` 的界面部分）**不归 reload 管**，要重启一次游戏。
 3. **写操作只有两种（现在都走 RPC / 面板）**：
    面板的 Apply upgrade 按钮，或 RPC `mountUpgrade` / `blockUpgrade` / `shipUpgrade` 且
-   `confirm:true`（扣资源/信用点）；以及面板的开启/关闭/自动跃迁开关（改状态）。
+   `confirm:true`（扣资源/信用点）；~~以及面板的开启/关闭/自动跃迁开关~~（★ 2026-10-24 随
+   实体级自动驾驶移除 ✗ —— 面板现在**只写一次**：保存每船目标）。
    其余查询都是只读；没有 `confirm` 时升级接口**一个字节都不写**（有离线断言锁着）。
    ★ 它们与已退役的 `mounts … confirm` **共用同一套函数** ✓，不是另写一套（§2.6 ✓）。
 
@@ -60,6 +61,9 @@
 > ⚠️ 下表是退役前的形态，**不要再照着敲** ✗。最后一列的行号是 2026-10-17 的坐标，
 > 分发器退役后**已经漂移**，查实现请看 `cli.lua` 里对应的 `mountsQuoteRpc` / `mountsUpgradeRpc` /
 > `shipQuoteRpc` / `blockQuoteRpc` / `blockUpgradeRpc` / `shipUpgradeRpc` / `mountsPanelState` ✓。
+>
+> ★ **实体级自动驾驶已于 2026-10-24 移除** ✓：下表里 `on` / `off` / `explore`（以及 `status`
+> 的 AI 状态部分）所描述的能力**已不存在** ✗ —— 面板不再接管玩家当前开的船，也没有开关了。
 
 | 子命令 | 作用 | 写？ | 例子 | 实现（cli.lua，行号已过时） |
 |---|---|---|---|---|

@@ -4,11 +4,13 @@
 
 ## 这是什么
 
-Avorion 的「AI 副驾驶」mod，分两层：
+Avorion 的「AI 副驾驶」mod，现在做的是**舰队运营**：
 
-1. **实体级自动驾驶**（已完成）——面板开关接管玩家当前开的船，星区内自动战斗/采矿/打捞/跃迁
-   （★ 原来的 `/copilot on|off|explore` 聊天命令**已于 2026-10-18 退役** ✗）。
+1. **舰队运营**（已可用）——面板名单 + 每船目标 + RPC 原子；`player/ai/ops.lua` 只作用于名单船。
 2. **战略级运营大脑**（规划中）——读全局数据做决策、自动经营舰队与经济，**不碰玩家正在开的船**。
+
+> ★ **实体级自动驾驶已移除（2026-10-24）** —— 面板不再接管玩家当前开的船；
+> `player/ai/autopilot.lua` 只剩弃用空壳（旧存档加载时自愈一次，见 [`current-status.md`](current-status.md)）。
 
 - 游戏目录：`D:\SteamLibrary\steamapps\common\Avorion`（版本 2.5.13）
 - 原版脚本源码：`data/scripts/`（约 648 个 .lua）；API 文档：`Documentation/*.html`。写代码前先对照，**别凭记忆拼 API 名**。
@@ -40,8 +42,8 @@ copilot/
 │       ├── lib/copilot/               # ★ mod 自己的库（放子目录 = 不与原版 lib 撞名 ✓）
 │       │   ├── cli.lua                # ★ **能力实现层**：RPC/面板调的 mounts*/blocks* 函数（聊天命令已退役）
 │       │   ├── card.lua / goal.lua / job.lua / json.lua / trade.lua
-│       ├── player/init.lua            # **入口**：VFS 追加到原版 init.lua，挂载 UI
-│       ├── player/ai/autopilot.lua    # 实体级自动驾驶大脑（接管玩家当前开的船）
+│       ├── player/init.lua            # **入口**：VFS 追加到原版 init.lua，挂载 UI/链/运营层
+│       ├── player/ai/autopilot.lua    # ★ 弃用空壳：实体级自动驾驶已移除（2026-10-24）
 │       └── player/ui/panel.lua        # 自绘 HUD 按钮 + Copilot 面板（客户端 UI）
 ├── plugin/dsh/                        # DSH 插件（lib/ 是产物但 DSH 要读 → 入库 ✓）
 ├── tools/                             # 启动脚本等（_evidence/ 是验证证据，已忽略 ✓）
@@ -66,8 +68,8 @@ copilot/
 ```
 data/scripts/
 ├── commands/copilot.lua          # 聊天命令 /copilot（★ 2026-10-18 起只回「已退役」；文件名引擎约定，不能改）
-├── player/init.lua               # **入口**（VFS 追加到原版）：挂载下面四个
-├── player/ai/autopilot.lua       # 实体层：接管玩家当前开的船（★ 只接管一次）
+├── player/init.lua               # **入口**（VFS 追加到原版）：挂载 UI / net / ops
+├── player/ai/autopilot.lua       # ★ 弃用空壳（实体级自动驾驶 2026-10-24 移除；旧存档自愈）
 ├── player/ai/ops.lua             # 战略层：只作用于名单船，绝不碰 player.craft
 ├── player/ui/panel.lua           # 客户端面板（★ 每次打开都注册鼠标释放）
 ├── lib/copilot/                  # 【lib】mod 自己的库（子目录，避免与原版 lib 撞名 ✓）

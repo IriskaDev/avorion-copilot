@@ -40,7 +40,7 @@
 
 ## ⚠️ 挂载层级：一律挂**玩家**，不要挂星系（踩过）
 
-Copilot 是**每个玩家自己的**：名单（`copilot_auto_ships`）、开关、到 DSH 的连接都是 per-player。
+Copilot 是**每个玩家自己的**：名单（`copilot_auto_ships`）、到 DSH 的连接都是 per-player。
 所以运营链挂在 `player/init.lua`（`player:addScriptOnce(...)`），**不能**挂成星系级
 （`Galaxy():addScriptOnce(...)`）。
 
@@ -61,7 +61,8 @@ Copilot 是**每个玩家自己的**：名单（`copilot_auto_ships`）、开关
    - 本 mod 的 `mouseRegistered` 一次性标志就因此翻过车：`/copilot reload` 重新执行了
      面板文件 → 引擎侧注册丢了 → 而标志还说"注册过了" → **永远不再补注册** ✗
      → 面板打开时鼠标被驾驶占用、视角锁死 ✓✓
-   - 同类：`autoPilotEnabled = true` 每 tick 强设 ✗ → 游戏自带的 `[退格]停止` 被 2 秒后
+   - 同类（★ 历史：实体级自动驾驶已于 2026-10-24 移除，这条教训**仍然通用** ✓）：
+     `autoPilotEnabled = true` 每 tick 强设 ✗ → 游戏自带的 `[退格]停止` 被 2 秒后
      撤销 → 玩家以为"飞船坏了" ✓✓
    - **对策**：能幂等就每次做 ✓（`addMouseShowingWindow` ✓）；必须一次性的，就让它在
      状态变化时重新成立 ✓（`tookControl` 在关闭时重置 ✓）

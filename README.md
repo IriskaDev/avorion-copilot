@@ -1,18 +1,19 @@
 # Copilot —— Avorion 的 AI 副驾驶（游戏 mod + DSH 插件）
 
-一句话：把 Avorion 的操船与舰队运营接成 AI 可调用的接口 —— 游戏内面板管你正在开的那条船，
+一句话：把 Avorion 的**舰队运营**接成 AI 可调用的接口 —— 游戏内面板管名单与每船目标，
 DSH（DeepSeek Harness）侧用 `fleet_*` 工具读事实、下后台命令、看决策记录。
+★ 实体级自动驾驶已于 **2026-10-24 移除**：面板不再接管你正在开的那条船。
 
 > 本文件是**安装与使用说明**（给 AI 和愿意看的人）。
 > 要改代码 / 读机制，从 [`AGENTS.md`](AGENTS.md) 进；游戏侧机制从 [`docs/game/README.md`](docs/game/README.md) 进。
 
 ## 1. 这是什么
 
-三层能力，全部是**接口**，不含自动替你做决定的策略（策略在 DSH 会话里，规则见
+能力全部是**接口**，不含自动替你做决定的策略（策略在 DSH 会话里，规则见
 [`docs/game/rules/owner-rules.md`](docs/game/rules/owner-rules.md)）：
 
-1. **实体级自动驾驶**：面板开关接管你正在开的船，星区内自动接敌 / 采矿 / 打捞 / 跃迁
-   （`data/scripts/player/ai/autopilot.lua`）。
+1. ~~**实体级自动驾驶**~~ **已移除（2026-10-24）**：面板不再接管你正在开的船；
+   `data/scripts/player/ai/autopilot.lua` 只剩**弃用空壳**（旧存档加载时自愈一次）。
 2. **舰队运营 RPC**：**7 个** `fleet_*` 工具在 DSH 里可用 —— `fleet_query`（读事实）、
    `fleet_order`（下后台命令）、`fleet_escort`、`fleet_goal`、`fleet_recall`、`fleet_commander`、
    `fleet_decisions`（注册处：`plugin/dsh/src/tools.ts:135,418,582,709,747,787,885`）。
@@ -22,7 +23,8 @@ DSH（DeepSeek Harness）侧用 `fleet_*` 工具读事实、下后台命令、�
 传输是 **游戏 DLL 主动连 `127.0.0.1:8765`**，插件侧监听（`docs/dev/protocol.md:163`）。
 这样不触发 Windows 防火墙弹窗，也不需要给游戏开端口。
 
-状态（如实）：实体层与 RPC 已可用；战略层的运营大脑仍是增量开发中，见
+状态（如实）：舰队运营 RPC 与决策闭环已可用；实体级自动驾驶已移除（2026-10-24）；
+战略层的运营大脑仍是增量开发中，见
 [`docs/dev/current-status.md`](docs/dev/current-status.md)。
 
 ## 2. 依赖
@@ -189,9 +191,10 @@ Select-String -Path "$env:APPDATA\Avorion\moddata\copilot\rpc_trace.log" -Patter
 期望：返回游戏**自我声明**支持的 `what` 列表（`data/scripts/net/link_in.lua:222`）；
 若回 `not connected to the game`，说明 §3.3 的端口没在听。
 
-4. 面板：游戏内**按住 SHIFT** 才出现右上角快捷栏（原版行为），点那个机器人图标（`panel.lua:23-26`、`:770`）。
-   面板里有：自驾开关、AI 实时状态、允许 AI 自动运营的舰船名单、每船目标输入框、
-   炮塔底座材料升级（`docs/dev/current-status.md:10-13`）。
+4. 面板：游戏内**按住 SHIFT** 才出现右上角快捷栏（原版行为），点那个机器人图标（`panel.lua:8-12`、`:732`）。
+   面板里有：允许 AI 自动运营的舰船名单、每船目标输入框、炮塔底座材料升级
+   （`docs/dev/current-status.md:7-13`）。★ 实体级自动驾驶已于 **2026-10-24 移除**，
+   面板**不再有**自驾开关 / AI 实时状态行（名单、目标、任务列都还在 ✓）。
 
 ## 5. 怎么用
 
