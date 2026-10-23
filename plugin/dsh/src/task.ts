@@ -78,6 +78,18 @@ export interface TaskRequest {
    *   ★ 体积预算 ~200 字节：超了就当没加上 ✗✓（renderTaskBlock 会跳过 ✓）。
    */
   prevResult?: string
+  /**
+   * ★★ 护航建议（2026-10-24 接回来 ✓✓）：**只告知** ✓ —— 不替她下单 ✗。
+   *
+   * 数字从哪来（★ 绝不回退到自扫描 ✗✓）：
+   *   · 决策者自己用 `predict` 量到的 `risk.baseAttackChance` ✓，
+   *     或她自己 `fleet_order` 回执里的 `risk` ✓（同一份代码，数字逐字相同 ✓）；
+   *   · 「名单里有没有空闲战斗舰」= `list` → `ship brief` 的 `armedTurrets` / `canFight` ✓；
+   *   · 判护航需求沿用 `escortNeedOf` 的**阈值语义** ✓（闸门 10% + 一艘护航 ×0.75 ✓）。
+   *   ★ **一次 `*Plan` 都不发** ✗✓（`test/rendezvous.mjs` 有断言钉住 ✓）。
+   *   ★ 体积预算 ~320 字节：超了就不加 ✓。
+   */
+  escortHint?: string
 }
 
 /** 校验结论 */
@@ -137,6 +149,9 @@ function boolField(text: string, key: string): boolean | undefined {
 
 /** ★ 「你上一单的结果」一行的字节预算（~200 ✓；超了就当没加 ✗✓） */
 export const PREV_RESULT_BUDGET_BYTES = 200
+
+/** ★★ 「护航建议」一行的字节预算（~320 ✓；超了当没加 ✗✓ —— 块体积有契约 ✓） */
+export const ESCORT_HINT_BUDGET_BYTES = 320
 
 /** 船名清单字段（`Miner-1, Miner-2`；"无" 之类的词丢掉 ✓ —— 与 index.ts 同款 ✓） */
 function listField(text: string, key: string): string[] {
@@ -240,6 +255,13 @@ export function renderTaskBlock(req: TaskRequest): string {
     const line = `★ 上一单的结果：${req.prevResult.trim()}`
     if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES) L.push(line)
   }
+  // ★★ 2026-10-24：护航建议（**只告知** ✓ 不替她下单 ✗）——
+  //   数字全来自**她自己量过的** `predict` / 下单回执 ✓（见 index.ts 的 buildEscortHint ✓），
+  //   ★ 这里一个 `*Plan` 都没查 ✗✓（那条自扫描的路已经删了 ✓）。
+  if (typeof req.escortHint === 'string' && req.escortHint.trim() !== '') {
+    const line = `★ 护航建议（只告知，派不派你定 ✓）：${req.escortHint.trim()}`
+    if (Buffer.byteLength(line, 'utf8') <= ESCORT_HINT_BUDGET_BYTES) L.push(line)
+  }
   // ★★ B（2026-10-18）：漏答**必须可见** ✓ —— 上一轮没答到的船数写进块末尾一行 ✓✓
   if (typeof req.unansweredBefore === 'number' && req.unansweredBefore > 0) {
     L.push(`★ 上次未答：${req.unansweredBefore} 艘（它们会**稍后重投** ✓ —— 请把每条任务都答到 ✓）`)
@@ -301,6 +323,11 @@ export function renderTaskBatchBlock(batch: TaskBatchRequest): string {
     const gt = typeof it.goalText === 'string' ? clipGoalText(it.goalText) : ''
     const goal = gt !== '' ? `  主人目标: ${gt}` : ''
     L.push(`  · ${it.ship}   task=${it.taskId}${lim}${goal}`)
+    // ★★ 护航建议按船各一行 ✓（数字是她自己量的 ✓；同一个 320 字节预算 ✓）
+    if (typeof it.escortHint === 'string' && it.escortHint.trim() !== '') {
+      const line = `      ★ 护航建议（只告知 ✓）：${it.escortHint.trim()}`
+      if (Buffer.byteLength(line, 'utf8') <= ESCORT_HINT_BUDGET_BYTES) L.push(line)
+    }
   }
   L.push('查证工具（先 list 再查；下面 `ship` 一律填**对应船名** ✓）：')
   L.push('  · {what:"list"} → 船名单；{what:"ship", ship, brief:true} → 船现状')

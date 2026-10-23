@@ -31,6 +31,8 @@ import {
   waitForOrderVerify, preflightText, preflightWarningText, verifyText,
 } from './index.js'
 import type { OrderPreflight } from './index.js'
+// ★★ 护航观测（2026-10-24 ✓）：她量到风险数字时记一笔（类型 only ✓ 运行时零依赖 ✓）
+import type { RiskObservation } from './index.js'
 
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
@@ -116,6 +118,83 @@ function addTool(ctx: ToolCtx, def: any, label: string): void {
   }, label)
 }
 
+// ---------------------------------------------------------------------------
+// ★★ 护航观测的采集（2026-10-24 ✓）—— 纯解析，**不发任何查询** ✗✓
+// ---------------------------------------------------------------------------
+//
+// 为什么在这里 ✗→✓：决策者拿到的风险数字**就在回包里** ✓（`predict` / `fleet_order` ✓），
+//   要的只是把它**记下来** ✓ —— 多一次 RPC 就违背了原子接口的纪律 ✓。
+// 消费方：下一轮投递块的「护航建议」（`index.ts` 的 `buildEscortHint` ✓，**只告知** ✓）。
+
+/** JSON 来的数字（可能是 nil ✓ —— 绝不让 undefined 变成 NaN ✗） */
+function numOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * 从 `predict` 回包抽观测 ✓
+ *
+ * 形状（`data/scripts/net/link_in.lua` 的 `CopilotLinkIn.predict` ✓）：
+ *   单框 → `{ box, risk:{known, attackChance, baseAttackChance, baseAttackChanceKnown, riskKind}, value }`
+ *   批量 → `{ ship, action, boxCount, boxes:[ …单框… ] }`
+ *
+ * ★ 只抽**风险最高的那一框** ✓（store 一船一份、后写覆盖 ✓ —— 最有信息量的那一个 ✓）。
+ * ★ `known=false` 也照记 ✓（"游戏没算出来"本身就是事实 ✓）；什么都没有就不记 ✗。
+ */
+function observationsFromPredict(
+  data: unknown, ship: string, action: string | undefined,
+): RiskObservation[] {
+  const d = (data ?? {}) as Record<string, unknown>
+  const results = Array.isArray(d.boxes) ? (d.boxes as Record<string, unknown>[]) : [d]
+  const atMs = Date.now()
+  let best: RiskObservation | undefined
+  let bestScore = -1
+  for (const r of results) {
+    if (r === null || typeof r !== 'object') continue
+    const risk = (r.risk ?? {}) as Record<string, unknown>
+    const known = risk.known === true
+    const base = numOf(risk.baseAttackChance)
+    const any = numOf(risk.attackChance)
+    if (!known && base === undefined && any === undefined) continue
+    const score = base ?? any ?? 0
+    if (score <= bestScore) continue
+    bestScore = score
+    best = {
+      atMs, ship, action, known,
+      baseAttackChance: base, attackChance: any,
+      source: 'predict',
+    }
+  }
+  return best === undefined ? [] : [best]
+}
+
+/**
+ * 从 `fleet_order` 回执抽观测 ✓（`risk` 与 `predict` 同一份代码、逐字相同 ✓）
+ *
+ * ★ 带了护航的单 → `escortsGiven` 非空 ✓ → 投递块**不再**建议（那件事已经做了 ✓）。
+ * ★ `preflight.ok=false` / 没下单的单不会走到这里 ✓（调用点只在下单回执处 ✓）。
+ */
+function observationFromOrderReceipt(
+  data: Record<string, unknown>, ship: string, action: string, escorts?: unknown,
+): RiskObservation | undefined {
+  const risk = data.risk
+  if (risk === null || typeof risk !== 'object') return undefined
+  const r = risk as Record<string, unknown>
+  const known = r.known === true
+  const base = numOf(r.baseAttackChance)
+  const any = numOf(r.attackChance)
+  if (!known && base === undefined && any === undefined) return undefined
+  const list = Array.isArray(escorts)
+    ? escorts.filter((x): x is string => typeof x === 'string' && x !== '')
+    : []
+  return {
+    atMs: Date.now(), ship, action, known,
+    baseAttackChance: base, attackChance: any,
+    escortsGiven: list.length > 0 ? list : undefined,
+    source: 'order',
+  }
+}
+
 export function registerFleetTools(
   ctx: ToolCtx,
   peer: RpcPeer,
@@ -124,7 +203,17 @@ export function registerFleetTools(
   /** ★ 待命裁定（2026-10-17 ✓）：召回/改目标时清掉同船的 None 冷却 ✓ */
   standby?: { clear(ship: string): void },
   /** the recall/query timeouts differ in tests; keep the production defaults */
-  opts: { orderTimeoutSec?: number } = {},
+  opts: {
+    orderTimeoutSec?: number
+    /**
+     * ★★ 护航观测回调（2026-10-24 ✓）—— 决策者**自己量到**风险数字的那一刻记一笔 ✓。
+     *
+     * 只在 `fleet_query{predict}` / `fleet_order` 的**回包处**调用 ✓（数字已经在手上 ✓），
+     * ★ **绝不**为了它再发一次查询 ✗✓（原子接口纪律 ✓）。
+     * 消费方 = 下一轮投递块的「护航建议」（`index.ts` 的 `buildEscortHint` ✓）。
+     */
+    onRiskObserved?: (obs: RiskObservation) => void
+  } = {},
 ): void {
   // ---------------------------------------------------------------------
   // fleet_query -- read game data (the "eyes")
@@ -394,6 +483,13 @@ export function registerFleetTools(
         }, timeout)
         if (!r.ok) return `query failed: ${r.why ?? 'unknown'}`
         const body = text(r.data)
+        // ★★ 护航观测（2026-10-24 ✓）：她**刚量到**的风险数字记一笔 ✓
+        //   —— 下一轮投递块的「护航建议」就用它 ✓（只告知 ✓ 不替她下单 ✗）。
+        //   ★ 只读回包 ✗✓：这里**绝不**再发一次查询（原子接口纪律 ✓）。
+        if (args.what === 'predict' && opts.onRiskObserved !== undefined) {
+          const seen = observationsFromPredict(r.data, args.ship ?? '', args.action)
+          for (const obs of seen) opts.onRiskObserved(obs)
+        }
         // ★★ 体积**回显**（2026-10-17 ✓）：查询答复本身也会进上下文 ✓ ——
         //   让调用方**看得见**自己拉了多少字节 ✓（自己决定要不要缩 top ✓）。
         //   这一行是**事实**，不是限制 ✓（游戏侧已经有闸，这里只是让它可见 ✓）。
@@ -519,6 +615,8 @@ export function registerFleetTools(
         sizeY?: number
         duration?: number
         goodsToSell?: unknown
+        /** ★ 2026-10-24：护航名（回执里用来判断"已经带了护航" ✓ —— 不带就别再建议 ✓） */
+        escorts?: string[]
       }) {
         // ★ 60s：order 现在**同时**为回执算一次风险预测（= predict 同口径 ✓）—— Travel 还要先算航线分析 ✓
         const r = await ask(peer, 'order', args, opts.orderTimeoutSec ?? 60)
@@ -540,6 +638,16 @@ export function registerFleetTools(
         }
         const pw = preflightWarningText(preflight)
         if (pw !== undefined) lines.push(pw)
+
+        // ★★ 护航观测（2026-10-24 ✓）：**真的下单了**（过预检）才记 ✓ ——
+        //   数字是游戏在这一单上算出来的 ✓（与 predict 同一份代码 ✓）。
+        //   ★ 带了 `escorts` 的单 → 记下"已经带了" ✓ → 投递块**不再**建议（事情做过了 ✓）。
+        if (opts.onRiskObserved !== undefined) {
+          const obs = observationFromOrderReceipt(
+            data, args.ship, args.action, (args as { escorts?: unknown }).escorts,
+          )
+          if (obs !== undefined) opts.onRiskObserved(obs)
+        }
 
         // ★★ 实测（2026-10-17 ✓✓）：`accepted:true executed:true` 只代表"进了 RPC 队列" ✗ ——
         //   这里**再问一次游戏**（orderStatus ✓）拿实体状态的证据 ✓；拿不到就明说（不编 ✗）。

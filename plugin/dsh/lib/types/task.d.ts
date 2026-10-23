@@ -77,6 +77,18 @@ export interface TaskRequest {
      *   ★ 体积预算 ~200 字节：超了就当没加上 ✗✓（renderTaskBlock 会跳过 ✓）。
      */
     prevResult?: string;
+    /**
+     * ★★ 护航建议（2026-10-24 接回来 ✓✓）：**只告知** ✓ —— 不替她下单 ✗。
+     *
+     * 数字从哪来（★ 绝不回退到自扫描 ✗✓）：
+     *   · 决策者自己用 `predict` 量到的 `risk.baseAttackChance` ✓，
+     *     或她自己 `fleet_order` 回执里的 `risk` ✓（同一份代码，数字逐字相同 ✓）；
+     *   · 「名单里有没有空闲战斗舰」= `list` → `ship brief` 的 `armedTurrets` / `canFight` ✓；
+     *   · 判护航需求沿用 `escortNeedOf` 的**阈值语义** ✓（闸门 10% + 一艘护航 ×0.75 ✓）。
+     *   ★ **一次 `*Plan` 都不发** ✗✓（`test/rendezvous.mjs` 有断言钉住 ✓）。
+     *   ★ 体积预算 ~320 字节：超了就不加 ✓。
+     */
+    escortHint?: string;
 }
 /** 校验结论 */
 export type AnswerCode = 'EMPTY_REPLY' | 'NO_ACTION_LINE' | 'ASKED_OWNER' | 'TASK_MISMATCH' | 'BAD_ACTION';
@@ -106,6 +118,8 @@ export type AnswerVerdict = {
 export declare function field(text: string, key: string): string | undefined;
 /** ★ 「你上一单的结果」一行的字节预算（~200 ✓；超了就当没加 ✗✓） */
 export declare const PREV_RESULT_BUDGET_BYTES = 200;
+/** ★★ 「护航建议」一行的字节预算（~320 ✓；超了当没加 ✗✓ —— 块体积有契约 ✓） */
+export declare const ESCORT_HINT_BUDGET_BYTES = 320;
 export declare function renderTaskBlock(req: TaskRequest): string;
 /** 一条待决策任务（合并块里的一个条目 ✓ —— 只有船名 + 任务号 + 动作边界 ✓） */
 export interface TaskBatchRequest {

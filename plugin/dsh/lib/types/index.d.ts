@@ -433,11 +433,52 @@ export interface EscortNeed {
     gate?: number;
 }
 /**
+ * ★★ 一份「决策者点名的风险数字」—— 2026-10-24 新判据的**唯一输入** ✓✓
+ *
+ * 与 legacy `tradePlan` 的形状**彻底无关** ✗✓：这里只有**游戏算出来的数** ✓
+ * （`predict` 的 `risk` / `fleet_order` 回执的 `risk` —— 同一份代码、逐字相同 ✓）。
+ */
+export interface RiskFacts {
+    /** 行动船 ✓（只进措辞 ✓） */
+    ship: string;
+    /** 路线名 / 商品名 / 框描述 —— 只进措辞 ✓（**不参与判断** ✓） */
+    label?: string;
+    /** ★ 判断只看**基准**伏击概率（主人钦定口径 ✓）；缺 = 没数 ✗ */
+    baseAttackChance?: number;
+    /** `baseAttackChance` 缺失时的兜底（Travel 只有一个数 ✓） */
+    attackChance?: number;
+    /** 游戏说算出来了没有 ✓（`false` / 缺 = **没有数字**，绝不填 0 ✗） */
+    known?: boolean;
+    /** 闸门（缺省 0.10 ✓ 与游戏侧 MAX_ATTACK_CHANCE 同值 ✓） */
+    gate?: number;
+    /** 游戏侧算好的「带一艘护航」概率（有就用原版 ✓ 没有才退经验系数 ✓） */
+    withEscortsRisk?: number;
+    /** 行动船**同星系**已有的可用护航候选 ✓（有 = 不用再派人 ✓） */
+    sameSectorEscorts?: string[];
+}
+/**
+ * ★★★ 判「这一单**真的缺一艘护航**吗」—— **纯数字**判据 ✓✓（2026-10-24 ✓）
+ *
+ * ★ 阈值语义**原样沿用** `escortNeedOf`（2026-10-17 定的 ✓，一条都没改 ✗）：
+ *   ① 没有数字（游戏没算出来）→ 不判 ✓（绝不把"未知"当 0% ✗）
+ *   ② 本星系已有护航候选        → 不需要派人 ✓（现有流程会处理 ✓）
+ *   ③ 风险本来就在闸门内        → 不需要 ✓
+ *   ④ 加一艘护航仍压不到闸门内  → 不派（派了也压不下来，别白跑 ✓）
+ *   ⑤ 其余（风险超闸门、加一艘能压进去）→ **缺护航** ✓
+ *
+ * ★ 它**不发**任何查询 ✓（纯函数 ✓ —— `test/rendezvous.mjs` 钉着"不发 `*Plan`" ✓）。
+ */
+export declare function escortNeedFor(f: RiskFacts): EscortNeed;
+/**
  * ★ 判断"这一轮的 tradePlan 是不是**真的缺一艘护航**" ✓
+ *
+ * ★★ 2026-10-24：它现在只是**形状适配器** ✗→✓ —— 把 legacy plan 形状抽成数字，
+ *   交给 `escortNeedFor` 判 ✓（**阈值语义只剩一份** ✓，不再有第二套闸门 ✓）。
+ *   生产路径**已经不用它**了 ✓（`buildEscortHint` 走的是数字入口 ✓）；
+ *   留着是为了钉住 2026-10-17 定下的那套语义（`test/rendezvous.mjs` ③~⑨ ✓）。
  *
  * 只**读**游戏给的字段，不改扫描逻辑 ✓：
  *   recommendation 非空        → 已经有能出海的推荐 → 不需要 ✓
- *   本星系已有护航候选          → 现有流程会处理 → 不需要 ✓
  *   一条路线都没有              → 护航只降伏击概率，救不了"没货可运" ✗ → 不需要 ✓
  *   最好候选 ×0.75 仍超门槛     → 派过去也压不下来 ✗ → 不派（诚实说明 ✓，别白跑一趟 ✓）
  *
@@ -473,5 +514,55 @@ export declare function pickRendezvousEscort(ships: Record<string, unknown>[], a
     x?: number;
     y?: number;
 }): EscortPick | null;
+/** 一次「她点名的风险数字」（`predict` / `fleet_order` 回执 ✓）—— 护航建议就从它算 ✓ */
+export interface RiskObservation {
+    /** 观察时刻（ms ✓）；超过 TTL 就不再用 ✓ */
+    atMs: number;
+    /** 行动船 ✓ */
+    ship: string;
+    action?: string;
+    /** 游戏算出来的**基准**概率 ✓（`known=false` 时没有这个数 ✓） */
+    baseAttackChance?: number;
+    attackChance?: number;
+    /** 游戏说算出来了没有 ✓（false = 没有数字，绝不填 0 ✗） */
+    known: boolean;
+    /** 下单时**已经带了**护航 → 这件事做过了，不再建议 ✓ */
+    escortsGiven?: string[];
+    /** 闸门（预测/回执给的那一个 ✓） */
+    gate?: number;
+    /** 来源：`predict` = 她自己量的 ✓；`order` = 下单回执 ✓ */
+    source: 'predict' | 'order';
+}
+/** 一次原子查询（与 `tools.ts` 的 `ask(peer,'query',…)` 同形 ✓）—— 测试可注入桩 ✓ */
+export type AtomQuery = (what: string, params: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    data?: unknown;
+    why?: string;
+}>;
+export interface EscortHintOptions {
+    nowMs?: number;
+    /** 观察的有效期（缺省 15 分钟 ✓ —— 她量完通常马上处理这一单 ✓） */
+    ttlMs?: number;
+    /** 最多查几艘船的 brief（缺省 2 ✓ —— 这是投递路径上的 RPC，要省 ✓） */
+    maxBriefLookups?: number;
+    /** 总预算（ms）：超了就不再查 ✓（**绝不**为这一行拖慢投递 ✗） */
+    budgetMs?: number;
+}
+/** 观察的有效期 ✓（15 分钟：够她把这一单处理完 ✓，又不会拿半小时前的数装懂 ✗） */
+export declare const ESCORT_OBS_TTL_MS: number;
+/**
+ * ★★★ 算出「这单缺护航、且名单里有可用船」那一行 ✓✓（2026-10-24 接回来 ✓）
+ *
+ * 返回 `undefined` = **nothing to say** ✓（不需要护航 / 没数字 / 名单里没人 / 超预算 ✓）
+ *   —— 绝不返回"猜的"建议 ✗✓。
+ *
+ * 查询序列（★ 全程**不发任何 `*Plan`** ✗✓）：
+ *   · **0 次**：数字不在闸门之上（或本来就在闸门内 / 加一艘也压不下来 ✓）
+ *   · **1 次**：`list`（索引级 ✓）—— 顺带看"同星系已有护航候选"（有 = 现有流程就够 ✓）
+ *   · **1 + N 次**：`ship{ship, brief:true}`（N ≤ maxBriefLookups，缺省 2 ✓）
+ *
+ * ★ 判据/阈值全部来自 `escortNeedFor` ✓（2026-10-17 定的那条语义 ✓ **不新造阈值** ✗）。
+ */
+export declare function buildEscortHint(query: AtomQuery, obs: RiskObservation, opts?: EscortHintOptions): Promise<string | undefined>;
 export declare function apply(ctx: CopilotCtx, config?: CopilotConfig): void;
 export {};

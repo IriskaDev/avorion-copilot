@@ -56,6 +56,8 @@ function boolField(text, key) {
 }
 /** ★ 「你上一单的结果」一行的字节预算（~200 ✓；超了就当没加 ✗✓） */
 export const PREV_RESULT_BUDGET_BYTES = 200;
+/** ★★ 「护航建议」一行的字节预算（~320 ✓；超了当没加 ✗✓ —— 块体积有契约 ✓） */
+export const ESCORT_HINT_BUDGET_BYTES = 320;
 /** 船名清单字段（`Miner-1, Miner-2`；"无" 之类的词丢掉 ✓ —— 与 index.ts 同款 ✓） */
 function listField(text, key) {
     const raw = field(text, key);
@@ -159,6 +161,14 @@ export function renderTaskBlock(req) {
         if (Buffer.byteLength(line, 'utf8') <= PREV_RESULT_BUDGET_BYTES)
             L.push(line);
     }
+    // ★★ 2026-10-24：护航建议（**只告知** ✓ 不替她下单 ✗）——
+    //   数字全来自**她自己量过的** `predict` / 下单回执 ✓（见 index.ts 的 buildEscortHint ✓），
+    //   ★ 这里一个 `*Plan` 都没查 ✗✓（那条自扫描的路已经删了 ✓）。
+    if (typeof req.escortHint === 'string' && req.escortHint.trim() !== '') {
+        const line = `★ 护航建议（只告知，派不派你定 ✓）：${req.escortHint.trim()}`;
+        if (Buffer.byteLength(line, 'utf8') <= ESCORT_HINT_BUDGET_BYTES)
+            L.push(line);
+    }
     // ★★ B（2026-10-18）：漏答**必须可见** ✓ —— 上一轮没答到的船数写进块末尾一行 ✓✓
     if (typeof req.unansweredBefore === 'number' && req.unansweredBefore > 0) {
         L.push(`★ 上次未答：${req.unansweredBefore} 艘（它们会**稍后重投** ✓ —— 请把每条任务都答到 ✓）`);
@@ -197,6 +207,12 @@ export function renderTaskBatchBlock(batch) {
         const gt = typeof it.goalText === 'string' ? clipGoalText(it.goalText) : '';
         const goal = gt !== '' ? `  主人目标: ${gt}` : '';
         L.push(`  · ${it.ship}   task=${it.taskId}${lim}${goal}`);
+        // ★★ 护航建议按船各一行 ✓（数字是她自己量的 ✓；同一个 320 字节预算 ✓）
+        if (typeof it.escortHint === 'string' && it.escortHint.trim() !== '') {
+            const line = `      ★ 护航建议（只告知 ✓）：${it.escortHint.trim()}`;
+            if (Buffer.byteLength(line, 'utf8') <= ESCORT_HINT_BUDGET_BYTES)
+                L.push(line);
+        }
     }
     L.push('查证工具（先 list 再查；下面 `ship` 一律填**对应船名** ✓）：');
     L.push('  · {what:"list"} → 船名单；{what:"ship", ship, brief:true} → 船现状');

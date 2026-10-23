@@ -22,6 +22,7 @@
  */
 import type { RpcPeer } from './rpc.js';
 import type { DecisionRecord } from './index.js';
+import type { RiskObservation } from './index.js';
 /** The slice of ctx these tools need (structural, so we don't depend on unavailable cordis types). */
 interface ToolCtx {
     logger?: {
@@ -87,5 +88,13 @@ standby?: {
 /** the recall/query timeouts differ in tests; keep the production defaults */
 opts?: {
     orderTimeoutSec?: number;
+    /**
+     * ★★ 护航观测回调（2026-10-24 ✓）—— 决策者**自己量到**风险数字的那一刻记一笔 ✓。
+     *
+     * 只在 `fleet_query{predict}` / `fleet_order` 的**回包处**调用 ✓（数字已经在手上 ✓），
+     * ★ **绝不**为了它再发一次查询 ✗✓（原子接口纪律 ✓）。
+     * 消费方 = 下一轮投递块的「护航建议」（`index.ts` 的 `buildEscortHint` ✓）。
+     */
+    onRiskObserved?: (obs: RiskObservation) => void;
 }): void;
 export {};
