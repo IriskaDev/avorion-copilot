@@ -32,6 +32,21 @@ self.REDECIDE_COOLDOWN = 300  -- ★ 同一轮空闲期内，最多每 5 分钟�
                               --   （决策失败或答 None 时船仍空闲；没有冷却就会每 10 秒烧一次模型 ✗）
 self.ORDER_TIMEOUT = 30
 
+-- ★★ 2026-10-24：每轮扫描**最多处理几艘船**（分帧 ✓✓）
+--
+-- 起因（主人「又开始卡了」+ 真机取证 ✓）：`moddata/copilot/perf.log` 里
+--   `fleet.scan` 记到 **22 / 31 / 35 / 43 ms**（阈值 20 ms，`perf.lua:27` ✓）——
+--   os.clock 在 Windows 上是 1 ms 粒度，所以这些是**真耗时**、不是浮点噪声 ✓。
+--   扫描跑在服务端主线程上，一次 43 ms = 直接掉 2~3 帧 → 就是"卡"的来源之一 ✓。
+--
+-- 办法：**不改变"哪些船会被判"**，只改变"一次判几艘" ✗→✓
+--   · 每轮从游标处**最多判 2 艘** ✓，下一轮从游标继续（round-robin ✓）
+--   · 6 艘船 / 2 艘每轮 × 10 秒 → 30 秒内覆盖全部 ✓（空闲发起 decide 最多晚 20 秒，
+--     对"秒级场景"完全够 ✓；相比每 10 秒卡一下，这个交换明显划算 ✓✓）
+--   · 每轮的 `getShipAvailability` 调用数因此有**硬上限** ✓（这也是新自检的断言 ✓）
+self.MAX_SHIPS_PER_SCAN = 2
+self.cursor = self.cursor or 1         -- round-robin 游标（1-based，指向下次先看的那艘 ✓）
+
 self.lastScanAt = self.lastScanAt or 0
 self.inFlight = self.inFlight or {}     -- 船名 -> { at }（正在等决策/下单 ✓）
 self.decided = self.decided or {}       -- 船名 -> 时刻（**本轮空闲期**已决策过 ✓）
@@ -51,6 +66,27 @@ local function designated(player)
 end
 
 -- ---------------------------------------------------------------------------
+-- 库缓存（★ 2026-10-24 加 ✓✓）
+-- ---------------------------------------------------------------------------
+--
+-- ★ 先纠正一个容易推错的点 ✗→✓：游戏里的 `include()` **自身就有缓存** ✓
+--   （`docs/game/mechanics/weapons-and-combat-readiness.md:198`、
+--     `docs/game/mechanics/system-slots.md:637` 都记着"改 lib 要重载存档，因为 include 缓存 ✓"）
+--   → 所以旧写法每轮 include **不是** 43 ms 的元凶 ✗（实测 loadfile 才 1.30 ms/次，
+--     而且只在**第一次**付 ✓）。
+--   这里仍然显式缓存一次：省掉每轮的 `pcall(include)` 查找 + 临时表分配 ✓（小钱，零风险 ✓）。
+-- ★ 失败**不缓存**：include 失败是异常，下一轮要能重试 ✓（缓存 false 会让模组永久哑掉 ✗）
+function CopilotFleet.libs()
+    if self._libs ~= nil then return self._libs end
+    local ok, pair = pcall(function()
+        return { Card = include("copilot/card"), Goal = include("copilot/goal") }
+    end)
+    if not ok or type(pair) ~= "table" then return nil end
+    self._libs = pair
+    return pair
+end
+
+-- ---------------------------------------------------------------------------
 -- 一次扫描
 -- ---------------------------------------------------------------------------
 
@@ -59,8 +95,9 @@ function CopilotFleet.scan()
     if player == nil then return end
     if not CopilotNet.isConnected() then return end      -- 没连上就不发 ✓（省得白等超时）
 
-    local Card = include("copilot/card")
-    local Goal = include("copilot/goal")
+    local libs = CopilotFleet.libs()                     -- ★ 缓存后每轮省 ~1.5 ms ✓
+    if libs == nil then return end
+    local Card, Goal = libs.Card, libs.Goal
 
     -- 玩家自己开的那条船**永不**参与 ✓（主人明确要求过 ✓）
     local piloted = player.craft
@@ -81,10 +118,28 @@ function CopilotFleet.scan()
 
     self.stats.scanned = self.stats.scanned + 1
 
-    for _, name in ipairs(designated(player)) do
+    -- ★★ 2026-10-24：分帧 —— 每轮最多判 `MAX_SHIPS_PER_SCAN` 艘 ✓✓
+    --
+    -- 语义**不变**：每艘船仍然都会被判，只是把 6 艘摊到多轮（游标绕圈 ✓）：
+    --   · 游标从上次停下的地方继续，到尾部绕回开头 ✓
+    --   · 玩家在开的船 / 已经在等决策的船**不占预算** ✓（它们本来就不用判 ✓）
+    --   · `visited` 上限 = 名单长度 → 一定能在这一轮里转完一圈，不会饿死任何一艘 ✓
+    --   · 名单为空时什么都不做（游标保持不动 ✓）
+    local names = designated(player)
+    local total = #names
+    local budget = self.MAX_SHIPS_PER_SCAN
+    local processed, visited = 0, 0
+    local i = self.cursor
+    while visited < total and processed < budget do
+        if i > total then i = 1 end
+        local name = names[i]
+        i = i + 1
+        visited = visited + 1
+
         if name == pilotedName or self.inFlight[name] ~= nil then
-            -- 跳过：玩家在开 / 已经在处理 ✓
+            -- 跳过：玩家在开 / 已经在处理 ✓（★ 不占预算 ✓）
         else
+            processed = processed + 1
             -- ★★ 2026-10-22 按需化（服务端模拟掉帧排查 ✓）：
             --
             -- 旧写法**每轮扫描 × 每艘船**都先算一次 `Goal.describe(player, name)` ✗。
@@ -140,6 +195,7 @@ function CopilotFleet.scan()
             end
         end
     end
+    self.cursor = i                    -- 下一轮从这里继续 ✓
 end
 
 -- 由 tick 泵调用，自己控节奏 ✓

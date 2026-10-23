@@ -43,7 +43,7 @@ function onServer() return true end
 function onClient() return false end
 
 -- 计数器：病根是"多算了" → 就数调用次数 ✓
-local COUNTS = { getTurrets = 0, sectorScans = 0, describe = 0, chat = 0, captainHired = 0 }
+local COUNTS = { getTurrets = 0, sectorScans = 0, describe = 0, chat = 0, captainHired = 0, availability = 0 }
 
 -- player value 内存表（面板名单 / 每船目标）
 local VALUES = {
@@ -60,6 +60,7 @@ local player = {
     getValue = function(_, key) return VALUES[key] end,
     setValue = function(_, key, value) VALUES[key] = value end,
     getShipAvailability = function(_, name)
+        COUNTS.availability = COUNTS.availability + 1
         if BUSY[name] then return ShipAvailability.InBackground end
         return ShipAvailability.Available
     end,
@@ -347,6 +348,67 @@ do
 
     os.remove(Perf.LOG_PATH)
     check("⑦ 测试用的日志文件已清理（不污染仓库 ✓）", io.open(Perf.LOG_PATH, "r") == nil)
+end
+
+-- ---------------------------------------------------------------------------
+-- ⑧ fleet **分帧**：每轮处理数有硬上限 + 游标绕圈不饿死任何一艘（2026-10-24 加 ✓✓）
+-- ---------------------------------------------------------------------------
+--
+-- 起因：`perf.log` 实测 fleet.scan 22 / 31 / 35 / 43 ms（os.clock 在 Windows 是 1 ms 粒度，
+--       所以这些是真耗时 ✓）。旧版一轮把名单里**所有**船都判一遍 ✗ → 名单越长单轮越贵 ✓。
+-- 现在：游标 + `MAX_SHIPS_PER_SCAN` ⇒ 单轮工作量**不随名单长度涨** ✓✓
+-- 断言方式仍然是**数调用次数**（病根是"多算了" ✓）。
+print("== ⑧ fleet 分帧：单轮调用数有硬上限，游标绕圈覆盖全部 ==")
+do
+    BUSY["Ship-A"], BUSY["Ship-B"], BUSY["Ship-C"] = true, true, true
+    Fleet.inFlight = {}                       -- inFlight 清理循环也会调 isBusy，先归零好数账 ✓
+    Fleet.idleSeen, Fleet.decided = {}, {}
+    Fleet.cursor = 1
+    COUNTS.availability = 0
+
+    check("⑧ 上限本身是个正整数（2 ✓）", type(Fleet.MAX_SHIPS_PER_SCAN) == "number"
+        and Fleet.MAX_SHIPS_PER_SCAN >= 1, tostring(Fleet.MAX_SHIPS_PER_SCAN))
+
+    -- ① 第一轮：名单 3 艘 > 上限 2 → 只判 2 艘（旧版是 3 ✗）
+    Fleet.scan()
+    local firstRound = COUNTS.availability
+    check("⑧ 单轮 getShipAvailability ≤ MAX_SHIPS_PER_SCAN（旧版是 3 ✗）",
+        firstRound <= Fleet.MAX_SHIPS_PER_SCAN,
+        firstRound .. " 次（上限 " .. tostring(Fleet.MAX_SHIPS_PER_SCAN) .. "）")
+    check("⑧ 上限**真的生效**（正好 = 上限，不是 0、也不是 3）",
+        firstRound == Fleet.MAX_SHIPS_PER_SCAN, tostring(firstRound))
+
+    -- ② 第二轮：游标继续往下判，仍然守住上限 ✓
+    COUNTS.availability = 0
+    Fleet.scan()
+    check("⑧ 第二轮同样 ≤ 上限（游标前进，不重判同一艘 ✓）",
+        COUNTS.availability <= Fleet.MAX_SHIPS_PER_SCAN, tostring(COUNTS.availability))
+
+    -- ③ 两轮之内 3 艘**全部**被判过（绕圈 → 不会饿死 ✗✓）
+    local seen = 0
+    for _, n in ipairs({ "Ship-A", "Ship-B", "Ship-C" }) do
+        if Fleet.idleSeen[n] ~= nil then seen = seen + 1 end
+    end
+    check("⑧ 两轮内 3 艘全部被判过（游标绕圈，不饿死任何一艘 ✓）", seen == 3, tostring(seen))
+
+    -- ④ 名单变长到 6 艘：单轮上限**不随名单长度上涨** ✓✓（这就是"卡"的那条）
+    VALUES["copilot_auto_ships"] = "S1\nS2\nS3\nS4\nS5\nS6"
+    for i = 1, 6 do BUSY["S" .. i] = true end
+    Fleet.cursor = 1
+    COUNTS.availability = 0
+    Fleet.scan()
+    check("⑧ 名单 6 艘时单轮仍是上限（6 → 2 ✓，旧版会判 6 艘 ✗）",
+        COUNTS.availability <= Fleet.MAX_SHIPS_PER_SCAN, tostring(COUNTS.availability))
+
+    -- ⑤ 名单为空 → 一次都不判，且不许崩 ✓
+    VALUES["copilot_auto_ships"] = ""
+    COUNTS.availability = 0
+    local okEmpty = pcall(Fleet.scan)
+    check("⑧ 空名单：一次都不判、也不崩 ✓",
+        okEmpty and COUNTS.availability == 0, tostring(COUNTS.availability))
+
+    -- 还原（后续若有别的用例，别被这份名单带歪 ✓）
+    VALUES["copilot_auto_ships"] = "Ship-A\nShip-B\nShip-C"
 end
 
 -- ---------------------------------------------------------------------------

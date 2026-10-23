@@ -148,8 +148,18 @@ end
 -- 空闲判定（★ 原版正统写法，见 entitydbg.lua:3651）
 -- ---------------------------------------------------------------------------
 
+-- ★ 2026-10-24：**把被 pcall 的函数提到外面**，不再每艘船每轮新建一个闭包 ✓✓
+--   原因：`isBusy` 是 10 秒周期里的热路径 ✓（`net/fleet.lua` 每轮 × 每艘船 ✓）。
+--   旧写法 `pcall(function() return player:getShipAvailability(name) end)` 每船每轮
+--   分配一个闭包 ✗ —— 在 3000 实体的大星区里，这类小垃圾推动的 GC 步进
+--   正是"偶发 20~40 ms"的合理嫌疑 ✓（`perf.log` 实测 22/31/35/43 ms ✓）。
+--   提到外面后：pcall 直接传函数 + 实参，热路径**零闭包分配** ✓。
+local function readAvailability(player, name)
+    return player:getShipAvailability(name)
+end
+
 function M.isBusy(player, name)
-    local ok, a = pcall(function() return player:getShipAvailability(name) end)
+    local ok, a = pcall(readAvailability, player, name)
     if not ok then return nil, tostring(a) end
     if a == nil then return nil, "nil availability" end
     return (a == ShipAvailability.InBackground), a
