@@ -76,7 +76,7 @@ copilot_enabled（总开关）         → 也可能回默认 ✗
 node "$env:LOCALAPPDATA\Temp\luacheck-copilot\check.js" .
 #    期望：N file(s), 0 failure(s)   ← 逐文件过解析，luaVersion 必须 5.2
 
-# 2) 24 个原生侧自检（每个都以 exit 0 + 末行 OK 为通过）
+# 2) 26 个原生侧自检（每个都以 exit 0 + 末行 OK 为通过）
 Get-ChildItem native\harness\_*_selftest.lua | ForEach-Object {
   & build\harness\lua.exe $_.FullName; "{0} -> exit {1}" -f $_.Name, $LASTEXITCODE
 }
@@ -103,7 +103,8 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 | `_atomic_selftest` | `atomicSelfTest: OK`（47 项断言） |
 | `_mounts_selftest` | `OK: 100 checks, 0 failure(s)` |
 | `_panel_roster_selftest` | `OK: 78 checks, 0 failure(s)`（2026-10-22 加 ⑧：面板关着不刷新 ✓） |
-| `_periodic_selftest` | `26 checks, 0 failures`（2026-10-22 加：周期任务按需化/降频 + perf 探针 ✓） |
+| `_periodic_selftest` | `33 checks, 0 failures`（2026-10-24 加 ⑧：fleet 分帧 —— 单轮调用数 ≤ `MAX_SHIPS_PER_SCAN`、游标绕圈不饿死、6 艘名单仍是 2、空名单不崩 ✓） |
+| `_namespace_decl_selftest` | `OK: 6 checks, 0 failure(s)`（2026-10-24 加：声明行只能是纯声明形状、名字只含 `[A-Za-z0-9_]` ✓） |
 | `_weapons_card_selftest` | `59 checks, 0 failures`（2026-10-22 加 ⑧：不许读文档里没有的属性 ✓） |
 | `_job_equipment_error_selftest` | `checks=37  failures=0` |
 | `_ship_identity_selftest` | `26 checks, 0 failure(s)` + `ALL SHIP-IDENTITY ASSERTIONS PASSED` |
