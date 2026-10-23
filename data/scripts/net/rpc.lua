@@ -27,16 +27,87 @@ local self = CopilotRpc
 
 self.tracing = self.tracing ~= false       -- 排查期间默认开 ✓
 
+-- ★★ 2026-10-24：trace 的 I/O 重写 —— **句柄常开 + 每行 flush + 大小轮转** ✓✓
+--
+-- 病根（真机量过 ✗）：旧版**每一行**都 open+write+close —— ≈0.97 ms/行，
+--   一条 RPC 6~8 行 ≈ 6~8 ms 纯浪费在主循环上 ✗（trace 是为了救命，不该自己变成负载 ✗）。
+-- 现在：
+--   · 句柄**懒开一次、之后常开** ✓ → 每行只剩 write + flush ✓
+--   · **每行照样 flush** ✗→✓：本日志的用途是「进程猝死前最后一句」（见本文件头 ✓）；
+--     攒缓冲会把最后几行吃掉 = 证据当场消失 ✗ → 宁可一次 write 系统调用，绝不攒 ✓
+--   · **每行照旧带时间戳** ✓（`HH:MM:SS  文本` 格式一字不改 → 老日志照样能对 ✓）
+--   · **大小上限 + 轮转** ✓：超过 `TRACE_MAX_BYTES`（缺省 4 MB）→ 旧文件挪成 `.1`
+--     （只留一代 ✓）。真机那份 **3.4 MB / 81701 行** 已经大到读一次要好几秒 ✓
+self.TRACE_PATH = self.TRACE_PATH or "moddata/copilot/rpc_trace.log"
+self.TRACE_MAX_BYTES = self.TRACE_MAX_BYTES or (4 * 1024 * 1024)
+
+-- 关句柄（任何失败都吞掉 ✓ —— trace 自己绝不许抛错）
+local function traceClose(fh)
+    if fh == nil then return end
+    pcall(function() fh:close() end)
+end
+
+-- 轮转：`rpc_trace.log` → `rpc_trace.log.1`，然后重开一个空的 ✓
+--   ★ Windows 上 `rename` 到**已存在**的目标会失败 → 先删 `.1` ✓（删/改名全在 pcall 里）
+--   ★ 挪不动（或被沙箱挡住）就退化成**截断**：宁可丢历史，也不许丢「现在能写」✓
+local function traceRotate(path)
+    pcall(function()
+        os.remove(path .. ".1")
+        os.rename(path, path .. ".1")
+    end)
+    local fh = io.open(path, "w")
+    if fh ~= nil then fh:close() end
+end
+
+-- 打开（或轮转后重开）—— 打开时**先看大小**，超上限立刻轮转 ✓
+--   返回句柄 + 当前字节数（字节数用于「写到一半超限」的第二道闸 ✓）
+function CopilotRpc.traceOpen()
+    local fh = io.open(self.TRACE_PATH, "a")
+    if fh == nil then return nil end
+    local okS, size = pcall(function() return fh:seek("end") end)
+    size = (okS and tonumber(size)) or 0
+    if size >= self.TRACE_MAX_BYTES then
+        traceClose(fh)
+        traceRotate(self.TRACE_PATH)
+        fh = io.open(self.TRACE_PATH, "a")
+        if fh == nil then return nil end
+        size = 0
+    end
+    self.traceBytes = size
+    return fh
+end
+
+-- 关闭常开句柄（重载/自检收尾用 ✓；正常游戏流程不需要调 ✓）
+function CopilotRpc.traceClose()
+    traceClose(self.traceFH)
+    self.traceFH = nil
+end
+
 function CopilotRpc.trace(text)
     if not self.tracing then return end
+    local line = string.format("%s  %s\n", os.date("%H:%M:%S"), tostring(text))
     local ok = pcall(function()
-        local fh = io.open("moddata/copilot/rpc_trace.log", "a")
-        if fh == nil then return end
-        fh:write(string.format("%s  %s\n", os.date("%H:%M:%S"), text))
-        fh:close()
+        local fh = self.traceFH
+        if fh == nil then
+            fh = CopilotRpc.traceOpen()
+            self.traceFH = fh
+        end
+        if fh == nil then error("io.open failed") end
+        fh:write(line)
+        fh:flush()                     -- ★ 每行落盘：猝死前的最后一句必须在 ✓
+        self.traceBytes = (self.traceBytes or 0) + #line
+        -- 第二道闸：写到一半超上限 → 本行已落盘，随即关掉、轮转、下次重开 ✓
+        if self.traceBytes >= self.TRACE_MAX_BYTES then
+            traceClose(fh)
+            self.traceFH = nil
+            traceRotate(self.TRACE_PATH)
+            self.traceBytes = 0
+        end
     end)
     -- 追踪失败绝不影响主流程 ✓ —— 而且**不报错**，避免刷屏
     if not ok then
+        traceClose(self.traceFH)
+        self.traceFH = nil
         self.tracing = false
         -- ★ 写文件失败要**说出来** ✗ → 否则静默失效、排查时看不见 ✓
         if CopilotNet ~= nil and CopilotNet.report ~= nil then
