@@ -72,3 +72,67 @@
   ★ 它**会**为回执算一次预测（`run` 恰好 1 次、不改单 ✓），且算不出来时 `risk.known=false` + 原因、
   **绝不填 0** ✓✓（`_order_risk_selftest.lua`）。
 - 工具说明（`fleet_query`/`fleet_order`）把原子接口列为默认，把 legacy 计划标为 legacy。
+
+## ★★★ 性能硬闸（Hard Gates）—— 不许再犯「超高消耗操作」
+
+> 主人原话（2026-10-24）：「注意不要再加之前那种超高消耗的操作了」✓。
+> ★ 这不是一次性要求 ✗ —— 本节把它变成**会自己红的机制** ✓✓：
+> 规矩在这节 ✓、机器可读的名单在 [`interface-whitelist.txt`](interface-whitelist.txt) ✓、
+> 断言在 `plugin/dsh/test/what-whitelist.mjs` + `native/harness/_what_whitelist_selftest.lua` ✓✓，
+> 探针在 [`perf.lua`](../../data/scripts/lib/copilot/perf.lua) ✓。
+> ★ 加接口先过这五道闸 ✗✓；过不了就别加 ✗。
+
+### G1 接口不许自己选框 / 不许排序 / 不许给推荐
+
+- 框（`x`/`y` + `size`，或 `sizeX`/`sizeY`）与动作（`action`）**必须由调用方点名** ✓✓；
+  接口没收到就**报错**（`NO_POSITION` / `BAD_REQUEST`），绝不自己补 ✗。
+- 接口**不产** `recommendation` / `orderHint` / `best` / 「第一行」✗；比哪几个框、选哪个，都是调用方的事 ✓。
+- 这条既是本文 §判据 第 2、3 条的复述，也是**硬闸**：违反的实现无处可藏 ✓（见 G2 的断言）。
+
+### G2 单次 RPC 里不许出现 O(框数 × 星区数) 的隐式扫描
+
+- 一次 RPC 里**不许**「自己决定扫 N 个框、每个框再算一遍星区/路线」✗；
+  要扫就必须**由参数给出框**，且框数有硬上限（`predict` ≤24 框、`tradeEvaluate` ≤6 框 ✓✓）。
+- 尤其不许「为了给一个数字，顺手把整张舰队/整个星区/全部计划都算一遍」✗ —— 那正是下文反例的死法 ✓。
+- 接口白名单是**唯一真相**：[`interface-whitelist.txt`](interface-whitelist.txt)
+  （`[atomic]` 可被插件调用 / `[legacy]` 只许留在游戏侧 / `[deprecated]` 只许返回 `DEPRECATED`）✓✓。
+  新 `what` 不在名单里 → 测试**红** ✓。
+
+### G3 任何新查询必须报出预估扫描规模
+
+- 新增 `what` 必须同时写清：**一次最多几框 / 几实体 / 几次原版高代价调用** ✓。
+- 规模上限写进接口表：[`fleet-ops-manual.md`](../game/ops/fleet-ops-manual.md) §2 的「扫描规模上限」✓✓。
+- 写不出上限（说不清最坏情况）= 这个接口不该存在 ✗。
+
+### G4 单次 RPC > 100 ms 就必须有探针
+
+- 超过 **100 ms** 的 RPC 必须在 `moddata/copilot/perf.log` 留一行：**名字 + 毫秒** ✓
+  （实现：`net/rpc.lua` 的 `onRequest` 在 handler 外面包计时 ✓；阈值 = `perf.lua` 的 `QUERY_THRESHOLD_MS`，可调 ✓）。
+- 周期任务同样打点：`ops.updateServer` / `fleet.scan` / `net.pump` ✓✓。
+- **仍不刷屏** ✗：每条名字最多 30 秒一行（`perf.lua` 的 `MIN_INTERVAL`，按名字节流 ✓），平时一条都不写 ✓。
+
+### G5 单发兜底路径只许只读轻事实，不许跑计划
+
+- 没有工具、读不了文件的那条单发路径（`dossier`）只许拿 `list` / `ship{brief:true}` / `goal`
+  这类**有界的只读轻事实** ✓；任何名字含 `Plan` 的 `what` 都不许出现 ✗✓。
+- 断言：`plugin/dsh/test/single-shot-no-plans.mjs` 用 **`/plan/i` 正则**卡「任何名字含 Plan 的 what」✓✓。
+
+### 反例清单（已删的那批 + 实测数字，别再复活 ✗）
+
+| 接口 | 实测（真机 `rpc_trace.log` / `perf.log`） | 病根 |
+|---|---|---|
+| `tradePlan` | **173 次 × 均 10.5 s，最高 21 s** ✗ | 游戏主循环里同步扫 67+ 框 × 多商品 + 排序 + 推荐 |
+| `dossier`（旧版） | **22 ~ 31 s** ✗ | 一次把 6 个计划全扫一遍（2026-10-24 已改成只读卡片/目标 ✓） |
+| `sellPlan` | **均 8 s** ✗ | 多区域分析 × 逐货搜索 |
+| `jobPlan` | **71 框 / 828 ms**（最坏 884 ms）✗ | 粗扫 71 框 × 参数 × 层级加权 |
+| `scoutPlan` | **1321 ms** ✗ | 同一形态的大扫描 |
+| 单发预取 legacy 计划 | 每次决策**额外 10 ~ 30 s** ✗ | 兜底路径替决策者做策略（已移除 ✓） |
+
+### 正确替代（照这个组合，不许回头 ✗）
+
+```
+list  →  ship{brief:true}  →  predict(≤24 框) / tradeRoutes / tradeEvaluate(≤6 框)  →  order
+```
+
+- 查哪艘船 = 调用方点名 ✓；比哪几个框 = 调用方点名 ✓；选哪个 = 调用方拍板 ✓。
+- `predict` 的口径与旧计划**逐字一致**（复用同一批内部函数 ✓）—— 便宜不等于降级 ✓✓。

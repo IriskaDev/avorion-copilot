@@ -69,6 +69,27 @@
 > 以 live 工具描述为准（[`atomic-rpc.md`](atomic-rpc.md) 已同步）。
 > ★ `query:list` 在旧文档里也叫 `fleet`（[`atomic-rpc.md`](atomic-rpc.md) §A.1、[`tools-cheatsheet.md`](tools-cheatsheet.md) §2），以当前工具描述为准用 `list`。
 
+### ★ 扫描规模上限（G3 强制 ✓ —— 每个接口一次最多碰多少）
+
+> 规矩与断言见 [`../../dev/interface-atomicity.md`](../../dev/interface-atomicity.md) §★★★ 性能硬闸 ✓✓。
+> **说不清上限的接口不该存在** ✗；机器可读名单 = [`../../dev/interface-whitelist.txt`](../../dev/interface-whitelist.txt) ✓。
+
+| 原子 | 一次最多 | 备注 |
+|---|---|---|
+| `query:list` | 名单长度 × 1 次忙闲读 | 索引级，无货舱/无预测 ✓ |
+| `query:fleet` | 名单长度 × 1 船卡/艘 | 名册快照（无预测）；`brief:true` 更小 ✓ |
+| `query:ship` | 1 艘 | `brief:true` 不采样 depth ✓ |
+| `query:sectorFacts` | 1 星区 | 不扫邻区 ✓ |
+| `query:predict` | 1 框（批量 ≤24 框） | N 框只算 N 框 ✓ |
+| `query:tradeRoutes` | 1 框 | 框内路线（原版一次给 ≤4 条）✓ |
+| `query:tradeEvaluate` | ≤6 框 × ≤4 路线 × ≤3 本金 = ≤60 组合 | 只算不推荐 ✓ |
+| `query:systemsFacts` / `mount*` / `ship*` / `block*` | 1 艘 | 报价纯读，写路径要 `confirm` ✓ |
+| `query:renameShip` | 1 艘 | 忙船拒绝 ✓ |
+| `query:orderStatus` | 1 单 | `verify.ok` 才是真跑了 ✓ |
+| `query:panel` | 1 个 player value | 不扫船 ✓ |
+| `query:dossier` | 1 船 + **0 计划扫描** | 单发兜底专用 ✓ |
+| `query:*Plan`（legacy） | **67 ~ 71 框 + 排序 + 推荐** ✗ | 禁用；实测 8 ~ 21 s ✗ |
+
 ## 3 ★ 用法示例（可照抄）
 
 > 同一件事有**两条通道**，写法完全不同 —— 「字段清单有、写法示例没有」正是 L32 那次整单作废的病根（[`../lessons/orders.md`](../lessons/orders.md) L32）：

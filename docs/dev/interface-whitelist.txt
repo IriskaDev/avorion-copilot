@@ -1,0 +1,47 @@
+# interface-whitelist.txt —— query `what` 的**唯一名单**（机器可读 ✓）
+#
+# 规矩见 docs/dev/interface-atomicity.md §★★★ 性能硬闸 ✓✓
+# 两份断言都读本文件，所以只有**一个真相来源** ✓（别再各写一份 ✗）：
+#   plugin/dsh/test/what-whitelist.mjs            —— 扫 plugin/dsh/src/*.ts 的 what: 字面量
+#   native/harness/_what_whitelist_selftest.lua   —— 扫 data/scripts/net/link_in.lua 的 what 分支
+#
+# 语法：`[节]` 起头；每行一个名字；`#` 之后是注释（解析器会剥掉 ✓）。
+#   [atomic]     允许被插件调用（单次有界、无自选、无排序、无推荐 ✓）
+#   [legacy]     只许**留在游戏侧分支**（主人没让删 ✓）；插件里出现 = 红 ✗✓
+#   [deprecated] 只许返回 DEPRECATED（不许有实现体 ✗）
+#
+# 加一个名字 = 加了一个接口 ✗ → 先按 G3 写清「一次最多几框 / 几实体」（接口表：
+# docs/game/ops/fleet-ops-manual.md §2「扫描规模上限」）✓，再动这个文件 ✓✓
+
+[atomic]
+list            # 名单长度（索引级：name/busy/hasCaptain/sector，无货舱/无预测 ✓）
+fleet           # ★ 审计例外：名册快照（指定名单 × 1 船卡/艘，无预测 ✓）—— 插件握手/名单仍在用
+ship            # 1 艘（brief:true 时只取「能做什么」，不采样 depth ✓）
+goal            # 1 艘（只读意图 ✓）
+caps            # 0（自我声明：返回 Card.WHATS 与参数说明 ✓）
+sectorFacts     # 1 星区（富饶/材料/阵营，不扫邻区 ✓）
+predict         # 1 框；批量 ≤24 框（N 框只算 N 框 ✓）
+tradeRoutes     # 1 框（框内路线，不排序不推荐 ✓）
+tradeEvaluate   # ≤6 框 × 每框路线 ≤4 × 本金 ≤3 = 组合 ≤60（只算不推荐 ✓）
+systemsFacts    # 1 艘（远程船四组 known=false ✓）
+mountQuote      # 1 艘（炮塔底座材料报价，只读 ✓）
+mountUpgrade    # 1 艘（只有 confirm=true 才写 ✓）
+shipQuote       # 1 艘（整船材料报价，只读 ✓）
+shipUpgrade     # 1 艘（只有 confirm=true 才写 ✓）
+blockQuote      # 1 艘 × 1 种方块类型（只读 ✓）
+blockUpgrade    # 1 艘 × 1 种方块类型（只有 confirm=true 才写 ✓）
+renameShip      # 1 艘（改名 + 迁移目标；忙船拒绝 ✓）
+orderStatus     # 1 单（按 orderId 或 ship 取 verify ✓）
+panel           # 1 个 player value（面板开/关，不扫船 ✓）
+dossier         # ★ 审计例外：单发兜底（1 船 + 无计划扫描，2026-10-24 已瘦身 ✓）
+
+[legacy]
+tradePlan       # 67+ 框 × 多商品 + 排序 + 推荐 ✗（实测 173 次 × 均 10.5 s，最高 21 s）
+minePlan        # 多框 × 参数 × 层级加权 ✗
+salvagePlan     # 装备件数 × E[稀有度层级] ✗
+jobPlan         # 71 框 / 828 ms ✗
+sellPlan        # 多区域 × 逐货搜索，实测均 8 s ✗
+scoutPlan       # 实测 1321 ms ✗
+
+[deprecated]
+orderSchema     # 只许返回 DEPRECATED（order 已原子化 ✓）
