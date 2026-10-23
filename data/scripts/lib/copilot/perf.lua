@@ -9,10 +9,17 @@ package.path = package.path .. ";data/scripts/?.lua"
 --
 -- 设计取舍（每一条都是为了**别让排查本身变成负载** ✗✓）：
 --   · **只在超过阈值时写** ✗ —— 正常这台机器上这些函数是亚毫秒级，平时一条都不写 ✓
---   · 阈值 20 ms：一次周期任务吃掉 20 ms 主线程 = 掉 ≥1 帧，够说明问题了 ✓
---   · **每 30 秒最多写一条** ✓ —— 哪怕一直超阈值，也不会把日志自己刷成风暴 ✓
+--   · 阈值 **20 ms**（周期任务：一次吃掉 20 ms 主线程 = 掉 ≥1 帧，够说明问题了 ✓）；
+--     RPC handler 用 **100 ms**（`QUERY_THRESHOLD_MS` ✓ —— 规矩见 interface-atomicity.md G4 ✓）
+--   · **每个名字每 30 秒最多写一条** ✓ —— 哪怕一直超阈值，也不会把日志自己刷成风暴 ✓
+--     （★ 2026-10-24 从「整个 VM 一条」改成「每个名字一条」✗→✓：否则一个慢查询会把
+--      fleet.scan / net.pump 的记录挤掉 ✗；名字数有界 → 仍然不刷屏 ✓）
 --   · 全程 pcall ✓ —— 探针写失败绝不影响主流程 ✓（与 net/rpc.lua 的 trace 同一套规矩 ✓）
 --   · 写完就 close ✓ —— 与 rpc.lua 一样（游戏侧 io.open 只允许 moddata/ 开头 ✓）
+--
+-- 打点覆盖面（★ 2026-10-24 补齐 ✓✓）：
+--   `ops.updateServer`（player/ai/ops.lua ✓）/ `fleet.scan`（net/fleet.lua ✓）/
+--   `net.pump`（net/net.lua ✓）/ `rpc.query:<what>`、`rpc.<cmd>`（net/rpc.lua ✓）
 --
 -- 输出：`moddata/copilot/perf.log`（在 %APPDATA%\Avorion\moddata\copilot\ 下 ✓）
 --   `20:31:07  ops.updateServer          23.4 ms  ships=6`
@@ -23,26 +30,36 @@ package.path = package.path .. ";data/scripts/?.lua"
 
 local M = {}
 
--- 超过多少毫秒才记一笔 ✓
+-- 超过多少毫秒才记一笔 ✓（周期任务）
 M.THRESHOLD_MS = 20
+
+-- ★ RPC handler 的阈值（2026-10-24 加 ✓✓）：单次 RPC > 100 ms 就必须留一行 ✓
+--   规矩：docs/dev/interface-atomicity.md §★★★ 性能硬闸 G4 ✓
+M.QUERY_THRESHOLD_MS = 100
 
 -- 两次记录之间的最小间隔（秒）✓
 M.MIN_INTERVAL = 30
 
 M.LOG_PATH = "moddata/copilot/perf.log"
 
-local lastWriteAt = nil
+-- ★ 节流按**名字**各记一份（2026-10-24 改 ✓✓ —— 旧版是整个 VM 共用一个时间戳 ✗）
+local lastWriteAt = {}
 local written = 0
 
 -- 返回本次耗时（毫秒，**不管有没有写日志** ✓ —— 调用方可以自己用）
 -- startedAt 是调用方在进入被测代码前取的 os.clock() ✓
-function M.log(name, startedAt, detail)
+-- ★ thresholdMs 可选：不传 = 周期任务阈值（`THRESHOLD_MS` 20 ms ✓）；
+--   RPC 传 `QUERY_THRESHOLD_MS`（100 ms ✓）—— 阈值可调，规矩不变 ✓
+function M.log(name, startedAt, detail, thresholdMs)
     local elapsed = (os.clock() - startedAt) * 1000
-    if elapsed < M.THRESHOLD_MS then return elapsed end
+    local threshold = thresholdMs or M.THRESHOLD_MS
+    if elapsed < threshold then return elapsed end
 
+    local key = tostring(name)
     local now = os.clock()
-    if lastWriteAt ~= nil and (now - lastWriteAt) < M.MIN_INTERVAL then return elapsed end
-    lastWriteAt = now
+    local last = lastWriteAt[key]
+    if last ~= nil and (now - last) < M.MIN_INTERVAL then return elapsed end
+    lastWriteAt[key] = now
 
     pcall(function()
         local fh = io.open(M.LOG_PATH, "a")

@@ -109,7 +109,9 @@ node tools/check-skill-copies.mjs       # 期望 ALL SKILL COPIES IN SYNC ✓（
 | `_atomic_selftest` | `atomicSelfTest: OK`（47 项断言） |
 | `_mounts_selftest` | `OK: 100 checks, 0 failure(s)` |
 | `_panel_roster_selftest` | `OK: 77 checks, 0 failure(s)`（2026-10-24 ⑧ 改为断言 `refresh` 已随实体层移除 ✓） |
-| `_periodic_selftest` | `33 checks, 0 failures`（2026-10-24 加 ⑧：fleet 分帧 —— 单轮调用数 ≤ `MAX_SHIPS_PER_SCAN`、游标绕圈不饿死、6 艘名单仍是 2、空名单不崩 ✓） |
+| `_periodic_selftest` | `40 checks, 0 failures`（2026-10-24 加 ⑧：fleet 分帧 —— 单轮调用数 ≤ `MAX_SHIPS_PER_SCAN`、游标绕圈不饿死、6 艘名单仍是 2、空名单不崩 ✓；⑦ 加：节流**按名字**各一份、`thresholdMs` 可调、`QUERY_THRESHOLD_MS=100` ✓） |
+| `_rpc_query_timing_selftest` | `20 checks, 0 failures` + `OK`（2026-10-24 新增：慢查询探针 —— >100 ms 留一行 `rpc.query:<what>` + 毫秒 ✓、亚阈值不写 ✓、按名字节流 ✓、报错也记 ERR ✓、阈值可调 ✓） |
+| `_netpump_selftest` | `29 项断言 / 失败 0` + `OK`（2026-10-24 加 ④：`net.pump` 探针 —— 超阈值留一行、平时不写 ✓） |
 | `_namespace_decl_selftest` | `OK: 6 checks, 0 failure(s)`（2026-10-24 加：声明行只能是纯声明形状、名字只含 `[A-Za-z0-9_]` ✓） |
 | `_weapons_card_selftest` | `59 checks, 0 failures`（2026-10-22 加 ⑧：不许读文档里没有的属性 ✓） |
 | `_job_equipment_error_selftest` | `checks=37  failures=0` |

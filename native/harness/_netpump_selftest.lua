@@ -70,6 +70,17 @@ local CP = {
     end,
 }
 
+-- ★ 2026-10-24：`net.pump` 周期探针本体（真 perf.lua ✓，只换日志路径 ✓）
+--   ⓪~③ 先把阈值拉到天上（**不写盘** ✓），④ 再放开，专测「超阈值真的留一行」✓
+local Perf = dofile("data/scripts/lib/copilot/perf.lua")
+Perf.LOG_PATH = "build/_perf_netpump.log"
+os.remove(Perf.LOG_PATH)
+Perf.THRESHOLD_MS = 1e9
+include = function(name)
+    if name == "copilot/perf" then return Perf end
+    error("unexpected include: " .. tostring(name))
+end
+
 local Net = dofile("data/scripts/net/net.lua")
 Net.getModule = function() return CP end       -- 跳过原生模块 ✓
 
@@ -168,6 +179,44 @@ do
     check("③ frames == 0", p.frames == 0, tostring(p.frames))
     check("③ hitBudget == false", p.hitBudget == false, tostring(p.hitBudget))
     check("③ 没有 emit 任何帧", #GOT == 0, tostring(#GOT))
+end
+
+-- ---------------------------------------------------------------------------
+-- ④ ★ 2026-10-24：`net.pump` 打点 —— 周期三件套齐了（ops.updateServer / fleet.scan / net.pump ✓）
+-- ---------------------------------------------------------------------------
+print("== ④ net.pump 探针：慢一拍留一行（名字 + 毫秒 ✓），平时不写 ✓ ==")
+do
+    local function lineCount()
+        local fh = io.open(Perf.LOG_PATH, "r")
+        if fh == nil then return 0 end
+        local n = 0
+        for _ in fh:lines() do n = n + 1 end
+        fh:close()
+        return n
+    end
+    local function logText()
+        local fh = io.open(Perf.LOG_PATH, "r")
+        if fh == nil then return "" end
+        local text = fh:read("*a") or ""
+        fh:close()
+        return text
+    end
+
+    check("④ ⓪~③ 全程一条都没写（平时不刷屏 ✓）", lineCount() == 0, tostring(lineCount()))
+
+    Perf.THRESHOLD_MS, Perf.MIN_INTERVAL = 0, 0
+    GOT = {}
+    FRAME_COST = 0.01                       -- 一帧 10 ms（远低于 30 ms 预算 ✓）
+    queue("P1")
+    local p = tickOnce()
+    check("④ 本拍真的跑了一帧（frames=1 ✓）", p.frames == 1, tostring(p.frames))
+    check("④ 超阈值 → 写了一条 ✓", lineCount() == 1, tostring(lineCount()))
+    local text = logText()
+    check("④ 名字是 net.pump ✓", text:find("net.pump", 1, true) ~= nil, text)
+    check("④ 带毫秒数字 ✓", text:find("ms", 1, true) ~= nil, text)
+    check("④ 带 frames 明细 ✓", text:find("frames=1", 1, true) ~= nil, text)
+
+    os.remove(Perf.LOG_PATH)
 end
 
 os.clock = realClock

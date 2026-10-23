@@ -359,9 +359,22 @@ do
     Perf.log("slow-a", os.clock(), "ships=6")
     check("⑦ 超阈值：写了一条", lineCount() == 1, tostring(lineCount()))
 
-    -- ③ 立刻再写 → 被 30 秒节流挡住 ✓（哪怕一直超）
+    -- ③ 同一个名字立刻再写 → 被 30 秒节流挡住 ✓（哪怕一直超）
+    Perf.log("slow-a", os.clock(), "ships=6")
+    check("⑦ 节流：同一名字 30 秒内第二条被挡住（不会刷屏 ✓）", lineCount() == 1, tostring(lineCount()))
+
+    -- ③b ★ 2026-10-24：节流改成**按名字**各记一份 ✓✓
+    --   旧版整个 VM 共用一个时间戳 ✗ → 一个慢查询会把 fleet.scan / net.pump 的记录挤掉 ✗✓
     Perf.log("slow-b", os.clock(), "ships=6")
-    check("⑦ 节流：30 秒内第二条被挡住（不会刷屏 ✓）", lineCount() == 1, tostring(lineCount()))
+    check("⑦ 按名字节流：不同名字各写一条（慢查询不挤掉别的探针 ✓）",
+        lineCount() == 2, tostring(lineCount()))
+
+    -- ③c ★ 阈值可调：第四个参数显式给 0 ms → 周期阈值再高也照写 ✓（RPC 走 100 ms 那道闸 ✓）
+    Perf.THRESHOLD_MS = 1e9
+    Perf.log("slow-c", os.clock(), "query", 0)
+    check("⑦ 阈值可调：显式 thresholdMs=0 越过周期阈值照写 ✓", lineCount() == 3, tostring(lineCount()))
+    check("⑦ QUERY_THRESHOLD_MS 缺省 = 100 ms（单次 RPC 那道闸 ✓）",
+        Perf.QUERY_THRESHOLD_MS == 100, tostring(Perf.QUERY_THRESHOLD_MS))
 
     Perf.THRESHOLD_MS, Perf.MIN_INTERVAL = oldThreshold, oldInterval
 

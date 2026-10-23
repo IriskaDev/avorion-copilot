@@ -76,6 +76,16 @@ function CopilotNet.isConnected()
     return cp.connected() and true or false
 end
 
+-- ★ 懒加载耗时探针（2026-10-24 加 ✓✓ —— net.pump 打点用）
+--   写法与 `net/fleet.lua` / `player/ai/ops.lua` **同一套** ✓：
+--   失败一次就记住失败（值是 false ✓），别每一拍都重试 include ✗。
+function CopilotNet.perfModule()
+    if self._perf ~= nil then return self._perf or nil end
+    local ok, mod = pcall(include, "copilot/perf")
+    self._perf = (ok and type(mod) == "table") and mod or false
+    return self._perf or nil
+end
+
 -- 发送：这里只做"交出去"，不决定发什么
 function CopilotNet.send(text)
     local cp = CopilotNet.getModule()
@@ -166,6 +176,16 @@ function CopilotNet.updateServer()
         -- ★ 只在**真超预算**时留痕：这是排查「心跳为什么变慢/变快」的锚点 ✓
         CopilotRpc.trace(string.format("泵：本拍 %d 帧 / %.1f ms 超预算 → 若队里还有帧，下一拍继续 ✓",
             frames, pumpMs))
+    end
+
+    -- ★★ 2026-10-24：**周期任务探针**（net.pump ✓✓）—— 与 `ops.updateServer` / `fleet.scan`
+    --   同一套规矩 ✓：超阈值才写、每个名字 30 秒最多一行 ✓（见 lib/copilot/perf.lua ✓）。
+    --   一拍最多 1~2 帧 + ~30 ms 预算 ✓ → 正常远低于 20 ms 阈值，平时一条都不写 ✓。
+    do
+        local Perf = CopilotNet.perfModule()
+        if Perf ~= nil then
+            Perf.log("net.pump", t0, string.format("frames=%d", frames))
+        end
     end
 
     -- ★ 扫 RPC 超时（Lua 没有定时器 → 由这个 tick 泵驱动 ✓，和 recv 同一个 1 Hz 节拍）

@@ -76,6 +76,34 @@ function CopilotRpc.caps()
     return out
 end
 
+-- ★★ 2026-10-24：**慢查询探针**（主人原话：「注意不要再加之前那种超高消耗的操作了」✓✓）
+--
+--   为什么要有它 ✗→✓：`tradePlan` 那种 10~21 s 的单次 RPC 当年是把游戏主循环整个占住 ✓；
+--   而它**不在** clientlog、也不在帧计数器里 ✗ —— 唯一能看见它的地方是「这个 handler 跑了多久」✓。
+--
+--   规矩（与 `perf.lua` 同一套 ✓，见 docs/dev/interface-atomicity.md §★★★ G4 ✓）：
+--     · 超过 `QUERY_THRESHOLD_MS`（缺省 **100 ms**，可调 ✓）才写一行到 perf.log ✓
+--     · 名字带 what：`rpc.query:predict` / `rpc.order` ✓ —— 一眼看出是谁慢 ✓
+--     · **每个名字 30 秒最多一行** ✓（节流在 perf.lua 里按名字做 ✓）→ 不刷屏 ✓
+--     · 探针全程 pcall ✓ —— 写失败绝不影响答复 ✓
+--
+--   懒加载 perf 库（失败一次就记住失败 ✓ 别每个请求都重试 include ✗）
+function CopilotRpc.perfModule()
+    if self._perf ~= nil then return self._perf or nil end
+    local ok, mod = pcall(include, "copilot/perf")
+    self._perf = (ok and type(mod) == "table") and mod or false
+    return self._perf or nil
+end
+
+-- 探针名字：`rpc.<cmd>`；query 再带上 what ✓（`rpc.query:tradeEvaluate` ✓）
+function CopilotRpc.queryLabel(cmd, data)
+    local label = "rpc." .. tostring(cmd)
+    if tostring(cmd) == "query" and type(data) == "table" and data.what ~= nil then
+        label = label .. ":" .. tostring(data.what)
+    end
+    return label
+end
+
 -- ---------------------------------------------------------------------------
 -- 我调用对面
 -- ---------------------------------------------------------------------------
@@ -144,8 +172,22 @@ function CopilotRpc.onRequest(msg)
         return
     end
 
+    -- ★ 计时起点在 **handler 调用之前** ✓（探针不许自己变成负载：只有超阈值才写 ✓）
+    local t0 = os.clock()
+    local data = msg.data or {}
+
     -- 在 pcall 里执行：一个坏 handler 不许拖垮整条链 ✓
-    local r = { pcall(fn, msg.data or {}) }
+    local r = { pcall(fn, data) }
+
+    -- ★★ 慢查询探针（2026-10-24 ✓✓）：> 100 ms 记一行 `rpc.query:<what>` + 毫秒 ✓
+    --   ★ 失败也记（带 ERR 前缀 ✓）—— 一个跑很久然后报错的 handler 同样要能看见 ✓
+    local Perf = CopilotRpc.perfModule()
+    if Perf ~= nil then
+        Perf.log(CopilotRpc.queryLabel(msg.cmd, data), t0,
+            r[1] and "" or ("ERR " .. tostring(r[2])),
+            Perf.QUERY_THRESHOLD_MS)
+    end
+
     if not r[1] then
         CopilotOut.sendReply(msg.id, msg.cmd, false, "HANDLER_ERROR", tostring(r[2]))
         return
